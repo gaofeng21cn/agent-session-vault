@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-session-vault"
+version = "0.1.0"
+description = "Local-first session vault for multi-machine AI agent histories"
+requires-python = ">=3.12"
+authors = [{ name = "gaofeng" }]
+readme = "README.md"
+
+[project.scripts]
+agent-session-vault = "agent_session_vault.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
