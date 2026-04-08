@@ -26,7 +26,7 @@ It gives you a directory-native session layer that keeps raw histories, slimmer 
 ## What It Does
 
 - Discovers agent session roots per machine, per client, and per project directory.
-- Uses `projection-first` sync by default so cross-machine transfer does not need to mirror every raw session file.
+- Uses `projection delta-first` sync by default so cross-machine transfer does not need to mirror every raw session file.
 - Builds both `raw` and `canonical` Tokscale views.
 - Preserves explicit raw sync and archive flows for cases where full materialization is still needed.
 - Treats OneDrive, NAS, iCloud, and similar tools as directory relays instead of baking cloud SDKs into the core.
@@ -80,6 +80,12 @@ If you want the stricter internal view:
 agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit --codex --gemini --openclaw --dry-run
 ```
 
+`sync auto` now tries to export a strict `projection_delta` by default. It falls back to `projection_full` only when:
+
+- the local machine has no projection state yet
+- the root set changed and the stored base snapshot is no longer compatible
+- the remote relay no longer has the base snapshot required for a verified diff
+
 ## For Humans
 
 Use this project if:
@@ -104,13 +110,13 @@ Use this repository through the CLI, not by re-implementing its logic from scrat
 Recommended prompt for an agent:
 
 ```text
-Install and use this repository. Configure agent-session-vault for the current machines with hostname-based machine names, keep projection-first sync as the default path, discover both home-level and project-level session roots, and prepare Tokscale raw or canonical views without modifying Tokscale upstream.
+Install and use this repository. Configure agent-session-vault for the current machines with hostname-based machine names, keep projection delta-first sync as the default path, discover both home-level and project-level session roots, and prepare Tokscale raw or canonical views without modifying Tokscale upstream.
 ```
 
 Common agent tasks:
 
 - configure machine definitions and root rules
-- run `sync auto <machine>` for projection-first imports
+- run `sync auto <machine>` for projection delta-first imports
 - prepare `raw` or `canonical` Tokscale environments
 - archive older raw trees into bundles when local storage should be reduced
 
@@ -123,11 +129,12 @@ Start here:
 
 ## Current Boundaries
 
-- `projection-first` is the default cross-machine path; raw sync remains explicit.
+- `projection delta-first` is the default cross-machine path; raw sync remains explicit.
 - Cloud tools are treated as directory relays, not as first-class backends.
 - The current flagship integrations are `Codex`, `Gemini CLI`, and `OpenClaw`.
 - Provider price reconciliation is not solved here; this repository manages session views, not billing truth.
 - The tool does not destructively rewrite live client roots.
+- Pending relay bundles are resolved from the current local base snapshot and prefer the newest directly applicable bundle instead of replaying obsolete sibling deltas.
 
 ## Documentation
 
@@ -172,7 +179,7 @@ Inspect storage:
 agent-session-vault storage summary --json
 ```
 
-Projection-first sync:
+Projection delta-first sync:
 
 ```bash
 agent-session-vault sync auto imac --json

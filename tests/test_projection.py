@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
+
+import pytest
 
 from agent_session_vault.config import load_config
-from agent_session_vault.projection import export_machine_projection, import_machine_projection
+from agent_session_vault.projection import (
+    export_machine_projection,
+    import_machine_projection,
+    pending_projection_bundle_dirs,
+)
 
 
 def _write(path: Path, content: str) -> None:
@@ -27,6 +34,7 @@ def _write_config(
     shadow_home = target_home / ".config" / "tokscale" / "shadow-home"
     extras = target_home / ".config" / "tokscale" / "local-workspace-extras"
     config_path = tmp_path / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         f"""
 [paths]
@@ -380,3 +388,372 @@ kind = "home_root"
 
     assert normalized
     assert normalized[0].name == "variant__jsonl__.guard-reset.2026-04-08T00-00-00Z.jsonl"
+
+
+def test_projection_export_without_local_state_falls_back_to_full(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+
+    _write(
+        source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "one.jsonl",
+        json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n",
+    )
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    bundle = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=target_home / ".config" / "tokscale" / "imports" / "imac",
+    )
+    manifest = json.loads((bundle.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["mode"] == "projection_full"
+    assert manifest["fallback_reason"] == "missing_local_state"
+
+
+def test_projection_export_with_existing_state_emits_delta_and_skips_unchanged_files(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    source_file = source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "one.jsonl"
+    _write(
+        source_file,
+        "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {"id": "sess-1"}}),
+                json.dumps({"type": "turn_context", "payload": {"model_info": {"slug": "gpt-5.4"}}}),
+                json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}),
+            ]
+        )
+        + "\n",
+    )
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    first = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    _write(
+        source_file,
+        "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {"id": "sess-1"}}),
+                json.dumps({"type": "turn_context", "payload": {"model_info": {"slug": "gpt-5.4"}}}),
+                json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}),
+                json.dumps({"type": "event_msg", "payload": {"type": "token_count", "payload": {"round": 2}}}),
+            ]
+        )
+        + "\n",
+    )
+    _write(
+        source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "two.jsonl",
+        json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n",
+    )
+
+    second = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    manifest = json.loads((second.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["mode"] == "projection_delta"
+    assert manifest["base_snapshot_id"] == first.snapshot_id
+    assert sorted(Path(path).name for path in manifest["changed_files"]) == ["one.jsonl", "two.jsonl"]
+
+
+def test_projection_delta_import_applies_deletions(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    keep_file = source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "keep.jsonl"
+    drop_file = source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "drop.jsonl"
+    _write(keep_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n")
+    _write(drop_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n")
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    first = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    drop_file.unlink()
+
+    second = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(config, "imac", second.bundle_dir, canonicalize_command=None)
+
+    projected_root = import_root / ".raw" / "codex" / "sessions"
+    assert any(path.name == "keep.jsonl" for path in projected_root.rglob("*.jsonl"))
+    assert not any(path.name == "drop.jsonl" for path in projected_root.rglob("*.jsonl"))
+
+
+def test_pending_projection_bundle_dirs_returns_latest_applicable_delta(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    source_file = source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "one.jsonl"
+    _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n")
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    first = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count", "n": 2}}) + "\n")
+    second = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count", "n": 3}}) + "\n")
+    third = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+
+    pending = pending_projection_bundle_dirs(config, "imac")
+    assert pending == [third.bundle_dir]
+
+
+def test_projection_export_with_roots_manifest_change_falls_back_to_full(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    _write(
+        source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "one.jsonl",
+        json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n",
+    )
+
+    initial_config = load_config(
+        _write_config(
+            tmp_path / "initial",
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    first = export_machine_projection(
+        machine=initial_config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(initial_config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    _write(
+        source_home / ".gemini" / "tmp" / "proj-a" / "chats" / "chat.json",
+        '{"sessionId":"g-1"}\n',
+    )
+
+    changed_config = load_config(
+        _write_config(
+            tmp_path / "changed",
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex", "gemini"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+
+[[machines.imac.roots]]
+client = "gemini"
+path = "~/.gemini"
+kind = "home_root"
+""",
+        )
+    )
+
+    second = export_machine_projection(
+        machine=changed_config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    manifest = json.loads((second.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["mode"] == "projection_full"
+    assert manifest["fallback_reason"] == "roots_manifest_changed"
+
+
+def test_projection_export_with_missing_base_snapshot_falls_back_to_full(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    source_file = source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "one.jsonl"
+    _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n")
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    first = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    shutil.rmtree(first.bundle_dir)
+    _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count", "n": 2}}) + "\n")
+
+    second = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    manifest = json.loads((second.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["mode"] == "projection_full"
+    assert manifest["fallback_reason"] == "missing_base_snapshot"
+
+
+def test_projection_delta_import_rejects_base_snapshot_mismatch(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    source_file = source_home / ".codex" / "sessions" / "2026" / "04" / "08" / "one.jsonl"
+    _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count"}}) + "\n")
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    first = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count", "n": 2}}) + "\n")
+    second = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+
+    (import_root / ".projection-state.json").write_text(
+        json.dumps({"current_snapshot_id": "imac-override", "last_imported_at": "2026-04-08T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="base snapshot mismatch"):
+        import_machine_projection(config, "imac", second.bundle_dir, canonicalize_command=None)

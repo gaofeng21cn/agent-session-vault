@@ -17,6 +17,12 @@ from .config import MachineConfig, RootRuleConfig, VaultConfig
 
 
 TERMINAL_EVENT_TYPES = {"task_complete", "turn_aborted"}
+PROJECTION_ROOTS_MANIFEST_NAME = "roots-manifest.json"
+PROJECTION_INVENTORY_NAME = "inventory.json"
+LOCAL_PROJECTION_STATE_NAME = ".projection-state.json"
+LOCAL_PROJECTION_ROOTS_MANIFEST_NAME = ".projection-roots-manifest.json"
+LOCAL_PROJECTION_INVENTORY_NAME = ".projection-inventory.json"
+PROJECTION_METADATA_NAMES = {PROJECTION_ROOTS_MANIFEST_NAME, PROJECTION_INVENTORY_NAME}
 
 
 @dataclass(frozen=True)
@@ -36,7 +42,11 @@ class ProjectionBundle:
     manifest_path: Path
     bundle_path: Path
     roots_manifest_path: Path
+    inventory_path: Path | None
     bundle_bytes: int
+    mode: str = "projection_full"
+    base_snapshot_id: str | None = None
+    fallback_reason: str | None = None
 
 
 def _json_load(line: str) -> dict | None:
@@ -325,23 +335,43 @@ def _build_snapshot_id(machine_name: str) -> str:
     return f"{machine_name}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
 
 
-def export_machine_projection(
-    machine: MachineConfig,
-    source_home: Path,
-    relay_root: Path,
-) -> ProjectionBundle:
-    source_home = source_home.expanduser().resolve()
-    relay_root = relay_root.expanduser().resolve()
-    snapshot_id = _build_snapshot_id(machine.name)
-    bundle_dir = relay_root / "projection" / machine.name / snapshot_id
-    if bundle_dir.exists():
-        shutil.rmtree(bundle_dir)
-    staging_dir = bundle_dir / ".staging"
-    payload_root = staging_dir / "payload"
-    payload_root.mkdir(parents=True, exist_ok=True)
+def _projection_state_path(machine_root: Path) -> Path:
+    return machine_root / LOCAL_PROJECTION_STATE_NAME
 
+
+def _projection_roots_manifest_path(machine_root: Path) -> Path:
+    return machine_root / LOCAL_PROJECTION_ROOTS_MANIFEST_NAME
+
+
+def _projection_inventory_path(machine_root: Path) -> Path:
+    return machine_root / LOCAL_PROJECTION_INVENTORY_NAME
+
+
+def _load_json_file(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json_file(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _load_current_snapshot_id(machine_root: Path | None) -> str | None:
+    if machine_root is None:
+        return None
+    state_path = _projection_state_path(machine_root)
+    if not state_path.is_file():
+        return None
+    payload = _load_json_file(state_path)
+    if not isinstance(payload, dict):
+        return None
+    snapshot_id = payload.get("current_snapshot_id")
+    return snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
+
+
+def _build_projection_payload(machine: MachineConfig, source_home: Path, payload_root: Path) -> tuple[dict[str, object], dict[str, int]]:
     discovered = discover_machine_roots(machine, source_home)
-    roots_manifest = {
+    roots_manifest: dict[str, object] = {
         "machine": machine.name,
         "import_name": machine.import_name,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -371,18 +401,191 @@ def export_machine_projection(
             if key in summary:
                 summary[key] += value
 
+    return roots_manifest, summary
+
+
+def _build_projection_inventory(payload_root: Path) -> list[dict[str, object]]:
+    inventory: list[dict[str, object]] = []
+    for file_path in sorted(path for path in payload_root.rglob("*") if path.is_file()):
+        rel = file_path.relative_to(payload_root).as_posix()
+        if rel in PROJECTION_METADATA_NAMES:
+            continue
+        inventory.append(
+            {
+                "path": rel,
+                "sha256": _sha256_file(file_path),
+                "bytes": file_path.stat().st_size,
+            }
+        )
+    return inventory
+
+
+def _inventory_index(inventory: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    index: dict[str, dict[str, object]] = {}
+    for item in inventory:
+        rel = item.get("path")
+        if isinstance(rel, str):
+            index[rel] = item
+    return index
+
+
+def _diff_projection_inventory(
+    previous: list[dict[str, object]],
+    current: list[dict[str, object]],
+) -> tuple[list[str], list[str]]:
+    previous_index = _inventory_index(previous)
+    current_index = _inventory_index(current)
+
+    changed = sorted(
+        rel
+        for rel, item in current_index.items()
+        if rel not in previous_index or previous_index[rel].get("sha256") != item.get("sha256")
+    )
+    deleted = sorted(rel for rel in previous_index if rel not in current_index)
+    return changed, deleted
+
+
+def _write_projection_metadata(
+    payload_root: Path,
+    roots_manifest: dict[str, object],
+    inventory: list[dict[str, object]],
+) -> tuple[Path, Path]:
+    roots_manifest_path = payload_root / PROJECTION_ROOTS_MANIFEST_NAME
+    inventory_path = payload_root / PROJECTION_INVENTORY_NAME
+    _write_json_file(roots_manifest_path, roots_manifest)
+    _write_json_file(inventory_path, inventory)
+    return roots_manifest_path, inventory_path
+
+
+def _roots_manifest_identity(roots_manifest: object) -> object:
+    if not isinstance(roots_manifest, dict):
+        return roots_manifest
+    return {
+        "machine": roots_manifest.get("machine"),
+        "import_name": roots_manifest.get("import_name"),
+        "roots": roots_manifest.get("roots"),
+    }
+
+
+def _copy_projection_subset(source_root: Path, dest_root: Path, relative_paths: list[str]) -> dict[str, int]:
+    stats = {"files_written": 0, "source_bytes_total": 0, "dest_bytes_total": 0, "token_events_total": 0}
+    for rel in relative_paths:
+        source_path = source_root / Path(rel)
+        if not source_path.is_file():
+            raise FileNotFoundError(f"projection source file missing from staging payload: {source_path}")
+        dest_path = dest_root / Path(rel)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        file_bytes = source_path.stat().st_size
+        stats["files_written"] += 1
+        stats["source_bytes_total"] += file_bytes
+        stats["dest_bytes_total"] += file_bytes
+    return stats
+
+
+def _remove_empty_ancestors(path: Path, stop_root: Path) -> None:
+    current = path.parent
+    stop_root = stop_root.resolve()
+    while True:
+        try:
+            resolved = current.resolve()
+        except FileNotFoundError:
+            resolved = current
+        if resolved == stop_root or current == stop_root:
+            return
+        if not current.exists():
+            current = current.parent
+            continue
+        try:
+            next(current.iterdir())
+            return
+        except StopIteration:
+            current.rmdir()
+            current = current.parent
+
+
+def export_machine_projection(
+    machine: MachineConfig,
+    source_home: Path,
+    relay_root: Path,
+    machine_root: Path | None = None,
+    base_snapshot_id: str | None = None,
+) -> ProjectionBundle:
+    source_home = source_home.expanduser().resolve()
+    relay_root = relay_root.expanduser().resolve()
+    machine_root = machine_root.expanduser().resolve() if machine_root is not None else None
+    snapshot_id = _build_snapshot_id(machine.name)
+    bundle_dir = relay_root / "projection" / machine.name / snapshot_id
+    if bundle_dir.exists():
+        shutil.rmtree(bundle_dir)
+    staging_dir = bundle_dir / ".staging"
+    payload_root = staging_dir / "payload"
+    payload_root.mkdir(parents=True, exist_ok=True)
+
+    roots_manifest, full_summary = _build_projection_payload(machine, source_home, payload_root)
+    full_roots_manifest_path, full_inventory_path = _write_projection_metadata(
+        payload_root,
+        roots_manifest,
+        _build_projection_inventory(payload_root),
+    )
+
+    mode = "projection_full"
+    resolved_base_snapshot_id: str | None = None
+    fallback_reason: str | None = None
+    changed_files: list[str] = []
+    deleted_files: list[str] = []
+    payload_source = payload_root
+    roots_manifest_path = full_roots_manifest_path
+    inventory_path = full_inventory_path
+    summary = dict(full_summary)
+
+    local_snapshot_id = base_snapshot_id or _load_current_snapshot_id(machine_root)
+    if local_snapshot_id is None:
+        fallback_reason = "missing_local_state"
+    else:
+        resolved_base_snapshot_id = local_snapshot_id
+        previous_bundle_dir = relay_root / "projection" / machine.name / resolved_base_snapshot_id
+        previous_roots_manifest_path = previous_bundle_dir / PROJECTION_ROOTS_MANIFEST_NAME
+        previous_inventory_path = previous_bundle_dir / PROJECTION_INVENTORY_NAME
+        if not previous_roots_manifest_path.is_file() or not previous_inventory_path.is_file():
+            fallback_reason = "missing_base_snapshot"
+            resolved_base_snapshot_id = None
+        else:
+            previous_roots_manifest = _load_json_file(previous_roots_manifest_path)
+            if _roots_manifest_identity(previous_roots_manifest) != _roots_manifest_identity(roots_manifest):
+                fallback_reason = "roots_manifest_changed"
+                resolved_base_snapshot_id = None
+            else:
+                previous_inventory = _load_json_file(previous_inventory_path)
+                if not isinstance(previous_inventory, list):
+                    raise ValueError(f"invalid projection inventory: {previous_inventory_path}")
+                current_inventory = _load_json_file(full_inventory_path)
+                if not isinstance(current_inventory, list):
+                    raise ValueError(f"invalid projection inventory: {full_inventory_path}")
+                changed_files, deleted_files = _diff_projection_inventory(previous_inventory, current_inventory)
+                delta_payload_root = staging_dir / "delta-payload"
+                delta_payload_root.mkdir(parents=True, exist_ok=True)
+                summary = _copy_projection_subset(payload_root, delta_payload_root, changed_files)
+                roots_manifest_path, inventory_path = _write_projection_metadata(
+                    delta_payload_root,
+                    roots_manifest,
+                    current_inventory,
+                )
+                payload_source = delta_payload_root
+                mode = "projection_delta"
+
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    roots_manifest_path = payload_root / "roots-manifest.json"
-    roots_manifest_path.write_text(json.dumps(roots_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     bundle_path = bundle_dir / "payload.tar.zst"
     manifest_path = bundle_dir / "manifest.json"
-    _pack_to_bundle_path(payload_root, bundle_path)
-    bundle_roots_manifest_path = bundle_dir / "roots-manifest.json"
+    _pack_to_bundle_path(payload_source, bundle_path)
+    bundle_roots_manifest_path = bundle_dir / PROJECTION_ROOTS_MANIFEST_NAME
+    bundle_inventory_path = bundle_dir / PROJECTION_INVENTORY_NAME
     shutil.copy2(roots_manifest_path, bundle_roots_manifest_path)
+    shutil.copy2(inventory_path, bundle_inventory_path)
 
     manifest_payload = {
         "version": 1,
-        "mode": "projection_full",
+        "mode": mode,
         "machine": machine.name,
         "import_name": machine.import_name,
         "snapshot_id": snapshot_id,
@@ -392,8 +595,21 @@ def export_machine_projection(
             "bytes": bundle_path.stat().st_size,
             "sha256": _sha256_file(bundle_path),
         },
+        "roots_manifest": {"name": bundle_roots_manifest_path.name},
+        "inventory": {
+            "name": bundle_inventory_path.name,
+            "bytes": bundle_inventory_path.stat().st_size,
+            "sha256": _sha256_file(bundle_inventory_path),
+        },
         "summary": summary,
     }
+    if resolved_base_snapshot_id is not None:
+        manifest_payload["base_snapshot_id"] = resolved_base_snapshot_id
+    if fallback_reason is not None:
+        manifest_payload["fallback_reason"] = fallback_reason
+    if mode == "projection_delta":
+        manifest_payload["changed_files"] = changed_files
+        manifest_payload["deleted_files"] = deleted_files
     manifest_path.write_text(json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     shutil.rmtree(staging_dir)
 
@@ -404,7 +620,11 @@ def export_machine_projection(
         manifest_path=manifest_path,
         bundle_path=bundle_path,
         roots_manifest_path=bundle_roots_manifest_path,
+        inventory_path=bundle_inventory_path,
         bundle_bytes=bundle_path.stat().st_size,
+        mode=mode,
+        base_snapshot_id=resolved_base_snapshot_id,
+        fallback_reason=fallback_reason,
     )
 
 
@@ -447,33 +667,61 @@ def import_machine_projection(
     extract_root.mkdir(parents=True, exist_ok=True)
     subprocess.run(["bsdtar", "-xf", str(bundle_path), "-C", str(extract_root)], check=True)
 
-    for client in machine.clients:
-        client_root = raw_root / client
-        if client_root.exists():
-            shutil.rmtree(client_root)
+    mode = str(payload.get("mode") or "projection_full")
+    if mode == "projection_full":
+        for client in machine.clients:
+            client_root = raw_root / client
+            if client_root.exists():
+                shutil.rmtree(client_root)
+        for client in ("codex", "gemini", "openclaw"):
+            if (extract_root / client).is_dir():
+                _replace_tree(extract_root / client, raw_root / client)
+    elif mode == "projection_delta":
+        expected_base_snapshot_id = payload.get("base_snapshot_id")
+        current_snapshot_id = _load_current_snapshot_id(machine_root)
+        if current_snapshot_id != expected_base_snapshot_id:
+            raise ValueError(
+                f"base snapshot mismatch: expected {expected_base_snapshot_id}, got {current_snapshot_id}"
+            )
+        changed_files = payload.get("changed_files")
+        deleted_files = payload.get("deleted_files")
+        if not isinstance(changed_files, list) or not isinstance(deleted_files, list):
+            raise ValueError(f"invalid delta manifest in {manifest_path}")
+        for rel in changed_files:
+            if not isinstance(rel, str):
+                raise ValueError(f"invalid changed file entry in {manifest_path}: {rel!r}")
+            source_path = extract_root / Path(rel)
+            if not source_path.is_file():
+                raise FileNotFoundError(f"projection delta file missing from bundle: {source_path}")
+            dest_path = raw_root / Path(rel)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, dest_path)
+        for rel in deleted_files:
+            if not isinstance(rel, str):
+                raise ValueError(f"invalid deleted file entry in {manifest_path}: {rel!r}")
+            target_path = raw_root / Path(rel)
+            if target_path.is_file():
+                target_path.unlink()
+                _remove_empty_ancestors(target_path, raw_root)
+    else:
+        raise ValueError(f"unsupported projection bundle mode: {mode}")
 
-    for client in ("codex", "gemini", "openclaw"):
-        if (extract_root / client).is_dir():
-            _replace_tree(extract_root / client, raw_root / client)
-
-    roots_manifest_path = extract_root / "roots-manifest.json"
-    stored_roots_manifest = machine_root / ".projection-roots-manifest.json"
+    roots_manifest_path = extract_root / PROJECTION_ROOTS_MANIFEST_NAME
+    inventory_path = extract_root / PROJECTION_INVENTORY_NAME
+    stored_roots_manifest = _projection_roots_manifest_path(machine_root)
+    stored_inventory_path = _projection_inventory_path(machine_root)
+    machine_root.mkdir(parents=True, exist_ok=True)
     if roots_manifest_path.is_file():
-        machine_root.mkdir(parents=True, exist_ok=True)
         shutil.copy2(roots_manifest_path, stored_roots_manifest)
+    if inventory_path.is_file():
+        shutil.copy2(inventory_path, stored_inventory_path)
 
-    state_path = machine_root / ".projection-state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "current_snapshot_id": payload.get("snapshot_id"),
-                "last_imported_at": datetime.now(UTC).isoformat(),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_json_file(
+        _projection_state_path(machine_root),
+        {
+            "current_snapshot_id": payload.get("snapshot_id"),
+            "last_imported_at": datetime.now(UTC).isoformat(),
+        },
     )
     shutil.rmtree(extract_root)
 
@@ -487,7 +735,11 @@ def import_machine_projection(
         manifest_path=manifest_path,
         bundle_path=bundle_path,
         roots_manifest_path=stored_roots_manifest,
+        inventory_path=stored_inventory_path if stored_inventory_path.exists() else None,
         bundle_bytes=int(payload.get("bundle", {}).get("bytes", 0)),
+        mode=mode,
+        base_snapshot_id=payload.get("base_snapshot_id") if isinstance(payload.get("base_snapshot_id"), str) else None,
+        fallback_reason=payload.get("fallback_reason") if isinstance(payload.get("fallback_reason"), str) else None,
     )
 
 
@@ -496,24 +748,46 @@ def pending_projection_bundle_dirs(config: VaultConfig, machine_name: str) -> li
     if not bundle_root.is_dir():
         return []
     machine = config.machines[machine_name]
-    state_path = config.paths.import_root / machine.import_name / ".projection-state.json"
-    current_snapshot_id = None
-    if state_path.is_file():
-        current_snapshot_id = json.loads(state_path.read_text(encoding="utf-8")).get("current_snapshot_id")
+    machine_root = config.paths.import_root / machine.import_name
+    current_snapshot_id = _load_current_snapshot_id(machine_root)
 
-    candidates: list[tuple[str, Path]] = []
+    candidates: list[tuple[str, str, str | None, Path]] = []
     for manifest_path in sorted(bundle_root.glob("*/manifest.json")):
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         snapshot_id = payload.get("snapshot_id")
-        if not isinstance(snapshot_id, str):
+        mode = payload.get("mode")
+        base_snapshot_id = payload.get("base_snapshot_id")
+        if not isinstance(snapshot_id, str) or not isinstance(mode, str):
             continue
         if isinstance(current_snapshot_id, str) and snapshot_id <= current_snapshot_id:
             continue
-        candidates.append((snapshot_id, manifest_path.parent))
+        candidates.append((snapshot_id, mode, base_snapshot_id if isinstance(base_snapshot_id, str) else None, manifest_path.parent))
     if not candidates:
         return []
     candidates.sort(key=lambda item: item[0])
-    return [candidates[-1][1]]
+
+    pending: list[Path] = []
+    if current_snapshot_id is None:
+        applicable_fulls = [item for item in candidates if item[1] == "projection_full"]
+        if not applicable_fulls:
+            return []
+        snapshot_id, _, _, bundle_dir = applicable_fulls[-1]
+        pending.append(bundle_dir)
+        current_snapshot_id = snapshot_id
+
+    while current_snapshot_id is not None:
+        applicable = [
+            item
+            for item in candidates
+            if item[0] > current_snapshot_id
+            and (item[1] == "projection_full" or (item[1] == "projection_delta" and item[2] == current_snapshot_id))
+        ]
+        if not applicable:
+            break
+        snapshot_id, _, _, bundle_dir = applicable[-1]
+        pending.append(bundle_dir)
+        current_snapshot_id = snapshot_id
+    return pending
 
 
 def expected_local_projection_bundle_dir(config: VaultConfig, machine_name: str, snapshot_id: str) -> Path:
@@ -534,10 +808,12 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 import tarfile
 
 TERMINAL_EVENT_TYPES = {"task_complete", "turn_aborted"}
+PROJECTION_ROOTS_MANIFEST_NAME = "roots-manifest.json"
+PROJECTION_INVENTORY_NAME = "inventory.json"
+PROJECTION_METADATA_NAMES = {PROJECTION_ROOTS_MANIFEST_NAME, PROJECTION_INVENTORY_NAME}
 
 
 def _json_load(line):
@@ -580,10 +856,11 @@ def discover_machine_roots(rules, source_home):
     discovered = {}
     for rule in rules:
         client = rule["client"]
-        if "path" in rule:
+        if "path" in rule and rule["path"]:
             candidate_paths = [_expand_user_like(rule["path"], source_home)]
         else:
-            candidate_paths = [Path(match) for match in sorted(glob.glob(str(_expand_user_like(rule["glob"], source_home)), recursive=True))]
+            expanded = _expand_user_like(rule["glob"], source_home)
+            candidate_paths = [Path(match) for match in sorted(glob.glob(str(expanded), recursive=True))]
         for candidate in candidate_paths:
             if not candidate.is_dir():
                 continue
@@ -620,17 +897,9 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
-def _copy_tree(source_root, dest_root):
-    copied = 0
-    for item in sorted(source_root.rglob("*")):
-        if item.is_dir():
-            continue
-        rel = item.relative_to(source_root)
-        dest = dest_root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item, dest)
-        copied += 1
-    return copied
+def _write_json_file(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 
 
 def _copy_relative_file(source_root, file_path, dest_root):
@@ -705,14 +974,10 @@ def _project_codex_root(root, payload_root):
             rel = file_path.relative_to(source_root)
             dest_path = payload_root / "codex" / bucket / root["root_id"] / rel
             item = _build_codex_projection_file(file_path, dest_path)
-            for key, value in item.items():
-                if key == "token_events":
-                    stats["token_events_total"] += value
-                elif key == "source_bytes":
-                    stats["source_bytes_total"] += value
-                elif key == "dest_bytes":
-                    stats["dest_bytes_total"] += value
             stats["files_written"] += 1
+            stats["source_bytes_total"] += item["source_bytes"]
+            stats["dest_bytes_total"] += item["dest_bytes"]
+            stats["token_events_total"] += item["token_events"]
     return stats
 
 
@@ -824,25 +1089,11 @@ def _project_openclaw_root(root, payload_root):
     return stats
 
 
-def main():
-    encoded = os.environ.get("ASV_REQUEST_B64")
-    if not encoded:
-        raise RuntimeError("missing ASV_REQUEST_B64")
-    request = json.loads(base64.b64decode(encoded.encode("ascii")).decode("utf-8"))
-    machine_name = request["machine_name"]
-    source_home = Path(request["source_home"]).expanduser().resolve()
-    relay_root = Path(request["relay_root"]).expanduser().resolve()
-    roots = request["roots"]
-    snapshot_id = f"{machine_name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
-    bundle_dir = relay_root / "projection" / machine_name / snapshot_id
-    if bundle_dir.exists():
-        shutil.rmtree(bundle_dir)
-    staging_dir = bundle_dir / ".staging"
-    payload_root = staging_dir / "payload"
-    payload_root.mkdir(parents=True, exist_ok=True)
+def _build_projection_payload(machine_name, import_name, roots, source_home, payload_root):
     discovered = discover_machine_roots(roots, source_home)
     roots_manifest = {
         "machine": machine_name,
+        "import_name": import_name,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "roots": [],
     }
@@ -868,37 +1119,183 @@ def main():
         for key, value in item.items():
             if key in summary:
                 summary[key] += value
+    return roots_manifest, summary
+
+
+def _build_projection_inventory(payload_root):
+    inventory = []
+    for file_path in sorted(path for path in payload_root.rglob("*") if path.is_file()):
+        rel = file_path.relative_to(payload_root).as_posix()
+        if rel in PROJECTION_METADATA_NAMES:
+            continue
+        inventory.append(
+            {
+                "path": rel,
+                "sha256": _sha256_file(file_path),
+                "bytes": file_path.stat().st_size,
+            }
+        )
+    return inventory
+
+
+def _inventory_index(inventory):
+    index = {}
+    for item in inventory:
+        rel = item.get("path")
+        if isinstance(rel, str):
+            index[rel] = item
+    return index
+
+
+def _diff_projection_inventory(previous, current):
+    previous_index = _inventory_index(previous)
+    current_index = _inventory_index(current)
+    changed = sorted(
+        rel
+        for rel, item in current_index.items()
+        if rel not in previous_index or previous_index[rel].get("sha256") != item.get("sha256")
+    )
+    deleted = sorted(rel for rel in previous_index if rel not in current_index)
+    return changed, deleted
+
+
+def _write_projection_metadata(payload_root, roots_manifest, inventory):
+    roots_manifest_path = payload_root / PROJECTION_ROOTS_MANIFEST_NAME
+    inventory_path = payload_root / PROJECTION_INVENTORY_NAME
+    _write_json_file(roots_manifest_path, roots_manifest)
+    _write_json_file(inventory_path, inventory)
+    return roots_manifest_path, inventory_path
+
+
+def _roots_manifest_identity(roots_manifest):
+    if not isinstance(roots_manifest, dict):
+        return roots_manifest
+    return {
+        "machine": roots_manifest.get("machine"),
+        "import_name": roots_manifest.get("import_name"),
+        "roots": roots_manifest.get("roots"),
+    }
+
+
+def _copy_projection_subset(source_root, dest_root, relative_paths):
+    stats = {"files_written": 0, "source_bytes_total": 0, "dest_bytes_total": 0, "token_events_total": 0}
+    for rel in relative_paths:
+        source_path = source_root / Path(rel)
+        if not source_path.is_file():
+            raise FileNotFoundError(f"projection source file missing from staging payload: {source_path}")
+        dest_path = dest_root / Path(rel)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        file_bytes = source_path.stat().st_size
+        stats["files_written"] += 1
+        stats["source_bytes_total"] += file_bytes
+        stats["dest_bytes_total"] += file_bytes
+    return stats
+
+
+def main():
+    encoded = os.environ.get("ASV_REQUEST_B64")
+    if not encoded:
+        raise RuntimeError("missing ASV_REQUEST_B64")
+    request = json.loads(base64.b64decode(encoded.encode("ascii")).decode("utf-8"))
+    machine_name = request["machine_name"]
+    import_name = request.get("import_name") or machine_name
+    source_home = Path(request["source_home"]).expanduser().resolve()
+    relay_root = Path(request["relay_root"]).expanduser().resolve()
+    roots = request["roots"]
+    requested_base_snapshot_id = request.get("base_snapshot_id")
+    snapshot_id = f"{machine_name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    bundle_dir = relay_root / "projection" / machine_name / snapshot_id
+    if bundle_dir.exists():
+        shutil.rmtree(bundle_dir)
+    staging_dir = bundle_dir / ".staging"
+    payload_root = staging_dir / "payload"
+    payload_root.mkdir(parents=True, exist_ok=True)
+
+    roots_manifest, full_summary = _build_projection_payload(machine_name, import_name, roots, source_home, payload_root)
+    full_roots_manifest_path, full_inventory_path = _write_projection_metadata(
+        payload_root,
+        roots_manifest,
+        _build_projection_inventory(payload_root),
+    )
+
+    mode = "projection_full"
+    resolved_base_snapshot_id = None
+    fallback_reason = None
+    changed_files = []
+    deleted_files = []
+    payload_source = payload_root
+    roots_manifest_path = full_roots_manifest_path
+    inventory_path = full_inventory_path
+    summary = dict(full_summary)
+
+    if isinstance(requested_base_snapshot_id, str) and requested_base_snapshot_id:
+        previous_bundle_dir = relay_root / "projection" / machine_name / requested_base_snapshot_id
+        previous_roots_manifest_path = previous_bundle_dir / PROJECTION_ROOTS_MANIFEST_NAME
+        previous_inventory_path = previous_bundle_dir / PROJECTION_INVENTORY_NAME
+        if not previous_roots_manifest_path.is_file() or not previous_inventory_path.is_file():
+            fallback_reason = "missing_base_snapshot"
+        else:
+            previous_roots_manifest = json.loads(previous_roots_manifest_path.read_text(encoding="utf-8"))
+            if _roots_manifest_identity(previous_roots_manifest) != _roots_manifest_identity(roots_manifest):
+                fallback_reason = "roots_manifest_changed"
+            else:
+                previous_inventory = json.loads(previous_inventory_path.read_text(encoding="utf-8"))
+                current_inventory = json.loads(full_inventory_path.read_text(encoding="utf-8"))
+                changed_files, deleted_files = _diff_projection_inventory(previous_inventory, current_inventory)
+                delta_payload_root = staging_dir / "delta-payload"
+                delta_payload_root.mkdir(parents=True, exist_ok=True)
+                summary = _copy_projection_subset(payload_root, delta_payload_root, changed_files)
+                roots_manifest_path, inventory_path = _write_projection_metadata(
+                    delta_payload_root,
+                    roots_manifest,
+                    current_inventory,
+                )
+                payload_source = delta_payload_root
+                mode = "projection_delta"
+                resolved_base_snapshot_id = requested_base_snapshot_id
+    else:
+        fallback_reason = "missing_local_state"
+
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    roots_manifest_path = payload_root / "roots-manifest.json"
-    roots_manifest_path.write_text(json.dumps(roots_manifest, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
     if shutil.which("zstd"):
         bundle_path = bundle_dir / "payload.tar.zst"
     else:
         bundle_path = bundle_dir / "payload.tar.gz"
-    _pack_to_bundle_path(payload_root, bundle_path)
-    shutil.copy2(roots_manifest_path, bundle_dir / "roots-manifest.json")
+    _pack_to_bundle_path(payload_source, bundle_path)
+    bundle_roots_manifest_path = bundle_dir / PROJECTION_ROOTS_MANIFEST_NAME
+    bundle_inventory_path = bundle_dir / PROJECTION_INVENTORY_NAME
+    shutil.copy2(roots_manifest_path, bundle_roots_manifest_path)
+    shutil.copy2(inventory_path, bundle_inventory_path)
+    manifest_payload = {
+        "version": 1,
+        "mode": mode,
+        "machine": machine_name,
+        "import_name": import_name,
+        "snapshot_id": snapshot_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "bundle": {
+            "name": bundle_path.name,
+            "bytes": bundle_path.stat().st_size,
+            "sha256": _sha256_file(bundle_path),
+        },
+        "roots_manifest": {"name": bundle_roots_manifest_path.name},
+        "inventory": {
+            "name": bundle_inventory_path.name,
+            "bytes": bundle_inventory_path.stat().st_size,
+            "sha256": _sha256_file(bundle_inventory_path),
+        },
+        "summary": summary,
+    }
+    if resolved_base_snapshot_id is not None:
+        manifest_payload["base_snapshot_id"] = resolved_base_snapshot_id
+    if fallback_reason is not None:
+        manifest_payload["fallback_reason"] = fallback_reason
+    if mode == "projection_delta":
+        manifest_payload["changed_files"] = changed_files
+        manifest_payload["deleted_files"] = deleted_files
     manifest_path = bundle_dir / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "mode": "projection_full",
-                "machine": machine_name,
-                "snapshot_id": snapshot_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "bundle": {
-                    "name": bundle_path.name,
-                    "bytes": bundle_path.stat().st_size,
-                    "sha256": _sha256_file(bundle_path),
-                },
-                "summary": summary,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\\n",
-        encoding="utf-8",
-    )
+    _write_json_file(manifest_path, manifest_payload)
     shutil.rmtree(staging_dir)
     print(
         json.dumps(
@@ -909,6 +1306,9 @@ def main():
                 "manifest_path": str(manifest_path),
                 "bundle_path": str(bundle_path),
                 "bundle_bytes": bundle_path.stat().st_size,
+                "mode": mode,
+                "base_snapshot_id": resolved_base_snapshot_id,
+                "fallback_reason": fallback_reason,
             }
         )
     )
@@ -926,7 +1326,15 @@ def export_machine_projection_ssh(
     relay_root: Path,
     ssh_target: str | None = None,
     command_prefix: list[str] | None = None,
+    base_snapshot_id: str | None = None,
 ) -> ProjectionBundle:
+    if ssh_target is None:
+        return export_machine_projection(
+            machine=machine,
+            source_home=source_home,
+            relay_root=relay_root,
+            base_snapshot_id=base_snapshot_id,
+        )
     rules = [
         {
             "client": rule.client,
@@ -941,9 +1349,11 @@ def export_machine_projection_ssh(
         json.dumps(
             {
                 "machine_name": machine.name,
+                "import_name": machine.import_name,
                 "source_home": str(source_home),
                 "relay_root": str(relay_root),
                 "roots": rules,
+                "base_snapshot_id": base_snapshot_id,
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -971,7 +1381,11 @@ def export_machine_projection_ssh(
         manifest_path=Path(str(payload["manifest_path"])),
         bundle_path=Path(str(payload["bundle_path"])),
         roots_manifest_path=Path(str(payload["bundle_dir"])) / "roots-manifest.json",
+        inventory_path=Path(str(payload["bundle_dir"])) / PROJECTION_INVENTORY_NAME,
         bundle_bytes=int(payload.get("bundle_bytes", 0)),
+        mode=str(payload.get("mode") or "projection_full"),
+        base_snapshot_id=payload.get("base_snapshot_id") if isinstance(payload.get("base_snapshot_id"), str) else None,
+        fallback_reason=payload.get("fallback_reason") if isinstance(payload.get("fallback_reason"), str) else None,
     )
 
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
+from agent_session_vault.cli import main
 from agent_session_vault.config import load_config
+from agent_session_vault.projection import ProjectionBundle, export_machine_projection_ssh, import_machine_projection
 from agent_session_vault.relay import (
     _remote_helper_source,
     export_machine_delta,
@@ -188,6 +191,156 @@ def test_remote_relay_helper_source_stays_python39_compatible() -> None:
     helper = _remote_helper_source()
     assert "from datetime import datetime, timezone" in helper
     assert "datetime.now(timezone.utc)" in helper
+
+
+def test_remote_projection_helper_exports_delta_after_existing_local_base(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    imports = target_home / ".config" / "tokscale" / "imports"
+    shadow_home = target_home / ".config" / "tokscale" / "shadow-home"
+    extras = target_home / ".config" / "tokscale" / "local-workspace-extras"
+    archive = tmp_path / "archive"
+    relay_root = tmp_path / "relay-root"
+    remote_state_root = tmp_path / "remote-state"
+
+    source_file = source_home / ".codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl"
+    _write(source_file, '{"type":"event_msg","payload":{"type":"token_count"}}\n')
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[paths]
+home = "{target_home}"
+workspace_root = "{tmp_path / "workspace"}"
+import_root = "{imports}"
+shadow_home = "{shadow_home}"
+local_workspace_extras = "{extras}"
+archive_root = "{archive}"
+relay_root = "{relay_root}"
+
+[sync]
+projection_transport = "auto"
+projection_direct_max_bundle_bytes = 1073741824
+
+[machines.imac]
+import_name = "imac"
+ssh_target = "tokscale-sync-imac"
+source_home = "{source_home}"
+remote_relay_root = "{relay_root}"
+remote_state_root = "{remote_state_root}"
+clients = ["codex"]
+
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    machine_root = imports / "imac"
+
+    first = export_machine_projection_ssh(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=relay_root,
+        ssh_target="",
+        command_prefix=["python3", "-"],
+        base_snapshot_id=None,
+    )
+    assert first.mode == "projection_full"
+    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    _write(source_file, '{"type":"event_msg","payload":{"type":"token_count","n":2}}\n')
+
+    second = export_machine_projection_ssh(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=relay_root,
+        ssh_target="",
+        command_prefix=["python3", "-"],
+        base_snapshot_id=json.loads((machine_root / ".projection-state.json").read_text(encoding="utf-8"))["current_snapshot_id"],
+    )
+
+    assert second.mode == "projection_delta"
+    assert second.base_snapshot_id == first.snapshot_id
+
+
+def test_sync_auto_json_includes_projection_mode_metadata(tmp_path: Path, monkeypatch, capsys) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    imports = target_home / ".config" / "tokscale" / "imports"
+    shadow_home = target_home / ".config" / "tokscale" / "shadow-home"
+    extras = target_home / ".config" / "tokscale" / "local-workspace-extras"
+    archive = tmp_path / "archive"
+    relay_root = tmp_path / "relay-root"
+    remote_state_root = tmp_path / "remote-state"
+    bundle_dir = relay_root / "projection" / "imac" / "imac-20260408T000000000000Z"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = bundle_dir / "manifest.json"
+    bundle_path = bundle_dir / "payload.tar.zst"
+    roots_manifest_path = bundle_dir / "roots-manifest.json"
+    inventory_path = bundle_dir / "inventory.json"
+    for path in (manifest_path, bundle_path, roots_manifest_path, inventory_path):
+        path.write_text("{}\n", encoding="utf-8")
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[paths]
+home = "{target_home}"
+workspace_root = "{tmp_path / "workspace"}"
+import_root = "{imports}"
+shadow_home = "{shadow_home}"
+local_workspace_extras = "{extras}"
+archive_root = "{archive}"
+relay_root = "{relay_root}"
+
+[sync]
+projection_transport = "relay"
+projection_direct_max_bundle_bytes = 1
+
+[machines.imac]
+import_name = "imac"
+ssh_target = "tokscale-sync-imac"
+source_home = "{source_home}"
+remote_relay_root = "{relay_root}"
+remote_state_root = "{remote_state_root}"
+clients = ["codex"]
+
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _fake_export_machine_projection_ssh(*args, **kwargs) -> ProjectionBundle:
+        return ProjectionBundle(
+            machine_name="imac",
+            snapshot_id="imac-20260408T000000000000Z",
+            bundle_dir=bundle_dir,
+            manifest_path=manifest_path,
+            bundle_path=bundle_path,
+            roots_manifest_path=roots_manifest_path,
+            inventory_path=inventory_path,
+            bundle_bytes=2048,
+            mode="projection_full",
+            base_snapshot_id=None,
+            fallback_reason="missing_local_state",
+        )
+
+    monkeypatch.setattr("agent_session_vault.cli.export_machine_projection_ssh", _fake_export_machine_projection_ssh)
+
+    exit_code = main(["--config", str(config_path), "sync", "auto", "imac", "--json", "--dry-run"])
+    assert exit_code == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["bundle"]["mode"] == "projection_full"
+    assert payload["bundle"]["fallback_reason"] == "missing_local_state"
 
 
 def test_pending_relay_bundle_dirs_returns_contiguous_unimported_chain(tmp_path: Path) -> None:

@@ -44,6 +44,15 @@ def _run_subprocess(command: list[str], env: dict[str, str] | None = None, dry_r
     return completed.returncode
 
 
+def _load_projection_base_snapshot_id(machine_root: Path) -> str | None:
+    state_path = machine_root / ".projection-state.json"
+    if not state_path.is_file():
+        return None
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    snapshot_id = payload.get("current_snapshot_id") if isinstance(payload, dict) else None
+    return snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-session-vault")
     parser.add_argument("--config", type=Path, default=None)
@@ -392,10 +401,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "sync" and args.sync_command == "projection-export":
         relay_root = (args.relay_root or config.paths.relay_root).expanduser()
+        machine = config.machines[args.machine]
         bundle = export_machine_projection(
-            machine=config.machines[args.machine],
+            machine=machine,
             source_home=args.source_home,
             relay_root=relay_root,
+            machine_root=config.paths.import_root / machine.import_name,
         )
         payload = {
             "machine": bundle.machine_name,
@@ -404,7 +415,11 @@ def main(argv: list[str] | None = None) -> int:
             "manifest_path": str(bundle.manifest_path),
             "bundle_path": str(bundle.bundle_path),
             "roots_manifest_path": str(bundle.roots_manifest_path),
+            "inventory_path": str(bundle.inventory_path) if bundle.inventory_path else None,
             "bundle_bytes": bundle.bundle_bytes,
+            "mode": bundle.mode,
+            "base_snapshot_id": bundle.base_snapshot_id,
+            "fallback_reason": bundle.fallback_reason,
         }
         if args.json:
             _json_dump(payload)
@@ -416,11 +431,13 @@ def main(argv: list[str] | None = None) -> int:
         machine = config.machines[args.machine]
         if not machine.ssh_target or not machine.source_home or not machine.remote_relay_root:
             raise ValueError(f"machine '{args.machine}' is missing ssh projection configuration")
+        machine_root = config.paths.import_root / machine.import_name
         bundle = export_machine_projection_ssh(
             machine=machine,
             source_home=machine.source_home,
             relay_root=machine.remote_relay_root,
             ssh_target=machine.ssh_target,
+            base_snapshot_id=_load_projection_base_snapshot_id(machine_root),
         )
         local_bundle_dir = expected_local_projection_bundle_dir(config, args.machine, bundle.snapshot_id)
         payload = {
@@ -431,6 +448,9 @@ def main(argv: list[str] | None = None) -> int:
             "remote_bundle_path": str(bundle.bundle_path),
             "expected_local_bundle_dir": str(local_bundle_dir),
             "bundle_bytes": bundle.bundle_bytes,
+            "mode": bundle.mode,
+            "base_snapshot_id": bundle.base_snapshot_id,
+            "fallback_reason": bundle.fallback_reason,
         }
         if args.json:
             _json_dump(payload)
@@ -450,7 +470,11 @@ def main(argv: list[str] | None = None) -> int:
             "snapshot_id": bundle.snapshot_id,
             "bundle_dir": str(bundle.bundle_dir),
             "roots_manifest_path": str(bundle.roots_manifest_path),
+            "inventory_path": str(bundle.inventory_path) if bundle.inventory_path else None,
             "bundle_bytes": bundle.bundle_bytes,
+            "mode": bundle.mode,
+            "base_snapshot_id": bundle.base_snapshot_id,
+            "fallback_reason": bundle.fallback_reason,
         }
         if args.json:
             _json_dump(payload)
@@ -460,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "sync" and args.sync_command == "auto":
         machine = config.machines[args.machine]
+        machine_root = config.paths.import_root / machine.import_name
         if not machine.ssh_target or not machine.source_home or not machine.remote_relay_root:
             raise ValueError(f"machine '{args.machine}' is missing ssh projection configuration")
         pending_bundle_dirs = pending_projection_bundle_dirs(config, args.machine)
@@ -492,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
             source_home=machine.source_home,
             relay_root=machine.remote_relay_root,
             ssh_target=machine.ssh_target,
+            base_snapshot_id=_load_projection_base_snapshot_id(machine_root),
         )
         transport = choose_projection_transport(
             config,
@@ -507,6 +533,9 @@ def main(argv: list[str] | None = None) -> int:
                 "remote_manifest_path": str(bundle.manifest_path),
                 "remote_bundle_path": str(bundle.bundle_path),
                 "bytes": bundle.bundle_bytes,
+                "mode": bundle.mode,
+                "base_snapshot_id": bundle.base_snapshot_id,
+                "fallback_reason": bundle.fallback_reason,
             },
             "decision": {
                 "transport": transport.transport,
