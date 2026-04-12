@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import VaultConfig
-from .views import discover_project_codex_roots
+from .views import discover_home_project_codex_roots, discover_project_codex_roots
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,14 @@ def summarize_storage(config: VaultConfig) -> StorageSummary:
         items.append(
             StorageItem(
                 label=f"live:workspace_codex:{root.parent.name}",
+                path=root,
+                size_bytes=_directory_size(root),
+            )
+        )
+    for root in discover_home_project_codex_roots(config.paths.home):
+        items.append(
+            StorageItem(
+                label=f"live:home_project_codex:{root.name}",
                 path=root,
                 size_bytes=_directory_size(root),
             )

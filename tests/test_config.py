@@ -129,6 +129,45 @@ clients = ["codex", "gemini"]
     assert ("codex", workspace / "proj-a" / ".codex") in view.extra_dirs
 
 
+def test_build_raw_view_includes_home_project_codex_roots(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    imports = tmp_path / "imports"
+    shadow_home = tmp_path / "shadow-home"
+    extras = tmp_path / "extras"
+    archive = tmp_path / "archive"
+
+    (home / ".codex" / "sessions").mkdir(parents=True)
+    (home / ".codex" / "projects" / "proj-b" / "archive" / "20260411T000000Z" / "codex" / "sessions").mkdir(
+        parents=True
+    )
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[paths]
+home = "{home}"
+workspace_root = "{workspace}"
+import_root = "{imports}"
+shadow_home = "{shadow_home}"
+local_workspace_extras = "{extras}"
+archive_root = "{archive}"
+
+[machines.imac]
+import_name = "imac"
+ssh_target = "imac-sync"
+clients = ["codex"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    view = build_view(config, mode="raw")
+
+    assert ("codex", home / ".codex" / "projects" / "proj-b") in view.extra_dirs
+
+
 def test_build_canonical_view_uses_shadow_home_and_extras(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
