@@ -22,6 +22,7 @@ def build_tokscale_invocation(
 ) -> TokscaleInvocation:
     view = build_view(config, mode=mode, omx_replay_dedupe=omx_replay_dedupe)
     env = dict(os.environ)
+    env.pop("CODEX_HOME", None)
     env["HOME"] = str(view.home)
     env["NPM_CONFIG_CACHE"] = str(config.paths.home / ".npm")
     if view.extra_dirs:

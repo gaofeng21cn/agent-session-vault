@@ -86,3 +86,37 @@ clients = ["codex"]
     assert invocation.env["HOME"] == str(shadow_home)
     assert "imports/imac/codex" in invocation.env["TOKSCALE_EXTRA_DIRS"]
     assert str(extras / "proj-a" / "codex") in invocation.env["TOKSCALE_EXTRA_DIRS"]
+
+
+def test_build_tokscale_invocation_strips_codex_home_override(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    imports = tmp_path / "imports"
+    shadow_home = tmp_path / "shadow-home"
+    extras = tmp_path / "extras"
+    archive = tmp_path / "archive"
+
+    (home / ".codex" / "sessions").mkdir(parents=True)
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[paths]
+home = "{home}"
+workspace_root = "{workspace}"
+import_root = "{imports}"
+shadow_home = "{shadow_home}"
+local_workspace_extras = "{extras}"
+archive_root = "{archive}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("CODEX_HOME", "/tmp/paperclip-codex-home")
+
+    config = load_config(config_path)
+    invocation = build_tokscale_invocation(config, mode="raw", args=["submit", "--dry-run"])
+
+    assert invocation.env["HOME"] == str(home)
+    assert "CODEX_HOME" not in invocation.env
