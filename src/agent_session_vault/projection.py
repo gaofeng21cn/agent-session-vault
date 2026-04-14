@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 
 from .archive import _pack_to_bundle_path, _sha256_file
 from .config import MachineConfig, RootRuleConfig, VaultConfig
@@ -753,6 +754,9 @@ def pending_projection_bundle_dirs(config: VaultConfig, machine_name: str) -> li
 
     candidates: list[tuple[str, str, str | None, Path]] = []
     for manifest_path in sorted(bundle_root.glob("*/manifest.json")):
+        bundle_snapshot_id = manifest_path.parent.name
+        if isinstance(current_snapshot_id, str) and bundle_snapshot_id <= current_snapshot_id:
+            continue
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         snapshot_id = payload.get("snapshot_id")
         mode = payload.get("mode")
@@ -1395,15 +1399,25 @@ def fetch_projection_bundle_ssh(
     local_bundle_dir: Path,
 ) -> Path:
     local_bundle_dir.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "rsync",
-            "-az",
-            "-e",
-            "ssh -C -o BatchMode=yes",
-            f"{ssh_target}:{remote_bundle_dir}/",
-            f"{local_bundle_dir}/",
-        ],
-        check=True,
-    )
+    staging_dir = Path(tempfile.mkdtemp(prefix="asv-projection-fetch-"))
+    moved = False
+    try:
+        subprocess.run(
+            [
+                "rsync",
+                "-az",
+                "-e",
+                "ssh -C -o BatchMode=yes",
+                f"{ssh_target}:{remote_bundle_dir}/",
+                f"{staging_dir}/",
+            ],
+            check=True,
+        )
+        if local_bundle_dir.exists():
+            shutil.rmtree(local_bundle_dir)
+        shutil.move(str(staging_dir), str(local_bundle_dir))
+        moved = True
+    finally:
+        if not moved:
+            shutil.rmtree(staging_dir, ignore_errors=True)
     return local_bundle_dir

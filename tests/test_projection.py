@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
 from agent_session_vault.config import load_config
 from agent_session_vault.projection import (
     export_machine_projection,
+    fetch_projection_bundle_ssh,
     import_machine_projection,
     pending_projection_bundle_dirs,
 )
@@ -164,6 +166,39 @@ kind = "home_root"
     manifest = json.loads((bundle.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["mode"] == "projection_full"
     assert imported.snapshot_id == bundle.snapshot_id
+
+
+def test_fetch_projection_bundle_ssh_stages_before_final_bundle_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote_bundle_dir = Path("/remote/relay/projection/imac/imac-000001")
+    local_bundle_dir = tmp_path / "OneDrive" / "relay" / "projection" / "imac" / "imac-000001"
+    rsync_destinations: list[Path] = []
+
+    def fake_run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        assert check is True
+        destination = Path(command[-1].rstrip("/"))
+        rsync_destinations.append(destination)
+        if destination == local_bundle_dir:
+            raise subprocess.CalledProcessError(23, command)
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "manifest.json").write_text("{}", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("agent_session_vault.projection.subprocess.run", fake_run)
+
+    fetched_dir = fetch_projection_bundle_ssh(
+        ssh_target="tokscale-sync-imac",
+        remote_bundle_dir=remote_bundle_dir,
+        local_bundle_dir=local_bundle_dir,
+    )
+
+    assert fetched_dir == local_bundle_dir
+    assert rsync_destinations == [path for path in rsync_destinations if path != local_bundle_dir]
+    assert len(rsync_destinations) == 1
+    assert (local_bundle_dir / "manifest.json").read_text(encoding="utf-8") == "{}"
+    assert not rsync_destinations[0].exists()
 
 
 def test_gemini_projection_keeps_only_chat_json(tmp_path: Path) -> None:
@@ -593,6 +628,49 @@ kind = "home_root"
 
     pending = pending_projection_bundle_dirs(config, "imac")
     assert pending == [third.bundle_dir]
+
+
+def test_pending_projection_bundle_dirs_skips_stale_snapshot_dirs_before_reading_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["codex"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "codex"
+path = "~/.codex"
+kind = "home_root"
+""",
+        )
+    )
+
+    current_snapshot_id = "imac-20260413T191545309655Z"
+    _write(import_root / ".projection-state.json", json.dumps({"current_snapshot_id": current_snapshot_id}) + "\n")
+
+    stale_bundle_dir = config.paths.relay_root / "projection" / "imac" / "imac-20260413T103630441243Z"
+    stale_manifest_path = stale_bundle_dir / "manifest.json"
+    _write(stale_manifest_path, "{}\n")
+
+    original_read_text = Path.read_text
+
+    def fake_read_text(path: Path, *args, **kwargs) -> str:
+        if path == stale_manifest_path:
+            raise OSError(11, "Resource deadlock avoided")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    pending = pending_projection_bundle_dirs(config, "imac")
+    assert pending == []
 
 
 def test_projection_export_with_roots_manifest_change_falls_back_to_full(tmp_path: Path) -> None:
