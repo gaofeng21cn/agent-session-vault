@@ -36,6 +36,10 @@ import_root/<machine>/.raw/<client>
 
 For the default path, this is usually imported from a projection bundle, not a byte-for-byte raw mirror.
 
+For Tokscale workflows, this layer accumulates imported history in an append-only way.
+
+If the remote machine later deletes session files or an entire root, projection manifests and inventories still record that change, but the local `.raw` tree does not discard already imported history.
+
 ### 3. Canonical Layer
 
 Canonical views are stricter local session layouts used for Tokscale or internal analysis.
@@ -73,6 +77,11 @@ The high-level flow is:
 
 This is why large remote histories no longer require full raw mirroring for the Tokscale use case.
 
+The key distinction is between transport incrementality and submission history:
+
+- bundles still use true snapshot-based incremental transport
+- local `.raw` and canonical views keep the cumulative history Tokscale needs instead of treating upstream cleanup as local data loss
+
 ## Projection Behavior By Client
 
 ### Codex
@@ -108,7 +117,7 @@ Raw mode points Tokscale at:
 - imported machine `.raw` trees
 - local project-level `.codex` roots
 
-Use it when you want a view close to actual upstream layout and Tokscale submission behavior.
+Use it when you want a view close to actual upstream layout while preserving cumulative local submission history.
 
 ### Canonical
 

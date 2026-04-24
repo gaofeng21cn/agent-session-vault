@@ -484,27 +484,6 @@ def _copy_projection_subset(source_root: Path, dest_root: Path, relative_paths: 
     return stats
 
 
-def _remove_empty_ancestors(path: Path, stop_root: Path) -> None:
-    current = path.parent
-    stop_root = stop_root.resolve()
-    while True:
-        try:
-            resolved = current.resolve()
-        except FileNotFoundError:
-            resolved = current
-        if resolved == stop_root or current == stop_root:
-            return
-        if not current.exists():
-            current = current.parent
-            continue
-        try:
-            next(current.iterdir())
-            return
-        except StopIteration:
-            current.rmdir()
-            current = current.parent
-
-
 def export_machine_projection(
     machine: MachineConfig,
     source_home: Path,
@@ -629,13 +608,6 @@ def export_machine_projection(
     )
 
 
-def _replace_tree(source_root: Path, dest_root: Path) -> None:
-    if dest_root.exists():
-        shutil.rmtree(dest_root)
-    if source_root.is_dir():
-        shutil.copytree(source_root, dest_root)
-
-
 def import_machine_projection(
     config: VaultConfig,
     machine_name: str,
@@ -670,13 +642,11 @@ def import_machine_projection(
 
     mode = str(payload.get("mode") or "projection_full")
     if mode == "projection_full":
-        for client in machine.clients:
-            client_root = raw_root / client
-            if client_root.exists():
-                shutil.rmtree(client_root)
         for client in ("codex", "gemini", "openclaw"):
             if (extract_root / client).is_dir():
-                _replace_tree(extract_root / client, raw_root / client)
+                # Keep the imported `.raw` tree append-only so Tokscale can
+                # continue submitting historical usage after upstream cleanup.
+                _copy_tree(extract_root / client, raw_root / client)
     elif mode == "projection_delta":
         expected_base_snapshot_id = payload.get("base_snapshot_id")
         current_snapshot_id = _load_current_snapshot_id(machine_root)
@@ -700,10 +670,6 @@ def import_machine_projection(
         for rel in deleted_files:
             if not isinstance(rel, str):
                 raise ValueError(f"invalid deleted file entry in {manifest_path}: {rel!r}")
-            target_path = raw_root / Path(rel)
-            if target_path.is_file():
-                target_path.unlink()
-                _remove_empty_ancestors(target_path, raw_root)
     else:
         raise ValueError(f"unsupported projection bundle mode: {mode}")
 

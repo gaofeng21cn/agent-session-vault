@@ -36,6 +36,10 @@ import_root/<machine>/.raw/<client>
 
 在默认链路下，这一层通常来自 projection bundle，而不是逐字节 raw mirror。
 
+对于 Tokscale 工作流，这一层按 append-only 方式累积本地已导入历史。
+
+远端后续删除 session 文件或整个 root 时，projection manifest / inventory 仍会反映这个变化，但本地 `.raw` 不会因此回收历史数据。
+
 ### 3. Canonical Layer
 
 canonical 视图是更严格的本地 session 布局，供 Tokscale 或内部分析使用。
@@ -73,6 +77,11 @@ canonical 视图是更严格的本地 session 布局，供 Tokscale 或内部分
 
 这就是为什么面向 Tokscale 的主路径不再要求先做完整 raw mirror。
 
+这里的重点是“传输增量”与“提交视图”分离：
+
+- bundle 仍然按 snapshot/base snapshot 做真增量
+- 本地 `.raw` / canonical 视图保持 Tokscale 所需的累计历史，不把远端清理直接传播成本地丢数
+
 ## 各客户端的 Projection 行为
 
 ### Codex
@@ -108,7 +117,7 @@ raw 模式会让 Tokscale 看到：
 - 导入机器的 `.raw` 树
 - 本机项目级 `.codex` roots
 
-适合追求更接近 upstream 原始布局与 Tokscale 提交行为的场景。
+适合追求更接近 upstream 原始布局、同时保留本地累计提交历史的场景。
 
 ### Canonical
 

@@ -532,7 +532,7 @@ kind = "home_root"
     assert sorted(Path(path).name for path in manifest["changed_files"]) == ["one.jsonl", "two.jsonl"]
 
 
-def test_projection_delta_import_applies_deletions(tmp_path: Path) -> None:
+def test_projection_delta_import_preserves_locally_accumulated_files_deleted_remotely(tmp_path: Path) -> None:
     source_home = tmp_path / "source-home"
     target_home = tmp_path / "target-home"
     import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
@@ -573,11 +573,14 @@ kind = "home_root"
         relay_root=tmp_path / "relay",
         machine_root=import_root,
     )
+    manifest = json.loads((second.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     import_machine_projection(config, "imac", second.bundle_dir, canonicalize_command=None)
 
     projected_root = import_root / ".raw" / "codex" / "sessions"
+    assert manifest["mode"] == "projection_delta"
+    assert sorted(Path(path).name for path in manifest["deleted_files"]) == ["drop.jsonl"]
     assert any(path.name == "keep.jsonl" for path in projected_root.rglob("*.jsonl"))
-    assert not any(path.name == "drop.jsonl" for path in projected_root.rglob("*.jsonl"))
+    assert any(path.name == "drop.jsonl" for path in projected_root.rglob("*.jsonl"))
 
 
 def test_pending_projection_bundle_dirs_returns_latest_applicable_delta(tmp_path: Path) -> None:
@@ -741,6 +744,60 @@ kind = "home_root"
 
     assert manifest["mode"] == "projection_full"
     assert manifest["fallback_reason"] == "roots_manifest_changed"
+
+
+def test_projection_full_import_preserves_removed_root_content_for_local_tokscale_history(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    import_root = target_home / ".config" / "tokscale" / "imports" / "imac"
+
+    openclaw_session = source_home / ".openclaw" / "agents" / "agent-a" / "main" / "sessions" / "session-1.jsonl"
+    _write(
+        openclaw_session,
+        json.dumps({"type": "message", "message": {"role": "assistant", "content": "usage"}}) + "\n",
+    )
+
+    config = load_config(
+        _write_config(
+            tmp_path,
+            source_home=source_home,
+            target_home=target_home,
+            clients=["openclaw"],
+            root_blocks="""
+[[machines.imac.roots]]
+client = "openclaw"
+path = "~/.openclaw"
+kind = "home_root"
+""",
+        )
+    )
+
+    first = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+
+    shutil.rmtree(source_home / ".openclaw")
+
+    second = export_machine_projection(
+        machine=config.machines["imac"],
+        source_home=source_home,
+        relay_root=tmp_path / "relay",
+        machine_root=import_root,
+    )
+    manifest = json.loads((second.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    import_machine_projection(config, "imac", second.bundle_dir, canonicalize_command=None)
+
+    projected_openclaw = import_root / ".raw" / "openclaw"
+    projected_files = sorted(path.relative_to(projected_openclaw) for path in projected_openclaw.rglob("*") if path.is_file())
+
+    assert manifest["mode"] == "projection_full"
+    assert manifest["fallback_reason"] == "roots_manifest_changed"
+    assert len(projected_files) == 1
+    assert projected_files[0].name == "session-1.jsonl"
 
 
 def test_projection_export_with_missing_base_snapshot_falls_back_to_full(tmp_path: Path) -> None:
