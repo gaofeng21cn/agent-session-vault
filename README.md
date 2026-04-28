@@ -108,6 +108,20 @@ Run the default projection-first sync:
 agent-session-vault sync auto imac --json
 ```
 
+Sync volatile local Codex runtime homes into an append-only Tokscale extras tree:
+
+```bash
+agent-session-vault sync local-codex \
+  --source /path/to/quest-or-runtime-root \
+  --json
+```
+
+Automation can scan the configured `workspace_root` and sync all discovered runtime roots:
+
+```bash
+python3 scripts/sync_local_codex_tokscale_sources.py --json
+```
+
 Prepare Tokscale environment only:
 
 ```bash
@@ -140,6 +154,7 @@ Typical agent tasks:
 
 - define machines and root rules
 - run `sync auto <machine>`
+- run `sync local-codex --source <root>` before Tokscale when local Codex sessions live under volatile runtime homes
 - build `raw` or `canonical` Tokscale views
 - offload older raw trees into archive bundles when local storage should shrink
 

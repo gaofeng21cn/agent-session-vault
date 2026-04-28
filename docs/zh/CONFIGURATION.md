@@ -55,6 +55,35 @@ CLI 默认读取：
 - `projection_direct_max_bundle_bytes`
   - 当 `projection_transport=auto` 时，用于决定走 `ssh` 还是 `relay` 的 bundle 大小阈值
 
+## 本机临时 Codex Homes
+
+有些本机 runtime 会创建容易被清理的 Codex homes，例如：
+
+```text
+<quest-root>/.ds/codex_homes/run-*/sessions/
+```
+
+不要让 Tokscale 直接读取这些临时目录。先把它们增量同步到只增不减的本机 extras 树：
+
+```bash
+agent-session-vault sync local-codex --source <quest-root> --json
+```
+
+每日本机维护链路使用仓库脚本扫描 `workspace_root` 并同步全部发现到的 runtime roots：
+
+```bash
+python3 scripts/sync_local_codex_tokscale_sources.py --json
+```
+
+稳定的 Tokscale 根目录是：
+
+```text
+<local_workspace_extras>/volatile-codex-homes/codex
+```
+
+`raw` Tokscale 视图只自动包含带 `sync-state.json` 的 managed local sync extras。
+`canonical` 视图继续包含所有 `local_workspace_extras/*/codex` 目录。
+
 ## `machines.<name>`
 
 每台机器都应该使用稳定的逻辑主机名，而不是临时 IP 地址。

@@ -57,6 +57,35 @@ These paths define where local derived state lives.
 - `projection_direct_max_bundle_bytes`
   - bundle size threshold for deciding `ssh` versus `relay` when projection transport is `auto`
 
+## Local Volatile Codex Homes
+
+Some local runtimes create short-lived Codex homes such as:
+
+```text
+<quest-root>/.ds/codex_homes/run-*/sessions/
+```
+
+Do not point Tokscale directly at those volatile directories. First sync them into the append-only local extras tree:
+
+```bash
+agent-session-vault sync local-codex --source <quest-root> --json
+```
+
+For the recurring local maintenance path, use the repo script to scan `workspace_root` and sync all discovered runtime roots:
+
+```bash
+python3 scripts/sync_local_codex_tokscale_sources.py --json
+```
+
+The stable Tokscale root is:
+
+```text
+<local_workspace_extras>/volatile-codex-homes/codex
+```
+
+The `raw` Tokscale view includes managed local sync extras that have `sync-state.json`.
+The `canonical` view includes all `local_workspace_extras/*/codex` directories.
+
 ## `machines.<name>`
 
 Each machine entry should use a stable logical hostname, not a changing IP address.

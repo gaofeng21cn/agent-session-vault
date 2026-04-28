@@ -10,6 +10,7 @@ import sys
 from .adapters import build_canonicalize_machine_command, build_direct_sync_command
 from .archive import inventory_bundles, offload_tree, pack_tree, restore_bundle
 from .config import load_config
+from .local_codex import sync_local_codex_sources
 from .projection import (
     expected_local_projection_bundle_dir,
     export_machine_projection,
@@ -129,6 +130,15 @@ def build_parser() -> argparse.ArgumentParser:
     sync_auto.add_argument("--transport", choices=["auto", "ssh", "relay"], default=None)
     sync_auto.add_argument("--dry-run", action="store_true")
     sync_auto.add_argument("--json", action="store_true")
+    sync_local_codex = sync_sub.add_parser(
+        "local-codex",
+        help="Sync volatile local Codex homes into append-only Tokscale extras",
+    )
+    sync_local_codex.add_argument("--source", action="append", type=Path, default=[])
+    sync_local_codex.add_argument("--source-glob", action="append", default=[])
+    sync_local_codex.add_argument("--namespace", default="volatile-codex-homes")
+    sync_local_codex.add_argument("--dry-run", action="store_true")
+    sync_local_codex.add_argument("--json", action="store_true")
 
     archive_parser = subparsers.add_parser("archive", help="Archive helpers")
     archive_sub = archive_parser.add_subparsers(dest="archive_command", required=True)
@@ -475,6 +485,33 @@ def main(argv: list[str] | None = None) -> int:
             "mode": bundle.mode,
             "base_snapshot_id": bundle.base_snapshot_id,
             "fallback_reason": bundle.fallback_reason,
+        }
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "sync" and args.sync_command == "local-codex":
+        result = sync_local_codex_sources(
+            config,
+            sources=list(args.source),
+            source_globs=list(args.source_glob),
+            namespace=args.namespace,
+            dry_run=args.dry_run,
+        )
+        payload = {
+            "namespace": result.namespace,
+            "codex_root": str(result.codex_root),
+            "state_path": str(result.state_path),
+            "files_seen": result.files_seen,
+            "files_written": result.files_written,
+            "files_skipped": result.files_skipped,
+            "source_bytes_total": result.source_bytes_total,
+            "dest_bytes_total": result.dest_bytes_total,
+            "token_events_total": result.token_events_total,
+            "missing_sources": [str(path) for path in result.missing_sources],
+            "dry_run": args.dry_run,
         }
         if args.json:
             _json_dump(payload)

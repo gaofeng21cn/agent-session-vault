@@ -99,6 +99,9 @@ def test_build_raw_view_uses_live_home_and_raw_imports(tmp_path: Path) -> None:
     (imports / "imac" / ".raw" / "codex").mkdir(parents=True)
     (imports / "imac" / ".raw" / "gemini").mkdir(parents=True)
     (workspace / "proj-a" / ".codex").mkdir(parents=True)
+    (extras / "volatile-codex-homes" / "codex" / "sessions").mkdir(parents=True)
+    (extras / "volatile-codex-homes" / "sync-state.json").write_text("{}\n", encoding="utf-8")
+    (extras / "canonical-only" / "codex" / "sessions").mkdir(parents=True)
 
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -127,6 +130,8 @@ clients = ["codex", "gemini"]
     assert ("codex", imports / "imac" / ".raw" / "codex") in view.extra_dirs
     assert ("gemini", imports / "imac" / ".raw" / "gemini") in view.extra_dirs
     assert ("codex", workspace / "proj-a" / ".codex") in view.extra_dirs
+    assert ("codex", extras / "volatile-codex-homes" / "codex") in view.extra_dirs
+    assert ("codex", extras / "canonical-only" / "codex") not in view.extra_dirs
 
 
 def test_build_raw_view_includes_home_project_codex_roots(tmp_path: Path) -> None:

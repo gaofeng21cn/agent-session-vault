@@ -108,6 +108,20 @@ agent-session-vault storage summary --json
 agent-session-vault sync auto imac --json
 ```
 
+把本机临时 Codex runtime home 增量同步到只增不减的 Tokscale extras 树：
+
+```bash
+agent-session-vault sync local-codex \
+  --source /path/to/quest-or-runtime-root \
+  --json
+```
+
+自动化可以扫描配置里的 `workspace_root`，同步所有发现到的 runtime roots：
+
+```bash
+python3 scripts/sync_local_codex_tokscale_sources.py --json
+```
+
 只准备 Tokscale 运行环境：
 
 ```bash
@@ -140,6 +154,7 @@ agent-session-vault archive offload-tree \
 
 - 配置机器定义与 root rules
 - 执行 `sync auto <machine>`
+- 当本机 Codex session 位于易清理的 runtime home 下时，先执行 `sync local-codex --source <root>`
 - 构造 `raw` 或 `canonical` Tokscale 视图
 - 在本地空间需要收缩时，把旧 raw tree 打包归档
 

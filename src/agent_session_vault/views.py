@@ -35,6 +35,19 @@ def discover_home_project_codex_roots(home_root: Path) -> list[Path]:
     return [child for child in sorted(projects_root.iterdir()) if child.is_dir()]
 
 
+def discover_local_workspace_extra_codex_roots(extras_root: Path, *, managed_only: bool = False) -> list[Path]:
+    if not extras_root.exists():
+        return []
+    roots: list[Path] = []
+    for child in sorted(extras_root.iterdir()):
+        if managed_only and not (child / "sync-state.json").is_file():
+            continue
+        candidate = child / "codex"
+        if candidate.is_dir():
+            roots.append(candidate)
+    return roots
+
+
 def _append_unique_root(extra_dirs: list[tuple[str, Path]], seen: set[tuple[str, Path]], client: str, root: Path) -> None:
     if not root.exists():
         return
@@ -65,6 +78,8 @@ def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -
             _append_unique_root(extra_dirs, seen, "codex", root)
         for root in discover_home_project_codex_roots(config.paths.home):
             _append_unique_root(extra_dirs, seen, "codex", root)
+        for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras, managed_only=True):
+            _append_unique_root(extra_dirs, seen, "codex", root)
         return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)
 
     home = config.paths.shadow_home
@@ -72,10 +87,6 @@ def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -
         for client in machine.clients:
             root = config.paths.import_root / machine.import_name / client
             _append_unique_root(extra_dirs, seen, client, root)
-    extras_root = config.paths.local_workspace_extras
-    if extras_root.exists():
-        for child in sorted(extras_root.iterdir()):
-            candidate = child / "codex"
-            if candidate.is_dir():
-                _append_unique_root(extra_dirs, seen, "codex", candidate)
+    for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras):
+        _append_unique_root(extra_dirs, seen, "codex", root)
     return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)
