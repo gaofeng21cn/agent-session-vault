@@ -6,5 +6,6 @@ __pycache__/
 .tmp-publish-venv/
 build/
 dist/
+tmp/
 *.egg-info/
 docs/superpowers/
