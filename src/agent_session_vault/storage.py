@@ -30,6 +30,18 @@ def _directory_size(path: Path) -> int:
     return total
 
 
+def _home_project_label(home_root: Path, root: Path) -> str:
+    projects_root = home_root / ".codex" / "projects"
+    try:
+        relative = root.relative_to(projects_root)
+    except ValueError:
+        return root.name
+    parts = relative.parts
+    if len(parts) >= 4 and parts[1] == "archive":
+        return f"{parts[0]}:{parts[2]}"
+    return root.name
+
+
 def summarize_storage(config: VaultConfig) -> StorageSummary:
     items: list[StorageItem] = []
 
@@ -53,7 +65,7 @@ def summarize_storage(config: VaultConfig) -> StorageSummary:
     for root in discover_home_project_codex_roots(config.paths.home):
         items.append(
             StorageItem(
-                label=f"live:home_project_codex:{root.name}",
+                label=f"live:home_project_codex:{_home_project_label(config.paths.home, root)}",
                 path=root,
                 size_bytes=_directory_size(root),
             )

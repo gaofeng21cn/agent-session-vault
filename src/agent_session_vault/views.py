@@ -32,7 +32,17 @@ def discover_home_project_codex_roots(home_root: Path) -> list[Path]:
     projects_root = home_root / ".codex" / "projects"
     if not projects_root.exists():
         return []
-    return [child for child in sorted(projects_root.iterdir()) if child.is_dir()]
+    roots: list[Path] = []
+    for project_root in sorted(projects_root.iterdir()):
+        archive_root = project_root / "archive"
+        if not archive_root.is_dir():
+            continue
+        for codex_root in sorted(archive_root.glob("*/codex")):
+            if not codex_root.is_dir():
+                continue
+            if (codex_root / "sessions").is_dir() or (codex_root / "archived_sessions").is_dir():
+                roots.append(codex_root)
+    return roots
 
 
 def discover_local_workspace_extra_codex_roots(extras_root: Path, *, managed_only: bool = False) -> list[Path]:
@@ -74,10 +84,6 @@ def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -
             for client in machine.clients:
                 root = config.paths.import_root / machine.import_name / ".raw" / client
                 _append_unique_root(extra_dirs, seen, client, root)
-        for root in discover_project_codex_roots(config.paths.workspace_root):
-            _append_unique_root(extra_dirs, seen, "codex", root)
-        for root in discover_home_project_codex_roots(config.paths.home):
-            _append_unique_root(extra_dirs, seen, "codex", root)
         for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras, managed_only=True):
             _append_unique_root(extra_dirs, seen, "codex", root)
         return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)

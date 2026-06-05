@@ -28,7 +28,7 @@ CLI 默认读取：
 - `home`
   - 构造 Tokscale 环境时使用的本机 home
 - `workspace_root`
-  - 构造 raw 视图时，用来发现本机 project-level `.codex`
+  - 本机稳定层同步时，用来发现 workspace 内的 ingest sources
 - `import_root`
   - 远端机器导入数据的本地根目录
 - `shadow_home`
@@ -39,6 +39,59 @@ CLI 默认读取：
   - 冷层 bundle 的存放目录
 - `relay_root`
   - projection 或 raw bundle 的本地 relay 目录
+
+## Stable Layer
+
+Tokscale 的稳定层由两部分组成：
+
+```text
+<import_root>
+<local_workspace_extras>
+```
+
+`import_root` 保存远端机器导入到本机后的稳定缓存，例如：
+
+```text
+<import_root>/imac/.raw/codex
+<import_root>/m1max-mbp/.raw/gemini
+```
+
+`local_workspace_extras` 保存本机 workspace 里零散、易清理来源被吸收后的稳定缓存，包括：
+
+```text
+<quest-root>/.ds/codex_homes
+<quest-root>/.ds/cold_archive/codex_sessions
+<workspace-project>/.codex
+<home>/.codex/projects/<project>/archive/<timestamp>/codex
+```
+
+零散目录只是 ingest sources；稳定层才是 submit、备份和迁移应该依赖的数据面。日常任务可以先更新本机热稳定层，再镜像到 OneDrive/NAS 等冷副本：
+
+```bash
+agent-session-vault storage mirror-stable --json
+```
+
+默认目标是 `archive_root` 同级的 `stable/` 目录。若 `archive_root` 是：
+
+```text
+/Users/gaofeng/OneDrive/agent-session-vault/archive
+```
+
+默认 stable 副本就是：
+
+```text
+/Users/gaofeng/OneDrive/agent-session-vault/stable
+```
+
+该命令会同步：
+
+```text
+stable/tokscale/imports
+stable/tokscale/local-workspace-extras
+stable/config/config.toml
+```
+
+Tokscale submit 仍建议从本机热稳定层运行，避免云盘小文件同步延迟影响运行；备份和迁移可以只认 stable 副本。
 
 ## `sync`
 
@@ -69,7 +122,7 @@ CLI 默认读取：
 agent-session-vault sync local-codex --source <quest-root> --json
 ```
 
-每日本机维护链路使用仓库脚本扫描 `workspace_root` 并同步全部发现到的 runtime roots：
+每日本机维护链路使用仓库脚本扫描 `workspace_root` 和 home project archives，并同步全部发现到的本机 ingest sources：
 
 ```bash
 python3 scripts/sync_local_codex_tokscale_sources.py --json
@@ -81,7 +134,7 @@ python3 scripts/sync_local_codex_tokscale_sources.py --json
 <local_workspace_extras>/volatile-codex-homes/codex
 ```
 
-`raw` Tokscale 视图只自动包含带 `sync-state.json` 的 managed local sync extras。
+`raw` Tokscale 视图只自动包含带 `sync-state.json` 的 managed local sync extras，不再直接引用 workspace `.codex` 或 home project archive 原始路径。
 `canonical` 视图继续包含所有 `local_workspace_extras/*/codex` 目录。
 
 ## `machines.<name>`
@@ -157,4 +210,10 @@ agent-session-vault sync auto imac --json
 
 ```bash
 agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --openclaw --dry-run
+```
+
+6. 如果需要把本机稳定层写入 OneDrive/NAS 副本，再执行：
+
+```bash
+agent-session-vault storage mirror-stable --json
 ```

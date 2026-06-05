@@ -28,6 +28,7 @@ from .relay import (
 )
 from .retention import apply_archive_plan, build_archive_plan
 from .storage import summarize_storage
+from .stable import mirror_stable_layer, stable_mirror_payload
 from .syncing import choose_projection_transport, choose_sync_strategy, expected_local_bundle_dir
 from .tokscale import build_tokscale_invocation
 from .views import build_view
@@ -67,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     storage_sub = storage_parser.add_subparsers(dest="storage_command", required=True)
     storage_summary = storage_sub.add_parser("summary", help="Show storage summary")
     storage_summary.add_argument("--json", action="store_true")
+    storage_mirror_stable = storage_sub.add_parser("mirror-stable", help="Mirror the local Tokscale stable layer")
+    storage_mirror_stable.add_argument("--dest-root", type=Path, default=None)
+    storage_mirror_stable.add_argument("--dry-run", action="store_true")
+    storage_mirror_stable.add_argument("--json", action="store_true")
 
     tokscale_parser = subparsers.add_parser("tokscale", help="Tokscale exporter")
     tokscale_sub = tokscale_parser.add_subparsers(dest="tokscale_command", required=True)
@@ -264,6 +269,22 @@ def main(argv: list[str] | None = None) -> int:
             for item in payload["items"]:
                 print(f'{item["label"]}\t{item["size_bytes"]}\t{item["path"]}')
             print(f"total_bytes\t{summary.total_bytes}")
+        return 0
+
+    if args.command == "storage" and args.storage_command == "mirror-stable":
+        result = mirror_stable_layer(config, stable_root=args.dest_root, dry_run=args.dry_run)
+        payload = stable_mirror_payload(result)
+        if args.json:
+            _json_dump(payload)
+        else:
+            for item in payload["items"]:
+                print(
+                    f'{item["label"]}\t{item["status"]}\t{item["source_bytes"]}\t'
+                    f'{item["source"]}\t{item["destination"]}'
+                )
+            print(f'stable_root\t{payload["stable_root"]}')
+            if payload["manifest_path"]:
+                print(f'manifest_path\t{payload["manifest_path"]}')
         return 0
 
     if args.command == "tokscale" and args.tokscale_command == "env":

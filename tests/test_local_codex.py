@@ -4,7 +4,7 @@ from pathlib import Path
 
 from agent_session_vault.config import load_config
 from agent_session_vault.local_codex import sync_local_codex_sources
-from scripts.sync_local_codex_tokscale_sources import discover_runtime_roots
+from scripts.sync_local_codex_tokscale_sources import discover_local_codex_sources, discover_runtime_roots
 
 
 def _write_jsonl(path: Path, lines: list[dict]) -> None:
@@ -106,3 +106,23 @@ def test_discover_runtime_roots_finds_ds_codex_homes_and_cold_archive(tmp_path: 
     (ignored / ".ds" / "bash_exec").mkdir(parents=True)
 
     assert discover_runtime_roots(workspace) == [quest_a.resolve(), quest_b.resolve()]
+
+
+def test_discover_local_codex_sources_includes_stable_ingest_sources(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    quest = workspace / "project-a" / "quest"
+    workspace_codex = workspace / "project-b" / ".codex"
+    home_archive_codex = home / ".codex" / "projects" / "proj-c" / "archive" / "20260411T000000Z" / "codex"
+    ignored_runtime_state = home / ".codex" / "projects" / "proj-c" / "runtime-state" / "codex"
+
+    (quest / ".ds" / "codex_homes").mkdir(parents=True)
+    (workspace_codex / "sessions").mkdir(parents=True)
+    (home_archive_codex / "sessions").mkdir(parents=True)
+    (ignored_runtime_state / "sessions").mkdir(parents=True)
+
+    assert set(discover_local_codex_sources(workspace, home)) == {
+        quest.resolve(),
+        workspace_codex.resolve(),
+        home_archive_codex.resolve(),
+    }

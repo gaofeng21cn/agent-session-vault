@@ -57,9 +57,13 @@ def test_summarize_storage_collects_home_project_codex_roots(tmp_path: Path) -> 
     extras = tmp_path / "extras"
     archive = tmp_path / "archive"
 
-    migrated_project = home / ".codex" / "projects" / "proj-b" / "archive" / "20260411T000000Z" / "codex" / "sessions"
+    migrated_codex = home / ".codex" / "projects" / "proj-b" / "archive" / "20260411T000000Z" / "codex"
+    migrated_project = migrated_codex / "sessions"
     migrated_project.mkdir(parents=True)
     (migrated_project / "session.jsonl").write_text("z" * 12, encoding="utf-8")
+    runtime_file = home / ".codex" / "projects" / "proj-b" / "runtime-state" / "cache.bin"
+    runtime_file.parent.mkdir(parents=True)
+    runtime_file.write_text("ignored", encoding="utf-8")
 
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -85,5 +89,8 @@ clients = ["codex"]
     summary = summarize_storage(config)
 
     keys = {item.label for item in summary.items}
-    assert "live:home_project_codex:proj-b" in keys
+    assert "live:home_project_codex:proj-b:20260411T000000Z" in keys
     assert summary.total_bytes >= 12
+    home_project_items = [item for item in summary.items if item.label.startswith("live:home_project_codex:")]
+    assert len(home_project_items) == 1
+    assert home_project_items[0].size_bytes == 12

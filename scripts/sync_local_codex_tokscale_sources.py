@@ -49,6 +49,52 @@ def discover_runtime_roots(workspace_root: Path) -> list[Path]:
     return sorted(roots, key=str)
 
 
+def discover_workspace_codex_roots(workspace_root: Path) -> list[Path]:
+    workspace_root = workspace_root.expanduser().resolve()
+    if not workspace_root.exists():
+        return []
+
+    roots: set[Path] = set()
+    for current, dir_names, _ in os.walk(workspace_root):
+        dir_names[:] = [name for name in dir_names if name not in PRUNE_DIR_NAMES]
+        current_path = Path(current)
+        if current_path.name == ".codex" and (
+            (current_path / "sessions").is_dir() or (current_path / "archived_sessions").is_dir()
+        ):
+            roots.add(current_path.resolve())
+            dir_names[:] = []
+            continue
+        if current_path.name in {".ds", ".codex"}:
+            dir_names[:] = []
+
+    return sorted(roots, key=str)
+
+
+def discover_home_project_archive_codex_roots(home_root: Path) -> list[Path]:
+    projects_root = home_root.expanduser() / ".codex" / "projects"
+    if not projects_root.exists():
+        return []
+
+    roots: list[Path] = []
+    for project_root in sorted(path for path in projects_root.iterdir() if path.is_dir()):
+        archive_root = project_root / "archive"
+        if not archive_root.is_dir():
+            continue
+        for codex_root in sorted(archive_root.glob("*/codex")):
+            if (codex_root / "sessions").is_dir() or (codex_root / "archived_sessions").is_dir():
+                roots.append(codex_root.resolve())
+    return roots
+
+
+def discover_local_codex_sources(workspace_root: Path, home_root: Path) -> list[Path]:
+    sources = {
+        *discover_runtime_roots(workspace_root),
+        *discover_workspace_codex_roots(workspace_root),
+        *discover_home_project_archive_codex_roots(home_root),
+    }
+    return sorted(sources, key=str)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sync volatile local Codex runtime homes into Tokscale extras")
     parser.add_argument("--config", type=Path, default=None)
@@ -65,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     workspace_root = (args.workspace_root or config.paths.workspace_root).expanduser()
 
-    discovered = discover_runtime_roots(workspace_root)
+    discovered = discover_local_codex_sources(workspace_root, config.paths.home)
     explicit_sources = [source.expanduser().resolve() for source in args.source]
     sources = sorted({*discovered, *explicit_sources}, key=str)
 

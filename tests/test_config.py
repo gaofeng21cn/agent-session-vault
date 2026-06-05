@@ -86,7 +86,7 @@ remove_source = true
     assert config.retention_rules[0].remove_source is True
 
 
-def test_build_raw_view_uses_live_home_and_raw_imports(tmp_path: Path) -> None:
+def test_build_raw_view_uses_stable_local_extras_and_raw_imports(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     imports = tmp_path / "imports"
@@ -129,12 +129,12 @@ clients = ["codex", "gemini"]
     assert view.home == home
     assert ("codex", imports / "imac" / ".raw" / "codex") in view.extra_dirs
     assert ("gemini", imports / "imac" / ".raw" / "gemini") in view.extra_dirs
-    assert ("codex", workspace / "proj-a" / ".codex") in view.extra_dirs
+    assert ("codex", workspace / "proj-a" / ".codex") not in view.extra_dirs
     assert ("codex", extras / "volatile-codex-homes" / "codex") in view.extra_dirs
     assert ("codex", extras / "canonical-only" / "codex") not in view.extra_dirs
 
 
-def test_build_raw_view_includes_home_project_codex_roots(tmp_path: Path) -> None:
+def test_build_raw_view_does_not_read_home_project_archives_directly(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     imports = tmp_path / "imports"
@@ -143,9 +143,12 @@ def test_build_raw_view_includes_home_project_codex_roots(tmp_path: Path) -> Non
     archive = tmp_path / "archive"
 
     (home / ".codex" / "sessions").mkdir(parents=True)
-    (home / ".codex" / "projects" / "proj-b" / "archive" / "20260411T000000Z" / "codex" / "sessions").mkdir(
-        parents=True
-    )
+    archived_codex = home / ".codex" / "projects" / "proj-b" / "archive" / "20260411T000000Z" / "codex"
+    (archived_codex / "sessions").mkdir(parents=True)
+    (home / ".codex" / "projects" / "proj-b" / "runtime-state" / "codex" / "sessions").mkdir(parents=True)
+    (home / ".codex" / "projects" / "external" / "ppt-master").mkdir(parents=True)
+    (extras / "home-project-archives" / "codex" / "sessions").mkdir(parents=True)
+    (extras / "home-project-archives" / "sync-state.json").write_text("{}\n", encoding="utf-8")
 
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -170,7 +173,10 @@ clients = ["codex"]
     config = load_config(config_path)
     view = build_view(config, mode="raw")
 
-    assert ("codex", home / ".codex" / "projects" / "proj-b") in view.extra_dirs
+    assert ("codex", archived_codex) not in view.extra_dirs
+    assert ("codex", extras / "home-project-archives" / "codex") in view.extra_dirs
+    assert ("codex", home / ".codex" / "projects" / "proj-b") not in view.extra_dirs
+    assert all("runtime-state" not in root.as_posix() for client, root in view.extra_dirs if client == "codex")
 
 
 def test_build_canonical_view_uses_shadow_home_and_extras(tmp_path: Path) -> None:

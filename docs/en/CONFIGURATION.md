@@ -30,7 +30,7 @@ These paths define where local derived state lives.
 - `home`
   - local home used for Tokscale environment construction
 - `workspace_root`
-  - local workspace root used to discover project-level `.codex` directories for raw view construction
+  - local workspace root used by stable-layer sync to discover ingest sources
 - `import_root`
   - imported machine data lives here
 - `shadow_home`
@@ -41,6 +41,59 @@ These paths define where local derived state lives.
   - colder bundle storage
 - `relay_root`
   - local relay directory for projection or raw bundles
+
+## Stable Layer
+
+The Tokscale stable layer has two parts:
+
+```text
+<import_root>
+<local_workspace_extras>
+```
+
+`import_root` stores stable local caches imported from remote machines, for example:
+
+```text
+<import_root>/imac/.raw/codex
+<import_root>/m1max-mbp/.raw/gemini
+```
+
+`local_workspace_extras` stores stable local caches absorbed from scattered and cleanup-prone workspace sources, including:
+
+```text
+<quest-root>/.ds/codex_homes
+<quest-root>/.ds/cold_archive/codex_sessions
+<workspace-project>/.codex
+<home>/.codex/projects/<project>/archive/<timestamp>/codex
+```
+
+Scattered directories are ingest sources. The stable layer is the data surface that submit, backup, and migration should depend on. A recurring task can update the local hot stable layer first, then mirror it to a colder OneDrive/NAS copy:
+
+```bash
+agent-session-vault storage mirror-stable --json
+```
+
+The default destination is `stable/` next to `archive_root`. If `archive_root` is:
+
+```text
+/Users/gaofeng/OneDrive/agent-session-vault/archive
+```
+
+the default stable copy is:
+
+```text
+/Users/gaofeng/OneDrive/agent-session-vault/stable
+```
+
+The command mirrors:
+
+```text
+stable/tokscale/imports
+stable/tokscale/local-workspace-extras
+stable/config/config.toml
+```
+
+Tokscale submit should still run from the local hot stable layer to avoid cloud-sync latency on many small files. Backup and migration can depend on the stable copy.
 
 ## `sync`
 
@@ -71,7 +124,7 @@ Do not point Tokscale directly at those volatile directories. First sync them in
 agent-session-vault sync local-codex --source <quest-root> --json
 ```
 
-For the recurring local maintenance path, use the repo script to scan `workspace_root` and sync all discovered runtime roots:
+For the recurring local maintenance path, use the repo script to scan `workspace_root` plus home project archives and sync all discovered local ingest sources:
 
 ```bash
 python3 scripts/sync_local_codex_tokscale_sources.py --json
@@ -83,7 +136,7 @@ The stable Tokscale root is:
 <local_workspace_extras>/volatile-codex-homes/codex
 ```
 
-The `raw` Tokscale view includes managed local sync extras that have `sync-state.json`.
+The `raw` Tokscale view includes managed local sync extras that have `sync-state.json`; it no longer points directly at workspace `.codex` or home project archive source paths.
 The `canonical` view includes all `local_workspace_extras/*/codex` directories.
 
 ## `machines.<name>`
@@ -159,4 +212,10 @@ agent-session-vault sync auto imac --json
 
 ```bash
 agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --openclaw --dry-run
+```
+
+6. To mirror the local stable layer into a OneDrive/NAS copy, run:
+
+```bash
+agent-session-vault storage mirror-stable --json
 ```
