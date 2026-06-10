@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from agent_session_vault.config import load_config
-from agent_session_vault.tokscale import build_tokscale_invocation
+from agent_session_vault.tokscale import (
+    DEFAULT_TOKSCALE_PACKAGE,
+    TOKSCALE_PACKAGE_ENV,
+    build_tokscale_invocation,
+)
 
 
 def test_build_tokscale_invocation_for_raw_mode(tmp_path: Path) -> None:
@@ -41,6 +45,7 @@ clients = ["codex"]
 
     assert invocation.env["HOME"] == str(home)
     assert "imports/imac/.raw/codex" in invocation.env["TOKSCALE_EXTRA_DIRS"]
+    assert invocation.command[:3] == ["npx", "-y", DEFAULT_TOKSCALE_PACKAGE]
     assert invocation.command[-2:] == ["submit", "--dry-run"]
 
 
@@ -120,3 +125,34 @@ archive_root = "{archive}"
 
     assert invocation.env["HOME"] == str(home)
     assert "CODEX_HOME" not in invocation.env
+
+
+def test_build_tokscale_invocation_allows_package_override(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    imports = tmp_path / "imports"
+    shadow_home = tmp_path / "shadow-home"
+    extras = tmp_path / "extras"
+    archive = tmp_path / "archive"
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[paths]
+home = "{home}"
+workspace_root = "{workspace}"
+import_root = "{imports}"
+shadow_home = "{shadow_home}"
+local_workspace_extras = "{extras}"
+archive_root = "{archive}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv(TOKSCALE_PACKAGE_ENV, "tokscale@3.1.2")
+
+    config = load_config(config_path)
+    invocation = build_tokscale_invocation(config, mode="raw", args=["submit", "--dry-run"])
+
+    assert invocation.command[:3] == ["npx", "-y", "tokscale@3.1.2"]

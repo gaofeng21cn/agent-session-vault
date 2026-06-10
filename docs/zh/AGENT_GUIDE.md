@@ -38,6 +38,8 @@ agent-session-vault sync auto <machine> --json
 
 ### 为 Tokscale 准备环境
 
+日常提交必须使用本仓 `tokscale exec` 入口，不要直接运行会随 npm 漂移的 `tokscale@latest`。本仓默认固定到已验证的 Tokscale 包版本；如需临时测试新版，只能用 `AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=<package>` 显式覆盖，并先用 `--dry-run` 对照上一轮 token 量级。
+
 更贴近提交行为的口径：
 
 ```bash

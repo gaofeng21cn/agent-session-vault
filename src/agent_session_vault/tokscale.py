@@ -8,6 +8,10 @@ from .config import VaultConfig
 from .views import build_view
 
 
+DEFAULT_TOKSCALE_PACKAGE = "tokscale@3.0.0"
+TOKSCALE_PACKAGE_ENV = "AGENT_SESSION_VAULT_TOKSCALE_PACKAGE"
+
+
 @dataclass(frozen=True)
 class TokscaleInvocation:
     env: dict[str, str]
@@ -29,4 +33,5 @@ def build_tokscale_invocation(
         env["TOKSCALE_EXTRA_DIRS"] = view.tokscale_extra_dirs()
     else:
         env.pop("TOKSCALE_EXTRA_DIRS", None)
-    return TokscaleInvocation(env=env, command=["npx", "-y", "tokscale@latest", *args])
+    tokscale_package = env.get(TOKSCALE_PACKAGE_ENV, DEFAULT_TOKSCALE_PACKAGE)
+    return TokscaleInvocation(env=env, command=["npx", "-y", tokscale_package, *args])

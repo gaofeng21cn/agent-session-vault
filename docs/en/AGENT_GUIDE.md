@@ -38,6 +38,8 @@ This should remain the default recommendation unless the operator explicitly ask
 
 ### Prepare Tokscale
 
+Daily submissions must use this repository's `tokscale exec` entrypoint. Do not run a drifting `tokscale@latest` package directly. The repository pins the verified Tokscale package by default; test newer packages only with an explicit `AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=<package>` override, and compare the `--dry-run` token scale against the previous run first.
+
 For a submission-aligned view:
 
 ```bash
