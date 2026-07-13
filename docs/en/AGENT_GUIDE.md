@@ -38,18 +38,24 @@ This should remain the default recommendation unless the operator explicitly ask
 
 ### Prepare Tokscale
 
-Daily submissions must use this repository's `tokscale exec` entrypoint. Do not run a drifting `tokscale@latest` package directly. The repository pins the verified Tokscale package by default; test newer packages only with an explicit `AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=<package>` override, and compare the `--dry-run` token scale against the previous run first.
+Routine daily submissions should use the repository-owned deterministic runner. It resolves npm latest, passes the package through the repository Tokscale entrypoint, and rechecks help plus the official preview only when the package version changes.
+
+```bash
+agent-session-vault ops daily-tokscale --json
+```
+
+For one-off manual inspection, continue to use the repository `tokscale exec` entrypoint rather than running Tokscale naked.
 
 For a submission-aligned view:
 
 ```bash
-agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 For a stricter internal accounting view:
 
 ```bash
-agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 ### Archive Cold Data

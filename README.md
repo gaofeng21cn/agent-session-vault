@@ -79,13 +79,13 @@ Edit the machine definitions in `~/.config/agent-session-vault/config.toml`, the
 ```bash
 agent-session-vault config --json
 agent-session-vault sync auto imac --json
-agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 If you want the stricter internal accounting view:
 
 ```bash
-agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 ## Common Workflows
@@ -116,11 +116,13 @@ agent-session-vault sync local-codex \
   --json
 ```
 
-Automation can scan the configured `workspace_root` and sync all discovered runtime roots:
+Run the deterministic daily projection sync and Tokscale submission workflow:
 
 ```bash
-python3 scripts/sync_local_codex_tokscale_sources.py --json
+agent-session-vault ops daily-tokscale --json
 ```
+
+The command uses current `HOME`, configured raw imports, and managed local extras. It probes configured remotes with short timeouts, runs explicit projection export/fetch/import, resolves npm latest, and emits one terminal JSON receipt. Tokscale help and the official preview run only when the latest package version has not already been verified.
 
 Prepare Tokscale environment only:
 
@@ -153,6 +155,7 @@ Use the repository CLI rather than re-implementing sync, projection, or archive 
 Typical agent tasks:
 
 - define machines and root rules
+- run `ops daily-tokscale --json` for routine sync and submit automation
 - run `sync auto <machine>`
 - run `sync local-codex --source <root>` before Tokscale when local Codex sessions live under volatile runtime homes
 - build `raw` or `canonical` Tokscale views

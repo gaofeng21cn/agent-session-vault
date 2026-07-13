@@ -79,13 +79,13 @@ cp config/agent-session-vault.example.toml ~/.config/agent-session-vault/config.
 ```bash
 agent-session-vault config --json
 agent-session-vault sync auto imac --json
-agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 如果你要更严格的内部统计口径：
 
 ```bash
-agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 ## 常用工作流
@@ -116,11 +116,13 @@ agent-session-vault sync local-codex \
   --json
 ```
 
-自动化可以扫描配置里的 `workspace_root`，同步所有发现到的 runtime roots：
+执行确定性的每日 projection 同步与 Tokscale 提交：
 
 ```bash
-python3 scripts/sync_local_codex_tokscale_sources.py --json
+agent-session-vault ops daily-tokscale --json
 ```
+
+该命令只使用当前 `HOME`、配置中的 raw imports 与 managed local extras。它会短超时探测远端，依次执行显式 projection export/fetch/import，解析 npm latest，并输出一份终态 JSON 回执。只有 latest 包版本尚未验证时，才运行 Tokscale help 与官方 preview。
 
 只准备 Tokscale 运行环境：
 

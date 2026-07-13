@@ -156,3 +156,32 @@ archive_root = "{archive}"
     invocation = build_tokscale_invocation(config, mode="raw", args=["submit", "--dry-run"])
 
     assert invocation.command[:3] == ["npx", "-y", "tokscale@3.1.2"]
+
+
+def test_build_tokscale_invocation_accepts_explicit_package_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[paths]
+home = "{home}"
+workspace_root = "{tmp_path / 'workspace'}"
+import_root = "{tmp_path / 'imports'}"
+shadow_home = "{tmp_path / 'shadow-home'}"
+local_workspace_extras = "{tmp_path / 'extras'}"
+archive_root = "{tmp_path / 'archive'}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    invocation = build_tokscale_invocation(
+        config,
+        mode="raw",
+        args=["submit", "--help"],
+        package_override="tokscale@4.5.2",
+    )
+
+    assert invocation.command[:3] == ["npx", "-y", "tokscale@4.5.2"]
+    assert invocation.env[TOKSCALE_PACKAGE_ENV] == "tokscale@4.5.2"

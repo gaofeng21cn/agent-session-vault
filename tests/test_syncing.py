@@ -343,6 +343,70 @@ kind = "home_root"
     assert payload["bundle"]["fallback_reason"] == "missing_local_state"
 
 
+def test_projection_fetch_ssh_fetches_remote_bundle_to_expected_local_dir(tmp_path: Path, monkeypatch, capsys) -> None:
+    target_home = tmp_path / "target-home"
+    relay_root = tmp_path / "relay-root"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[paths]
+home = "{target_home}"
+workspace_root = "{tmp_path / "workspace"}"
+import_root = "{target_home / ".config" / "tokscale" / "imports"}"
+shadow_home = "{target_home / ".config" / "tokscale" / "shadow-home"}"
+local_workspace_extras = "{target_home / ".config" / "tokscale" / "local-workspace-extras"}"
+archive_root = "{tmp_path / "archive"}"
+relay_root = "{relay_root}"
+
+[machines.imac]
+import_name = "imac"
+ssh_target = "tokscale-sync-imac"
+source_home = "/remote/home"
+remote_relay_root = "/remote/relay"
+remote_state_root = "/remote/state"
+clients = ["codex"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    remote_bundle_dir = Path("/remote/relay/projection/imac/imac-20260707T000000000000Z")
+    expected_bundle_dir = relay_root / "projection" / "imac" / "imac-20260707T000000000000Z"
+    calls: list[tuple[str, Path, Path]] = []
+
+    def _fake_fetch_projection_bundle_ssh(
+        *,
+        ssh_target: str,
+        remote_bundle_dir: Path,
+        local_bundle_dir: Path,
+    ) -> Path:
+        calls.append((ssh_target, remote_bundle_dir, local_bundle_dir))
+        return local_bundle_dir
+
+    monkeypatch.setattr("agent_session_vault.cli.fetch_projection_bundle_ssh", _fake_fetch_projection_bundle_ssh)
+
+    exit_code = main(
+        [
+            "--config",
+            str(config_path),
+            "sync",
+            "projection-fetch-ssh",
+            "imac",
+            "--remote-bundle-dir",
+            str(remote_bundle_dir),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [("tokscale-sync-imac", remote_bundle_dir, expected_bundle_dir)]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "machine": "imac",
+        "remote_bundle_dir": str(remote_bundle_dir),
+        "bundle_dir": str(expected_bundle_dir),
+    }
+
+
 def test_pending_relay_bundle_dirs_returns_contiguous_unimported_chain(tmp_path: Path) -> None:
     source_home = tmp_path / "source-home"
     target_home = tmp_path / "target-home"

@@ -38,18 +38,24 @@ agent-session-vault sync auto <machine> --json
 
 ### 为 Tokscale 准备环境
 
-日常提交必须使用本仓 `tokscale exec` 入口，不要直接运行会随 npm 漂移的 `tokscale@latest`。本仓默认固定到已验证的 Tokscale 包版本；如需临时测试新版，只能用 `AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=<package>` 显式覆盖，并先用 `--dry-run` 对照上一轮 token 量级。
+日常提交应使用本仓确定性 runner。它会解析 npm latest，通过本仓 Tokscale 入口传入明确包版本，并只在包版本变化时重新检查 help 与官方 preview。
+
+```bash
+agent-session-vault ops daily-tokscale --json
+```
+
+一次性人工检查仍应使用本仓 `tokscale exec` 入口，不要裸跑 Tokscale。
 
 更贴近提交行为的口径：
 
 ```bash
-agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 更严格的内部统计口径：
 
 ```bash
-agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 ### 归档冷数据

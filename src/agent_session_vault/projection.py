@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -1297,6 +1298,8 @@ def export_machine_projection_ssh(
     ssh_target: str | None = None,
     command_prefix: list[str] | None = None,
     base_snapshot_id: str | None = None,
+    ssh_options: list[str] | None = None,
+    timeout_seconds: float | None = None,
 ) -> ProjectionBundle:
     if ssh_target is None:
         return export_machine_projection(
@@ -1332,12 +1335,20 @@ def export_machine_projection_ssh(
     base_command = command_prefix or ["python3", "-"]
     env = None
     if ssh_target:
-        command = ["ssh", ssh_target, "env", f"ASV_REQUEST_B64={encoded}", *base_command]
+        command = ["ssh", *(ssh_options or []), ssh_target, "env", f"ASV_REQUEST_B64={encoded}", *base_command]
     else:
         command = base_command
         env = dict(os.environ)
         env["ASV_REQUEST_B64"] = encoded
-    completed = subprocess.run(command, input=script, text=True, capture_output=True, env=env)
+    run_kwargs: dict[str, object] = {
+        "input": script,
+        "text": True,
+        "capture_output": True,
+        "env": env,
+    }
+    if timeout_seconds is not None:
+        run_kwargs["timeout"] = timeout_seconds
+    completed = subprocess.run(command, **run_kwargs)
     if completed.returncode != 0:
         stderr = completed.stderr.strip()
         stdout = completed.stdout.strip()
@@ -1363,21 +1374,30 @@ def fetch_projection_bundle_ssh(
     ssh_target: str,
     remote_bundle_dir: Path,
     local_bundle_dir: Path,
+    ssh_options: list[str] | None = None,
+    timeout_seconds: float | None = None,
+    capture_output: bool = False,
 ) -> Path:
     local_bundle_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix="asv-projection-fetch-"))
     moved = False
     try:
+        ssh_command = shlex.join(["ssh", "-C", "-o", "BatchMode=yes", *(ssh_options or [])])
+        run_kwargs = {"check": True}
+        if capture_output:
+            run_kwargs.update({"capture_output": True, "text": True})
+        if timeout_seconds is not None:
+            run_kwargs["timeout"] = timeout_seconds
         subprocess.run(
             [
                 "rsync",
                 "-az",
                 "-e",
-                "ssh -C -o BatchMode=yes",
+                ssh_command,
                 f"{ssh_target}:{remote_bundle_dir}/",
                 f"{staging_dir}/",
             ],
-            check=True,
+            **run_kwargs,
         )
         if local_bundle_dir.exists():
             shutil.rmtree(local_bundle_dir)

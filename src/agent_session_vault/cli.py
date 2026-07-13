@@ -10,6 +10,7 @@ import sys
 from .adapters import build_canonicalize_machine_command, build_direct_sync_command
 from .archive import inventory_bundles, offload_tree, pack_tree, restore_bundle
 from .config import load_config
+from .daily_ops import DEFAULT_CLIENTS, run_daily_tokscale
 from .local_codex import sync_local_codex_sources
 from .projection import (
     expected_local_projection_bundle_dir,
@@ -86,6 +87,22 @@ def build_parser() -> argparse.ArgumentParser:
     tokscale_exec.add_argument("--dry-run", action="store_true")
     tokscale_exec.add_argument("tokscale_args", nargs=argparse.REMAINDER)
 
+    ops_parser = subparsers.add_parser("ops", help="Operational workflows")
+    ops_sub = ops_parser.add_subparsers(dest="ops_command", required=True)
+    ops_daily_tokscale = ops_sub.add_parser(
+        "daily-tokscale",
+        help="Run the deterministic projection sync and Tokscale submit workflow",
+    )
+    ops_daily_tokscale.add_argument("--machine", action="append", dest="machines", default=[])
+    ops_daily_tokscale.add_argument("--clients", default=",".join(DEFAULT_CLIENTS))
+    ops_daily_tokscale.add_argument("--run-root", type=Path, default=None)
+    ops_daily_tokscale.add_argument("--canonicalize-command", default="tokscale-canonicalize-import-machine")
+    ops_daily_tokscale.add_argument("--probe-timeout-seconds", type=float, default=8)
+    ops_daily_tokscale.add_argument("--sync-timeout-seconds", type=float, default=1800)
+    ops_daily_tokscale.add_argument("--submit-timeout-seconds", type=float, default=3600)
+    ops_daily_tokscale.add_argument("--force-contract-check", action="store_true")
+    ops_daily_tokscale.add_argument("--json", action="store_true")
+
     sync_parser = subparsers.add_parser("sync", help="Sync helpers")
     sync_sub = sync_parser.add_subparsers(dest="sync_command", required=True)
     sync_direct = sync_sub.add_parser("direct", help="Run configured direct sync adapter")
@@ -124,6 +141,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_projection_export_ssh.add_argument("machine")
     sync_projection_export_ssh.add_argument("--json", action="store_true")
+    sync_projection_fetch_ssh = sync_sub.add_parser(
+        "projection-fetch-ssh",
+        help="Fetch one remote projection bundle via SSH",
+    )
+    sync_projection_fetch_ssh.add_argument("machine")
+    sync_projection_fetch_ssh.add_argument("--remote-bundle-dir", type=Path, required=True)
+    sync_projection_fetch_ssh.add_argument("--bundle-dir", type=Path, default=None)
+    sync_projection_fetch_ssh.add_argument("--json", action="store_true")
     sync_projection_import = sync_sub.add_parser("projection-import", help="Import one projection bundle into local imports")
     sync_projection_import.add_argument("machine")
     sync_projection_import.add_argument("--bundle-dir", type=Path, required=True)
@@ -318,6 +343,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return _run_subprocess(invocation.command, env=invocation.env, dry_run=args.dry_run)
 
+    if args.command == "ops" and args.ops_command == "daily-tokscale":
+        clients = tuple(client.strip() for client in args.clients.split(",") if client.strip())
+        result = run_daily_tokscale(
+            config,
+            machine_names=list(args.machines) or None,
+            clients=clients,
+            run_root=args.run_root,
+            canonicalize_command=args.canonicalize_command or None,
+            probe_timeout_seconds=args.probe_timeout_seconds,
+            sync_timeout_seconds=args.sync_timeout_seconds,
+            submit_timeout_seconds=args.submit_timeout_seconds,
+            force_contract_check=args.force_contract_check,
+        )
+        if args.json:
+            _json_dump(result.payload)
+        else:
+            print(result.payload)
+        return result.exit_code
+
     if args.command == "sync" and args.sync_command == "direct":
         command = build_direct_sync_command(config, args.machine)
         return _run_subprocess(command, dry_run=args.dry_run)
@@ -482,6 +526,31 @@ def main(argv: list[str] | None = None) -> int:
             "mode": bundle.mode,
             "base_snapshot_id": bundle.base_snapshot_id,
             "fallback_reason": bundle.fallback_reason,
+        }
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "sync" and args.sync_command == "projection-fetch-ssh":
+        machine = config.machines[args.machine]
+        if not machine.ssh_target:
+            raise ValueError(f"machine '{args.machine}' is missing ssh projection configuration")
+        local_bundle_dir = args.bundle_dir or expected_local_projection_bundle_dir(
+            config,
+            args.machine,
+            args.remote_bundle_dir.name,
+        )
+        fetched_dir = fetch_projection_bundle_ssh(
+            ssh_target=machine.ssh_target,
+            remote_bundle_dir=args.remote_bundle_dir,
+            local_bundle_dir=local_bundle_dir,
+        )
+        payload = {
+            "machine": args.machine,
+            "remote_bundle_dir": str(args.remote_bundle_dir),
+            "bundle_dir": str(fetched_dir),
         }
         if args.json:
             _json_dump(payload)

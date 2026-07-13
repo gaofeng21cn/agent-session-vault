@@ -23,6 +23,7 @@ def build_tokscale_invocation(
     mode: str,
     args: list[str],
     omx_replay_dedupe: str = "off",
+    package_override: str | None = None,
 ) -> TokscaleInvocation:
     view = build_view(config, mode=mode, omx_replay_dedupe=omx_replay_dedupe)
     env = dict(os.environ)
@@ -33,5 +34,7 @@ def build_tokscale_invocation(
         env["TOKSCALE_EXTRA_DIRS"] = view.tokscale_extra_dirs()
     else:
         env.pop("TOKSCALE_EXTRA_DIRS", None)
-    tokscale_package = env.get(TOKSCALE_PACKAGE_ENV, DEFAULT_TOKSCALE_PACKAGE)
+    tokscale_package = package_override or env.get(TOKSCALE_PACKAGE_ENV, DEFAULT_TOKSCALE_PACKAGE)
+    if package_override:
+        env[TOKSCALE_PACKAGE_ENV] = package_override
     return TokscaleInvocation(env=env, command=["npx", "-y", tokscale_package, *args])
