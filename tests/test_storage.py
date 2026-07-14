@@ -15,8 +15,8 @@ def test_summarize_storage_collects_existing_paths(tmp_path: Path) -> None:
     target = home / ".codex" / "sessions"
     target.mkdir(parents=True)
     (target / "a.jsonl").write_text("x" * 16, encoding="utf-8")
-    (imports / "imac" / ".raw" / "codex").mkdir(parents=True)
-    (imports / "imac" / ".raw" / "codex" / "b.jsonl").write_text("y" * 8, encoding="utf-8")
+    (imports / "machine-a" / ".raw" / "codex").mkdir(parents=True)
+    (imports / "machine-a" / ".raw" / "codex" / "b.jsonl").write_text("y" * 8, encoding="utf-8")
     shadow_home.mkdir(parents=True)
 
     config_path = tmp_path / "config.toml"
@@ -30,9 +30,9 @@ shadow_home = "{shadow_home}"
 local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex"]
 """.strip()
         + "\n",
@@ -44,7 +44,7 @@ clients = ["codex"]
 
     keys = {item.label for item in summary.items}
     assert "live:codex" in keys
-    assert "imports_raw:imac:codex" in keys
+    assert "imports_raw:machine-a:codex" in keys
     assert "canonical:shadow_home" in keys
     assert summary.total_bytes >= 24
 
@@ -76,9 +76,9 @@ shadow_home = "{shadow_home}"
 local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex"]
 """.strip()
         + "\n",

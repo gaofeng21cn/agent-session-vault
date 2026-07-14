@@ -1,8 +1,9 @@
 # Agent Session Vault Repository Guide
 
 This repository owns the local-first session control plane for multi-machine AI
-agent histories, including projection-first sync, Tokscale view preparation,
-stable local extras, relay bundles, and archive workflows.
+agent histories, with projection-only Tokscale continuity as the default product
+contract. Full-fidelity conversation migration remains an explicit optional
+capability.
 
 ## Working Rules
 
@@ -14,6 +15,9 @@ stable local extras, relay bundles, and archive workflows.
   repo's config, docs, source, tests, and command output.
 - Treat Tokscale as a downstream exporter. This repository prepares the raw or
   canonical views that Tokscale reads; it does not patch Tokscale upstream.
+- Keep the default raw Tokscale view projection-only. Refresh the current local
+  HOME into `imports/local-home/.raw` and do not point Tokscale at live client
+  roots. Full live-session copies require an explicit migration command.
 - Prefer the repository CLI over ad hoc scripts:
   `agent-session-vault config --json`,
   `agent-session-vault ops daily-tokscale --json`,

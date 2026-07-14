@@ -14,12 +14,18 @@ from typing import Callable
 
 from .config import MachineConfig, VaultConfig
 from .projection import (
+    LOCAL_HOME_CLIENTS,
+    LOCAL_HOME_STATE_NAME,
     ProjectionBundle,
     expected_local_projection_bundle_dir,
     export_machine_projection_ssh,
     fetch_projection_bundle_ssh,
     import_machine_projection,
+    local_home_projection_payload,
+    local_home_projection_root,
+    refresh_local_home_projection,
 )
+from .stable import mirror_stable_layer, stable_mirror_payload
 from .tokscale import build_tokscale_invocation
 from .views import build_view
 
@@ -36,6 +42,12 @@ SSH_OPTIONS = (
     "ServerAliveInterval=2",
     "-o",
     "ServerAliveCountMax=1",
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPersist=45",
+    "-o",
+    "ControlPath=/tmp/agent-session-vault-ssh-%i-%C",
 )
 
 
@@ -199,15 +211,32 @@ def _raw_env_payload(
         for _, path in view.extra_dirs
         if path == config.paths.local_workspace_extras or config.paths.local_workspace_extras in path.parents
     )
-    home_matches = view.home == config.paths.home and view.home.is_dir()
-    valid = home_matches and all(count > 0 for count in machine_root_counts.values())
+    local_root = local_home_projection_root(config)
+    local_root_counts = {
+        client: sum(
+            1
+            for configured_client, path in view.extra_dirs
+            if configured_client == client and (path == local_root / ".raw" or local_root / ".raw" in path.parents)
+        )
+        for client in LOCAL_HOME_CLIENTS
+    }
+    local_state = _read_json(local_root / LOCAL_HOME_STATE_NAME)
+    projection_home_matches = view.home == config.paths.projection_home and view.home.is_dir()
+    local_projection_valid = bool(local_state and local_state.get("status") == "valid")
+    valid = projection_home_matches and local_projection_valid and all(
+        count > 0 for count in machine_root_counts.values()
+    )
     return {
         "status": "valid" if valid else "invalid",
         "duration_seconds": round(time.monotonic() - started, 3),
         "home": str(view.home),
         "extra_dirs": [{"client": client, "path": str(path)} for client, path in view.extra_dirs],
         "validation": {
-            "home_matches": home_matches,
+            "home_matches": projection_home_matches,
+            "projection_home_matches": projection_home_matches,
+            "live_home_excluded": view.home != config.paths.home,
+            "local_projection_valid": local_projection_valid,
+            "local_projection_root_counts": local_root_counts,
             "remote_raw_root_counts": machine_root_counts,
             "managed_local_extra_count": managed_extra_count,
         },
@@ -290,13 +319,21 @@ def _contract_matches(payload: dict[str, object] | None, version: str, clients: 
 
 
 def _bundle_payload(bundle: ProjectionBundle) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "snapshot_id": bundle.snapshot_id,
         "bundle_bytes": bundle.bundle_bytes,
         "mode": bundle.mode,
         "base_snapshot_id": bundle.base_snapshot_id,
         "fallback_reason": bundle.fallback_reason,
     }
+    if bundle.state_status is not None:
+        payload["projection_state"] = {
+            "status": bundle.state_status,
+            "files_seen": bundle.files_seen,
+            "files_projected": bundle.files_projected,
+            "files_reused": bundle.files_reused,
+        }
+    return payload
 
 
 def run_daily_tokscale(
@@ -305,18 +342,18 @@ def run_daily_tokscale(
     machine_names: list[str] | None = None,
     clients: tuple[str, ...] = DEFAULT_CLIENTS,
     run_root: Path | None = None,
-    canonicalize_command: str | None = "tokscale-canonicalize-import-machine",
+    canonicalize_command: str | None = None,
     probe_timeout_seconds: float = 8,
     sync_timeout_seconds: float = 1800,
     submit_timeout_seconds: float = 3600,
     force_contract_check: bool = False,
+    mirror_stable: bool = False,
+    stable_root: Path | None = None,
 ) -> DailyTokscaleResult:
     selected_machines = list(config.machines if machine_names is None else machine_names)
     unknown_machines = [name for name in selected_machines if name not in config.machines]
     if unknown_machines:
         raise ValueError(f"unknown machines: {', '.join(unknown_machines)}")
-    if not selected_machines:
-        raise ValueError("at least one machine is required")
     if not clients:
         raise ValueError("at least one Tokscale client is required")
 
@@ -396,6 +433,27 @@ def run_daily_tokscale(
     help_seconds: float | None = None
     preview_seconds: float | None = None
     try:
+        local_started = time.monotonic()
+        update_status("local_projection")
+        local_projection = refresh_local_home_projection(config)
+        local_payload = local_home_projection_payload(local_projection)
+        local_payload["duration_seconds"] = round(time.monotonic() - local_started, 3)
+        payload["local_projection"] = local_payload
+        if canonicalize_command:
+            canonicalize = run_command(
+                [canonicalize_command, "--machine-root", str(local_projection.machine_root)],
+                env=None,
+                log_name="local-home-canonicalize.log",
+                phase="canonicalize:local-home",
+                timeout_seconds=sync_timeout_seconds,
+            )
+            if canonicalize.returncode != 0:
+                raise DailyTokscaleError(
+                    "local_projection",
+                    f"local canonicalize failed with exit {canonicalize.returncode}; "
+                    f"see {run_dir / 'local-home-canonicalize.log'}",
+                )
+
         remote_results: list[dict[str, object]] = []
         for machine_name in selected_machines:
             machine_started = time.monotonic()
@@ -439,16 +497,7 @@ def run_daily_tokscale(
                     ssh_target=machine.ssh_target,
                     remote_bundle_dir=exported.bundle_dir,
                     local_bundle_dir=local_bundle_dir,
-                    ssh_options=[
-                        "-o",
-                        "ConnectTimeout=8",
-                        "-o",
-                        "ConnectionAttempts=1",
-                        "-o",
-                        "ServerAliveInterval=2",
-                        "-o",
-                        "ServerAliveCountMax=1",
-                    ],
+                    ssh_options=list(SSH_OPTIONS),
                     timeout_seconds=sync_timeout_seconds,
                     capture_output=True,
                 )
@@ -490,7 +539,10 @@ def run_daily_tokscale(
         raw_env = _raw_env_payload(config, selected_machines)
         payload["raw_env"] = raw_env
         if raw_env["status"] != "valid":
-            raise DailyTokscaleError("raw_env", "raw Tokscale view is missing HOME or configured remote import roots")
+            raise DailyTokscaleError(
+                "raw_env",
+                "raw Tokscale view is missing the local projection HOME, local projection state, or configured remote roots",
+            )
 
         latest = run_command(
             ["npm", "view", "tokscale", "version"],
@@ -587,6 +639,20 @@ def run_daily_tokscale(
             "submit_log": str(run_dir / "submit.log"),
             "preview_log": str(run_dir / "preview.log") if preview_ran else None,
         }
+        payload["stable_mirror"] = {"status": "not_requested"}
+        if confirmed and mirror_stable:
+            update_status("stable_mirror")
+            try:
+                stable_result = mirror_stable_layer(config, stable_root=stable_root)
+                payload["stable_mirror"] = stable_mirror_payload(stable_result)
+                if stable_result.status != "verified":
+                    payload.setdefault("warnings", []).append("stable_mirror_not_verified")
+            except Exception as exc:  # noqa: BLE001 - a backup warning must not invalidate a confirmed submit
+                payload["stable_mirror"] = {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                payload.setdefault("warnings", []).append("stable_mirror_failed")
         if receipt_complete:
             payload["status"] = "confirmed"
             exit_code = 0

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 import base64
+import gzip
 import glob
 import hashlib
 import json
@@ -18,13 +19,21 @@ from .archive import _pack_to_bundle_path, _sha256_file
 from .config import MachineConfig, RootRuleConfig, VaultConfig
 
 
-TERMINAL_EVENT_TYPES = {"task_complete", "turn_aborted"}
 PROJECTION_ROOTS_MANIFEST_NAME = "roots-manifest.json"
 PROJECTION_INVENTORY_NAME = "inventory.json"
 LOCAL_PROJECTION_STATE_NAME = ".projection-state.json"
 LOCAL_PROJECTION_ROOTS_MANIFEST_NAME = ".projection-roots-manifest.json"
 LOCAL_PROJECTION_INVENTORY_NAME = ".projection-inventory.json"
 PROJECTION_METADATA_NAMES = {PROJECTION_ROOTS_MANIFEST_NAME, PROJECTION_INVENTORY_NAME}
+LOCAL_HOME_IMPORT_NAME = "local-home"
+LOCAL_HOME_STATE_NAME = ".local-home-projection-state.json"
+LOCAL_HOME_CLIENTS = ("codex", "gemini", "openclaw")
+CODEX_PROJECTION_VERSION = 2
+CODEX_SYSTEM_INJECTED_PREFIXES = (
+    "<environment_context>",
+    "<system-reminder>",
+    "<user_instructions>",
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,32 @@ class ProjectionBundle:
     mode: str = "projection_full"
     base_snapshot_id: str | None = None
     fallback_reason: str | None = None
+    state_status: str | None = None
+    files_seen: int = 0
+    files_projected: int = 0
+    files_reused: int = 0
+
+
+@dataclass(frozen=True)
+class LocalHomeProjectionResult:
+    machine_root: Path
+    projection_home: Path
+    state_path: Path
+    files_seen: int
+    files_written: int
+    files_skipped: int
+    source_bytes_total: int
+    dest_bytes_total: int
+    token_events_total: int
+    clients: tuple[str, ...]
+    dry_run: bool
+
+
+@dataclass(frozen=True)
+class _LocalProjectionFile:
+    client: str
+    source_path: Path
+    relative_destination: Path
 
 
 def _json_load(line: str) -> dict | None:
@@ -141,48 +176,73 @@ def _copy_relative_file(source_root: Path, file_path: Path, dest_root: Path) -> 
     return dest_path.stat().st_size
 
 
-def _build_codex_projection_file(source_path: Path, dest_path: Path) -> dict[str, int]:
-    leading_session_meta_lines: list[str] = []
-    turn_context_line: str | None = None
-    token_event_lines: list[str] = []
-    terminal_line: str | None = None
-    leading_meta_open = True
+def _selected_fields(value: dict, names: tuple[str, ...]) -> dict:
+    return {name: value[name] for name in names if name in value}
 
-    with source_path.open("r", encoding="utf-8", errors="replace") as handle:
-        for raw in handle:
-            line = raw.rstrip("\n")
-            obj = _json_load(line)
-            if obj is None:
-                leading_meta_open = False
-                continue
 
-            obj_type = obj.get("type")
-            payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+def _project_codex_user_message(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    stripped = value.lstrip()
+    for prefix in CODEX_SYSTEM_INJECTED_PREFIXES:
+        if stripped.startswith(prefix):
+            return prefix
+    return "user"
 
-            if obj_type == "session_meta" and leading_meta_open:
-                leading_session_meta_lines.append(line)
-            elif obj_type != "session_meta":
-                leading_meta_open = False
 
-            if obj_type == "turn_context" and turn_context_line is None:
-                turn_context_line = line
+def _project_codex_record(obj: dict) -> dict:
+    projected = _selected_fields(obj, ("timestamp", "time", "created_at", "type", "model", "model_name", "usage"))
+    obj_type = obj.get("type")
+    payload = obj.get("payload")
+    if isinstance(payload, dict):
+        if obj_type == "session_meta":
+            payload_fields = (
+                "id",
+                "forked_from_id",
+                "source",
+                "thread_source",
+                "cwd",
+                "model_provider",
+                "agent_nickname",
+            )
+        elif obj_type == "turn_context":
+            payload_fields = ("type", "model", "model_name", "model_info", "turn_id")
+        else:
+            payload_fields = ("type", "model", "model_name", "model_info", "info", "turn_id")
+        projected_payload = _selected_fields(payload, payload_fields)
+        if obj_type == "event_msg" and payload.get("type") == "user_message":
+            projected_payload["message"] = _project_codex_user_message(payload.get("message"))
+        projected["payload"] = projected_payload
 
-            if obj_type != "event_msg":
-                continue
+    for container_name in ("data", "result", "response"):
+        container = obj.get(container_name)
+        if not isinstance(container, dict) or not isinstance(container.get("usage"), dict):
+            continue
+        projected[container_name] = _selected_fields(
+            container,
+            ("timestamp", "time", "created_at", "model", "model_name", "usage"),
+        )
+    return projected
 
-            event_type = payload.get("type")
-            if event_type == "token_count":
-                token_event_lines.append(line)
-            elif event_type in TERMINAL_EVENT_TYPES:
-                terminal_line = line
 
+def _open_codex_session_text(path: Path):
+    if path.name.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return path.open("r", encoding="utf-8", errors="replace")
+
+
+def build_codex_projection_file(source_path: Path, dest_path: Path) -> dict[str, int]:
     lines: list[str] = []
-    lines.extend(leading_session_meta_lines)
-    if turn_context_line is not None:
-        lines.append(turn_context_line)
-    lines.extend(token_event_lines)
-    if terminal_line is not None:
-        lines.append(terminal_line)
+    token_events = 0
+    with _open_codex_session_text(source_path) as handle:
+        for raw in handle:
+            obj = _json_load(raw)
+            if obj is None:
+                continue
+            payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+            if obj.get("type") == "event_msg" and payload.get("type") == "token_count":
+                token_events += 1
+            lines.append(json.dumps(_project_codex_record(obj), ensure_ascii=False, separators=(",", ":")))
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     with dest_path.open("w", encoding="utf-8") as handle:
@@ -192,7 +252,7 @@ def _build_codex_projection_file(source_path: Path, dest_path: Path) -> dict[str
     return {
         "source_bytes": source_path.stat().st_size,
         "dest_bytes": dest_path.stat().st_size,
-        "token_events": len(token_event_lines),
+        "token_events": token_events,
     }
 
 
@@ -213,7 +273,7 @@ def _project_codex_root(root: DiscoveredRoot, payload_root: Path) -> dict[str, i
         for file_path in sorted(source_root.rglob("*.jsonl")):
             rel = file_path.relative_to(source_root)
             dest_path = payload_root / "codex" / bucket / root.root_id / rel
-            item = _build_codex_projection_file(file_path, dest_path)
+            item = build_codex_projection_file(file_path, dest_path)
             stats["files_written"] += 1
             stats["source_bytes_total"] += item["source_bytes"]
             stats["dest_bytes_total"] += item["dest_bytes"]
@@ -355,7 +415,274 @@ def _load_json_file(path: Path) -> object:
 
 def _write_json_file(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def local_home_projection_root(config: VaultConfig) -> Path:
+    for machine in config.machines.values():
+        if machine.import_name == LOCAL_HOME_IMPORT_NAME:
+            raise ValueError(
+                f"reserved local projection import name is already configured: {LOCAL_HOME_IMPORT_NAME}"
+            )
+    return config.paths.import_root / LOCAL_HOME_IMPORT_NAME
+
+
+def _local_home_machine(config: VaultConfig) -> MachineConfig:
+    return MachineConfig(
+        name=LOCAL_HOME_IMPORT_NAME,
+        import_name=LOCAL_HOME_IMPORT_NAME,
+        ssh_target=None,
+        source_home=config.paths.home,
+        remote_relay_root=None,
+        remote_state_root=None,
+        sync_strategy=None,
+        direct_max_delta_files=None,
+        direct_max_delta_bytes=None,
+        clients=LOCAL_HOME_CLIENTS,
+        roots=tuple(
+            RootRuleConfig(
+                client=client,
+                path=f"~/.{client}",
+                glob=None,
+                label="home",
+                kind="home_root",
+            )
+            for client in LOCAL_HOME_CLIENTS
+        ),
+        root_globs=(),
+    )
+
+
+def _iter_local_projection_files(root: DiscoveredRoot) -> list[_LocalProjectionFile]:
+    files: list[_LocalProjectionFile] = []
+    if root.client == "codex":
+        source_shapes: list[tuple[str, Path]] = []
+        if (root.source_path / "sessions").is_dir():
+            source_shapes.append(("sessions", root.source_path / "sessions"))
+        if (root.source_path / "archived_sessions").is_dir():
+            source_shapes.append(("archived_sessions", root.source_path / "archived_sessions"))
+        for bucket, source_root in source_shapes:
+            for source_path in sorted(source_root.rglob("*.jsonl")):
+                files.append(
+                    _LocalProjectionFile(
+                        client="codex",
+                        source_path=source_path,
+                        relative_destination=Path("codex") / bucket / root.root_id / source_path.relative_to(source_root),
+                    )
+                )
+        return files
+
+    if root.client == "gemini":
+        source_root = root.source_path / "tmp" if (root.source_path / "tmp").is_dir() else root.source_path
+        for source_path in sorted(source_root.rglob("*.json")):
+            if source_path.parent.name == "chats":
+                files.append(
+                    _LocalProjectionFile(
+                        client="gemini",
+                        source_path=source_path,
+                        relative_destination=Path("gemini") / root.root_id / source_path.relative_to(source_root),
+                    )
+                )
+        return files
+
+    if root.client == "openclaw":
+        source_root = root.source_path / "agents" if (root.source_path / "agents").is_dir() else root.source_path
+        for source_path in sorted(source_root.rglob("*")):
+            if source_path.is_file() and ".jsonl" in source_path.name:
+                files.append(
+                    _LocalProjectionFile(
+                        client="openclaw",
+                        source_path=source_path,
+                        relative_destination=(
+                            Path("openclaw")
+                            / root.root_id
+                            / _openclaw_projected_relative_path(source_root, source_path)
+                        ),
+                    )
+                )
+    return files
+
+
+def _local_projection_signature(path: Path) -> dict[str, int]:
+    stat = path.stat()
+    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _load_local_home_state(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        return {"schema_version": 1, "files": {}}
+    try:
+        payload = _load_json_file(path)
+    except (OSError, json.JSONDecodeError):
+        return {"schema_version": 1, "files": {}}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("projector_version") != CODEX_PROJECTION_VERSION
+        or not isinstance(payload.get("files"), dict)
+    ):
+        return {"schema_version": 1, "files": {}}
+    return payload
+
+
+def _project_local_file(item: _LocalProjectionFile, destination: Path) -> dict[str, int]:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        if item.client == "codex":
+            result = build_codex_projection_file(item.source_path, temporary)
+        elif item.client == "gemini":
+            shutil.copy2(item.source_path, temporary)
+            result = {
+                "source_bytes": item.source_path.stat().st_size,
+                "dest_bytes": temporary.stat().st_size,
+                "token_events": 0,
+            }
+        elif item.client == "openclaw":
+            result = _build_openclaw_projection_file(item.source_path, temporary)
+            result["token_events"] = 0
+        else:
+            raise ValueError(f"unsupported local projection client: {item.client}")
+        temporary.replace(destination)
+        return result
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _prepare_projection_home(config: VaultConfig) -> None:
+    projection_home = config.paths.projection_home
+    projection_home.mkdir(parents=True, exist_ok=True)
+    for client in LOCAL_HOME_CLIENTS:
+        unexpected_root = projection_home / f".{client}"
+        if unexpected_root.exists() or unexpected_root.is_symlink():
+            raise ValueError(f"projection HOME must not contain a live client root: {unexpected_root}")
+
+    runtime_config_root = projection_home / ".config" / "tokscale"
+    runtime_config_root.mkdir(parents=True, exist_ok=True)
+    source_config_root = config.paths.home / ".config" / "tokscale"
+    for name in ("credentials.json", "device.json"):
+        source = source_config_root / name
+        destination = runtime_config_root / name
+        if not source.is_file():
+            continue
+        if destination.is_symlink():
+            if destination.resolve() == source.resolve():
+                continue
+            destination.unlink()
+        elif destination.exists():
+            raise ValueError(f"projection HOME runtime config path already exists: {destination}")
+        destination.symlink_to(source)
+
+
+def refresh_local_home_projection(config: VaultConfig, *, dry_run: bool = False) -> LocalHomeProjectionResult:
+    machine_root = local_home_projection_root(config)
+    raw_root = machine_root / ".raw"
+    state_path = machine_root / LOCAL_HOME_STATE_NAME
+    machine = _local_home_machine(config)
+    roots = discover_machine_roots(machine, config.paths.home)
+    state = _load_local_home_state(state_path)
+    state_files = state["files"]
+    assert isinstance(state_files, dict)
+
+    files_seen = 0
+    files_written = 0
+    files_skipped = 0
+    source_bytes_total = 0
+    dest_bytes_total = 0
+    token_events_total = 0
+    seen_clients: set[str] = set()
+
+    for root in roots:
+        seen_clients.add(root.client)
+        for item in _iter_local_projection_files(root):
+            files_seen += 1
+            signature = _local_projection_signature(item.source_path)
+            source_key = str(item.source_path.resolve())
+            destination = raw_root / item.relative_destination
+            previous = state_files.get(source_key)
+            if (
+                isinstance(previous, dict)
+                and previous.get("size") == signature["size"]
+                and previous.get("mtime_ns") == signature["mtime_ns"]
+                and destination.is_file()
+            ):
+                files_skipped += 1
+                continue
+            files_written += 1
+            if dry_run:
+                continue
+            result = _project_local_file(item, destination)
+            source_bytes_total += result["source_bytes"]
+            dest_bytes_total += result["dest_bytes"]
+            token_events_total += result.get("token_events", 0)
+            state_files[source_key] = {
+                **signature,
+                "client": item.client,
+                "destination": str(destination),
+                "projected_at": datetime.now(UTC).isoformat(),
+            }
+
+    if not dry_run:
+        _prepare_projection_home(config)
+        roots_manifest = {
+            "machine": machine.name,
+            "import_name": machine.import_name,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "roots": [
+                {
+                    "root_id": root.root_id,
+                    "client": root.client,
+                    "source_path": str(root.source_path),
+                    "label": root.label,
+                    "kind": root.kind,
+                }
+                for root in roots
+            ],
+        }
+        _write_json_file(machine_root / LOCAL_PROJECTION_ROOTS_MANIFEST_NAME, roots_manifest)
+        state.update(
+            {
+                "schema_version": 1,
+                "projector_version": CODEX_PROJECTION_VERSION,
+                "status": "valid",
+                "source_home": str(config.paths.home),
+                "projection_home": str(config.paths.projection_home),
+                "updated_at": datetime.now(UTC).isoformat(),
+                "files": state_files,
+            }
+        )
+        _write_json_file(state_path, state)
+
+    return LocalHomeProjectionResult(
+        machine_root=machine_root,
+        projection_home=config.paths.projection_home,
+        state_path=state_path,
+        files_seen=files_seen,
+        files_written=files_written,
+        files_skipped=files_skipped,
+        source_bytes_total=source_bytes_total,
+        dest_bytes_total=dest_bytes_total,
+        token_events_total=token_events_total,
+        clients=tuple(sorted(seen_clients)),
+        dry_run=dry_run,
+    )
+
+
+def local_home_projection_payload(result: LocalHomeProjectionResult) -> dict[str, object]:
+    return {
+        "status": "planned" if result.dry_run else "projected",
+        "machine_root": str(result.machine_root),
+        "projection_home": str(result.projection_home),
+        "state_path": str(result.state_path),
+        "files_seen": result.files_seen,
+        "files_written": result.files_written,
+        "files_skipped": result.files_skipped,
+        "source_bytes_total": result.source_bytes_total,
+        "dest_bytes_total": result.dest_bytes_total,
+        "token_events_total": result.token_events_total,
+        "clients": list(result.clients),
+    }
 
 
 def _load_current_snapshot_id(machine_root: Path | None) -> str | None:
@@ -376,6 +703,7 @@ def _build_projection_payload(machine: MachineConfig, source_home: Path, payload
     roots_manifest: dict[str, object] = {
         "machine": machine.name,
         "import_name": machine.import_name,
+        "projector_versions": {"codex": CODEX_PROJECTION_VERSION},
         "generated_at": datetime.now(UTC).isoformat(),
         "roots": [],
     }
@@ -465,6 +793,7 @@ def _roots_manifest_identity(roots_manifest: object) -> object:
     return {
         "machine": roots_manifest.get("machine"),
         "import_name": roots_manifest.get("import_name"),
+        "projector_versions": roots_manifest.get("projector_versions"),
         "roots": roots_manifest.get("roots"),
     }
 
@@ -696,6 +1025,9 @@ def import_machine_projection(
     if canonicalize_command:
         subprocess.run([canonicalize_command, "--machine-root", str(machine_root)], check=True)
 
+    projection_state = payload.get("projection_state")
+    if not isinstance(projection_state, dict):
+        projection_state = {}
     return ProjectionBundle(
         machine_name=machine_name,
         snapshot_id=str(payload.get("snapshot_id")),
@@ -708,6 +1040,12 @@ def import_machine_projection(
         mode=mode,
         base_snapshot_id=payload.get("base_snapshot_id") if isinstance(payload.get("base_snapshot_id"), str) else None,
         fallback_reason=payload.get("fallback_reason") if isinstance(payload.get("fallback_reason"), str) else None,
+        state_status=(
+            projection_state.get("status") if isinstance(projection_state.get("status"), str) else None
+        ),
+        files_seen=int(projection_state.get("files_seen", 0)),
+        files_projected=int(projection_state.get("files_projected", 0)),
+        files_reused=int(projection_state.get("files_reused", 0)),
     )
 
 
@@ -781,10 +1119,15 @@ import shutil
 import subprocess
 import tarfile
 
-TERMINAL_EVENT_TYPES = {"task_complete", "turn_aborted"}
 PROJECTION_ROOTS_MANIFEST_NAME = "roots-manifest.json"
 PROJECTION_INVENTORY_NAME = "inventory.json"
-PROJECTION_METADATA_NAMES = {PROJECTION_ROOTS_MANIFEST_NAME, PROJECTION_INVENTORY_NAME}
+CODEX_PROJECTION_VERSION = 2
+PROJECTION_STATE_SCHEMA_VERSION = 1
+CODEX_SYSTEM_INJECTED_PREFIXES = (
+    "<environment_context>",
+    "<system-reminder>",
+    "<user_instructions>",
+)
 
 
 def _json_load(line):
@@ -873,49 +1216,67 @@ def _write_json_file(path, payload):
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 
 
-def _copy_relative_file(source_root, file_path, dest_root):
-    rel = file_path.relative_to(source_root)
-    dest_path = dest_root / rel
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(file_path, dest_path)
-    return dest_path.stat().st_size
+def _selected_fields(value, names):
+    return {name: value[name] for name in names if name in value}
+
+
+def _project_codex_user_message(value):
+    if not isinstance(value, str):
+        return ""
+    stripped = value.lstrip()
+    for prefix in CODEX_SYSTEM_INJECTED_PREFIXES:
+        if stripped.startswith(prefix):
+            return prefix
+    return "user"
+
+
+def _project_codex_record(obj):
+    projected = _selected_fields(obj, ("timestamp", "time", "created_at", "type", "model", "model_name", "usage"))
+    obj_type = obj.get("type")
+    payload = obj.get("payload")
+    if isinstance(payload, dict):
+        if obj_type == "session_meta":
+            payload_fields = (
+                "id",
+                "forked_from_id",
+                "source",
+                "thread_source",
+                "cwd",
+                "model_provider",
+                "agent_nickname",
+            )
+        elif obj_type == "turn_context":
+            payload_fields = ("type", "model", "model_name", "model_info", "turn_id")
+        else:
+            payload_fields = ("type", "model", "model_name", "model_info", "info", "turn_id")
+        projected_payload = _selected_fields(payload, payload_fields)
+        if obj_type == "event_msg" and payload.get("type") == "user_message":
+            projected_payload["message"] = _project_codex_user_message(payload.get("message"))
+        projected["payload"] = projected_payload
+
+    for container_name in ("data", "result", "response"):
+        container = obj.get(container_name)
+        if not isinstance(container, dict) or not isinstance(container.get("usage"), dict):
+            continue
+        projected[container_name] = _selected_fields(
+            container,
+            ("timestamp", "time", "created_at", "model", "model_name", "usage"),
+        )
+    return projected
 
 
 def _build_codex_projection_file(source_path, dest_path):
-    leading_session_meta_lines = []
-    turn_context_line = None
-    token_event_lines = []
-    terminal_line = None
-    leading_meta_open = True
+    lines = []
+    token_events = 0
     with source_path.open("r", encoding="utf-8", errors="replace") as handle:
         for raw in handle:
-            line = raw.rstrip("\\n")
-            obj = _json_load(line)
+            obj = _json_load(raw)
             if obj is None:
-                leading_meta_open = False
                 continue
-            obj_type = obj.get("type")
             payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-            if obj_type == "session_meta" and leading_meta_open:
-                leading_session_meta_lines.append(line)
-            elif obj_type != "session_meta":
-                leading_meta_open = False
-            if obj_type == "turn_context" and turn_context_line is None:
-                turn_context_line = line
-            if obj_type != "event_msg":
-                continue
-            event_type = payload.get("type")
-            if event_type == "token_count":
-                token_event_lines.append(line)
-            elif event_type in TERMINAL_EVENT_TYPES:
-                terminal_line = line
-    lines = []
-    lines.extend(leading_session_meta_lines)
-    if turn_context_line is not None:
-        lines.append(turn_context_line)
-    lines.extend(token_event_lines)
-    if terminal_line is not None:
-        lines.append(terminal_line)
+            if obj.get("type") == "event_msg" and payload.get("type") == "token_count":
+                token_events += 1
+            lines.append(json.dumps(_project_codex_record(obj), ensure_ascii=False, separators=(",", ":")))
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     with dest_path.open("w", encoding="utf-8") as handle:
         if lines:
@@ -924,45 +1285,8 @@ def _build_codex_projection_file(source_path, dest_path):
     return {
         "source_bytes": source_path.stat().st_size,
         "dest_bytes": dest_path.stat().st_size,
-        "token_events": len(token_event_lines),
+        "token_events": token_events,
     }
-
-
-def _project_codex_root(root, payload_root):
-    stats = {"files_written": 0, "source_bytes_total": 0, "dest_bytes_total": 0, "token_events_total": 0}
-    source_path = root["source_path"]
-    source_shapes = []
-    if (source_path / "sessions").is_dir():
-        source_shapes.append(("sessions", source_path / "sessions"))
-    if (source_path / "archived_sessions").is_dir():
-        source_shapes.append(("archived_sessions", source_path / "archived_sessions"))
-    if source_path.name == "sessions":
-        source_shapes.append(("sessions", source_path))
-    if source_path.name == "archived_sessions":
-        source_shapes.append(("archived_sessions", source_path))
-    for bucket, source_root in source_shapes:
-        for file_path in sorted(source_root.rglob("*.jsonl")):
-            rel = file_path.relative_to(source_root)
-            dest_path = payload_root / "codex" / bucket / root["root_id"] / rel
-            item = _build_codex_projection_file(file_path, dest_path)
-            stats["files_written"] += 1
-            stats["source_bytes_total"] += item["source_bytes"]
-            stats["dest_bytes_total"] += item["dest_bytes"]
-            stats["token_events_total"] += item["token_events"]
-    return stats
-
-
-def _project_gemini_root(root, payload_root):
-    source_root = root["source_path"] / "tmp" if (root["source_path"] / "tmp").is_dir() else root["source_path"]
-    dest_root = payload_root / "gemini" / root["root_id"]
-    stats = {"files_written": 0, "source_bytes_total": 0, "dest_bytes_total": 0}
-    for file_path in sorted(source_root.rglob("*.json")):
-        if file_path.parent.name != "chats":
-            continue
-        stats["files_written"] += 1
-        stats["source_bytes_total"] += file_path.stat().st_size
-        stats["dest_bytes_total"] += _copy_relative_file(source_root, file_path, dest_root)
-    return stats
 
 
 def _project_openclaw_content_item(item):
@@ -1045,39 +1369,29 @@ def _build_openclaw_projection_file(source_path, dest_path):
     }
 
 
-def _project_openclaw_root(root, payload_root):
-    source_root = root["source_path"] / "agents" if (root["source_path"] / "agents").is_dir() else root["source_path"]
-    dest_root = payload_root / "openclaw" / root["root_id"]
-    stats = {"files_written": 0, "source_bytes_total": 0, "dest_bytes_total": 0}
-    for file_path in sorted(source_root.rglob("*")):
-        if not file_path.is_file() or ".jsonl" not in file_path.name:
-            continue
-        dest_path = dest_root / _openclaw_projected_relative_path(source_root, file_path)
-        item = _build_openclaw_projection_file(file_path, dest_path)
-        stats["files_written"] += 1
-        stats["source_bytes_total"] += item["source_bytes"]
-        stats["dest_bytes_total"] += item["dest_bytes"]
-    return stats
+def _add_projection_file(items, client, source_path, relative_destination):
+    rel = relative_destination.as_posix()
+    existing = items.get(rel)
+    if existing is not None and existing["source_path"] != source_path:
+        raise RuntimeError(f"projection destination collision: {rel}")
+    items[rel] = {
+        "client": client,
+        "source_path": source_path,
+        "destination": rel,
+    }
 
 
-def _build_projection_payload(machine_name, import_name, roots, source_home, payload_root):
+def _build_projection_plan(machine_name, import_name, roots, source_home):
     discovered = discover_machine_roots(roots, source_home)
     roots_manifest = {
         "machine": machine_name,
         "import_name": import_name,
+        "projector_versions": {"codex": CODEX_PROJECTION_VERSION},
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "roots": [],
     }
-    summary = {"files_written": 0, "source_bytes_total": 0, "dest_bytes_total": 0, "token_events_total": 0}
+    items = {}
     for root in discovered:
-        if root["client"] == "codex":
-            item = _project_codex_root(root, payload_root)
-        elif root["client"] == "gemini":
-            item = _project_gemini_root(root, payload_root)
-        elif root["client"] == "openclaw":
-            item = _project_openclaw_root(root, payload_root)
-        else:
-            continue
         roots_manifest["roots"].append(
             {
                 "root_id": root["root_id"],
@@ -1087,26 +1401,194 @@ def _build_projection_payload(machine_name, import_name, roots, source_home, pay
                 "kind": root.get("kind"),
             }
         )
-        for key, value in item.items():
-            if key in summary:
-                summary[key] += value
-    return roots_manifest, summary
+        client = root["client"]
+        source_path = root["source_path"]
+        if client == "codex":
+            source_shapes = []
+            if (source_path / "sessions").is_dir():
+                source_shapes.append(("sessions", source_path / "sessions"))
+            if (source_path / "archived_sessions").is_dir():
+                source_shapes.append(("archived_sessions", source_path / "archived_sessions"))
+            if source_path.name == "sessions":
+                source_shapes.append(("sessions", source_path))
+            if source_path.name == "archived_sessions":
+                source_shapes.append(("archived_sessions", source_path))
+            for bucket, source_root in source_shapes:
+                for file_path in sorted(source_root.rglob("*.jsonl")):
+                    _add_projection_file(
+                        items,
+                        client,
+                        file_path,
+                        Path("codex") / bucket / root["root_id"] / file_path.relative_to(source_root),
+                    )
+        elif client == "gemini":
+            source_root = source_path / "tmp" if (source_path / "tmp").is_dir() else source_path
+            for file_path in sorted(source_root.rglob("*.json")):
+                if file_path.parent.name == "chats":
+                    _add_projection_file(
+                        items,
+                        client,
+                        file_path,
+                        Path("gemini") / root["root_id"] / file_path.relative_to(source_root),
+                    )
+        elif client == "openclaw":
+            source_root = source_path / "agents" if (source_path / "agents").is_dir() else source_path
+            for file_path in sorted(source_root.rglob("*")):
+                if file_path.is_file() and ".jsonl" in file_path.name:
+                    _add_projection_file(
+                        items,
+                        client,
+                        file_path,
+                        Path("openclaw") / root["root_id"] / _openclaw_projected_relative_path(source_root, file_path),
+                    )
+    return roots_manifest, [items[rel] for rel in sorted(items)]
 
 
-def _build_projection_inventory(payload_root):
-    inventory = []
-    for file_path in sorted(path for path in payload_root.rglob("*") if path.is_file()):
-        rel = file_path.relative_to(payload_root).as_posix()
-        if rel in PROJECTION_METADATA_NAMES:
-            continue
-        inventory.append(
-            {
-                "path": rel,
-                "sha256": _sha256_file(file_path),
-                "bytes": file_path.stat().st_size,
+def _projection_signature(path):
+    stat = path.stat()
+    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _load_projection_state(path, roots_identity):
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != PROJECTION_STATE_SCHEMA_VERSION:
+        return None
+    if payload.get("projector_versions") != {"codex": CODEX_PROJECTION_VERSION}:
+        return None
+    if payload.get("roots_identity") != roots_identity:
+        return None
+    if not isinstance(payload.get("files"), dict):
+        return None
+    return payload
+
+
+def _project_to_blob(item, blob_root):
+    source_path = item["source_path"]
+    before = _projection_signature(source_path)
+    blob_root.mkdir(parents=True, exist_ok=True)
+    temp_name = hashlib.sha1(item["destination"].encode("utf-8")).hexdigest()
+    temporary = blob_root / f".{os.getpid()}-{temp_name}.tmp"
+    if temporary.exists():
+        temporary.unlink()
+    try:
+        if item["client"] == "codex":
+            result = _build_codex_projection_file(source_path, temporary)
+        elif item["client"] == "gemini":
+            shutil.copy2(source_path, temporary)
+            result = {
+                "source_bytes": source_path.stat().st_size,
+                "dest_bytes": temporary.stat().st_size,
+                "token_events": 0,
             }
-        )
-    return inventory
+        elif item["client"] == "openclaw":
+            result = _build_openclaw_projection_file(source_path, temporary)
+            result["token_events"] = 0
+        else:
+            raise RuntimeError(f"unsupported projection client: {item['client']}")
+        after = _projection_signature(source_path)
+        if after != before:
+            raise RuntimeError(f"source changed during projection: {source_path}")
+        digest = _sha256_file(temporary)
+        blob_path = blob_root / digest
+        if blob_path.is_file():
+            temporary.unlink()
+        else:
+            temporary.replace(blob_path)
+        return {
+            "client": item["client"],
+            "source_path": str(source_path),
+            "size": before["size"],
+            "mtime_ns": before["mtime_ns"],
+            "sha256": digest,
+            "source_bytes": int(result["source_bytes"]),
+            "dest_bytes": int(result["dest_bytes"]),
+            "token_events": int(result.get("token_events", 0)),
+        }
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _refresh_projection_files(items, previous_state, blob_root):
+    previous_files = previous_state.get("files", {}) if previous_state else {}
+    current_files = {}
+    projected = []
+    reused = 0
+    for item in items:
+        rel = item["destination"]
+        signature = _projection_signature(item["source_path"])
+        previous = previous_files.get(rel)
+        reusable = isinstance(previous, dict)
+        if reusable:
+            blob_path = blob_root / str(previous.get("sha256") or "")
+            reusable = (
+                previous.get("source_path") == str(item["source_path"])
+                and previous.get("client") == item["client"]
+                and previous.get("size") == signature["size"]
+                and previous.get("mtime_ns") == signature["mtime_ns"]
+                and blob_path.is_file()
+                and blob_path.stat().st_size == previous.get("dest_bytes")
+            )
+        if reusable:
+            current_files[rel] = previous
+            reused += 1
+            continue
+        current_files[rel] = _project_to_blob(item, blob_root)
+        projected.append(rel)
+    deleted = sorted(rel for rel in previous_files if rel not in current_files)
+    return current_files, projected, reused, deleted
+
+
+def _projection_inventory(files):
+    return [
+        {"path": rel, "sha256": files[rel]["sha256"], "bytes": files[rel]["dest_bytes"]}
+        for rel in sorted(files)
+    ]
+
+
+def _summary_for_paths(files, relative_paths):
+    return {
+        "files_written": len(relative_paths),
+        "source_bytes_total": sum(int(files[rel]["source_bytes"]) for rel in relative_paths),
+        "dest_bytes_total": sum(int(files[rel]["dest_bytes"]) for rel in relative_paths),
+        "token_events_total": sum(int(files[rel].get("token_events", 0)) for rel in relative_paths),
+    }
+
+
+def _materialize_projection(files, blob_root, payload_root, relative_paths):
+    for rel in relative_paths:
+        source_path = blob_root / files[rel]["sha256"]
+        if not source_path.is_file():
+            raise FileNotFoundError(f"projection blob missing: {source_path}")
+        dest_path = payload_root / Path(rel)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(str(source_path), str(dest_path))
+        except OSError:
+            shutil.copy2(source_path, dest_path)
+
+
+def _write_projection_state(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _cleanup_projection_blobs(blob_root, files):
+    referenced = {item["sha256"] for item in files.values()}
+    if not blob_root.is_dir():
+        return
+    for path in blob_root.iterdir():
+        if path.is_file() and path.name not in referenced:
+            path.unlink()
 
 
 def _inventory_index(inventory):
@@ -1144,24 +1626,9 @@ def _roots_manifest_identity(roots_manifest):
     return {
         "machine": roots_manifest.get("machine"),
         "import_name": roots_manifest.get("import_name"),
+        "projector_versions": roots_manifest.get("projector_versions"),
         "roots": roots_manifest.get("roots"),
     }
-
-
-def _copy_projection_subset(source_root, dest_root, relative_paths):
-    stats = {"files_written": 0, "source_bytes_total": 0, "dest_bytes_total": 0, "token_events_total": 0}
-    for rel in relative_paths:
-        source_path = source_root / Path(rel)
-        if not source_path.is_file():
-            raise FileNotFoundError(f"projection source file missing from staging payload: {source_path}")
-        dest_path = dest_root / Path(rel)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, dest_path)
-        file_bytes = source_path.stat().st_size
-        stats["files_written"] += 1
-        stats["source_bytes_total"] += file_bytes
-        stats["dest_bytes_total"] += file_bytes
-    return stats
 
 
 def main():
@@ -1173,6 +1640,7 @@ def main():
     import_name = request.get("import_name") or machine_name
     source_home = Path(request["source_home"]).expanduser().resolve()
     relay_root = Path(request["relay_root"]).expanduser().resolve()
+    state_root_raw = request.get("state_root")
     roots = request["roots"]
     requested_base_snapshot_id = request.get("base_snapshot_id")
     snapshot_id = f"{machine_name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
@@ -1183,22 +1651,30 @@ def main():
     payload_root = staging_dir / "payload"
     payload_root.mkdir(parents=True, exist_ok=True)
 
-    roots_manifest, full_summary = _build_projection_payload(machine_name, import_name, roots, source_home, payload_root)
-    full_roots_manifest_path, full_inventory_path = _write_projection_metadata(
-        payload_root,
-        roots_manifest,
-        _build_projection_inventory(payload_root),
+    roots_manifest, projection_items = _build_projection_plan(machine_name, import_name, roots, source_home)
+    roots_identity = _roots_manifest_identity(roots_manifest)
+    persistent_state = isinstance(state_root_raw, str) and bool(state_root_raw)
+    if persistent_state:
+        state_dir = Path(state_root_raw).expanduser().resolve() / machine_name / "projection"
+    else:
+        state_dir = staging_dir / ".projection-state"
+    state_path = state_dir / "state.json"
+    blob_root = state_dir / "blobs"
+    previous_state = _load_projection_state(state_path, roots_identity) if persistent_state else None
+    state_status = "incremental" if previous_state is not None else "rebuilt" if persistent_state else "disabled"
+    current_files, projected_files, reused_files, state_deleted_files = _refresh_projection_files(
+        projection_items,
+        previous_state,
+        blob_root,
     )
+    current_inventory = _projection_inventory(current_files)
 
     mode = "projection_full"
     resolved_base_snapshot_id = None
     fallback_reason = None
     changed_files = []
     deleted_files = []
-    payload_source = payload_root
-    roots_manifest_path = full_roots_manifest_path
-    inventory_path = full_inventory_path
-    summary = dict(full_summary)
+    payload_paths = sorted(current_files)
 
     if isinstance(requested_base_snapshot_id, str) and requested_base_snapshot_id:
         previous_bundle_dir = relay_root / "projection" / machine_name / requested_base_snapshot_id
@@ -1212,28 +1688,22 @@ def main():
                 fallback_reason = "roots_manifest_changed"
             else:
                 previous_inventory = json.loads(previous_inventory_path.read_text(encoding="utf-8"))
-                current_inventory = json.loads(full_inventory_path.read_text(encoding="utf-8"))
                 changed_files, deleted_files = _diff_projection_inventory(previous_inventory, current_inventory)
-                delta_payload_root = staging_dir / "delta-payload"
-                delta_payload_root.mkdir(parents=True, exist_ok=True)
-                summary = _copy_projection_subset(payload_root, delta_payload_root, changed_files)
-                roots_manifest_path, inventory_path = _write_projection_metadata(
-                    delta_payload_root,
-                    roots_manifest,
-                    current_inventory,
-                )
-                payload_source = delta_payload_root
                 mode = "projection_delta"
                 resolved_base_snapshot_id = requested_base_snapshot_id
+                payload_paths = changed_files
     else:
         fallback_reason = "missing_local_state"
 
+    _materialize_projection(current_files, blob_root, payload_root, payload_paths)
+    roots_manifest_path, inventory_path = _write_projection_metadata(payload_root, roots_manifest, current_inventory)
+    summary = _summary_for_paths(current_files, payload_paths)
     bundle_dir.mkdir(parents=True, exist_ok=True)
     if shutil.which("zstd"):
         bundle_path = bundle_dir / "payload.tar.zst"
     else:
         bundle_path = bundle_dir / "payload.tar.gz"
-    _pack_to_bundle_path(payload_source, bundle_path)
+    _pack_to_bundle_path(payload_root, bundle_path)
     bundle_roots_manifest_path = bundle_dir / PROJECTION_ROOTS_MANIFEST_NAME
     bundle_inventory_path = bundle_dir / PROJECTION_INVENTORY_NAME
     shutil.copy2(roots_manifest_path, bundle_roots_manifest_path)
@@ -1257,6 +1727,13 @@ def main():
             "sha256": _sha256_file(bundle_inventory_path),
         },
         "summary": summary,
+        "projection_state": {
+            "status": state_status,
+            "files_seen": len(projection_items),
+            "files_projected": len(projected_files),
+            "files_reused": reused_files,
+            "files_deleted": len(state_deleted_files),
+        },
     }
     if resolved_base_snapshot_id is not None:
         manifest_payload["base_snapshot_id"] = resolved_base_snapshot_id
@@ -1268,6 +1745,19 @@ def main():
     manifest_path = bundle_dir / "manifest.json"
     _write_json_file(manifest_path, manifest_payload)
     shutil.rmtree(staging_dir)
+    if persistent_state:
+        _write_projection_state(
+            state_path,
+            {
+                "schema_version": PROJECTION_STATE_SCHEMA_VERSION,
+                "projector_versions": {"codex": CODEX_PROJECTION_VERSION},
+                "roots_identity": roots_identity,
+                "current_snapshot_id": snapshot_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "files": current_files,
+            },
+        )
+        _cleanup_projection_blobs(blob_root, current_files)
     print(
         json.dumps(
             {
@@ -1280,6 +1770,10 @@ def main():
                 "mode": mode,
                 "base_snapshot_id": resolved_base_snapshot_id,
                 "fallback_reason": fallback_reason,
+                "state_status": state_status,
+                "files_seen": len(projection_items),
+                "files_projected": len(projected_files),
+                "files_reused": reused_files,
             }
         )
     )
@@ -1325,6 +1819,7 @@ def export_machine_projection_ssh(
                 "import_name": machine.import_name,
                 "source_home": str(source_home),
                 "relay_root": str(relay_root),
+                "state_root": str(machine.remote_state_root) if machine.remote_state_root else None,
                 "roots": rules,
                 "base_snapshot_id": base_snapshot_id,
             },
@@ -1367,6 +1862,10 @@ def export_machine_projection_ssh(
         mode=str(payload.get("mode") or "projection_full"),
         base_snapshot_id=payload.get("base_snapshot_id") if isinstance(payload.get("base_snapshot_id"), str) else None,
         fallback_reason=payload.get("fallback_reason") if isinstance(payload.get("fallback_reason"), str) else None,
+        state_status=payload.get("state_status") if isinstance(payload.get("state_status"), str) else None,
+        files_seen=int(payload.get("files_seen", 0)),
+        files_projected=int(payload.get("files_projected", 0)),
+        files_reused=int(payload.get("files_reused", 0)),
     )
 
 

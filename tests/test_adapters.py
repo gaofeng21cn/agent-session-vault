@@ -16,9 +16,9 @@ shadow_home = "/tmp/shadow-home"
 local_workspace_extras = "/tmp/extras"
 archive_root = "/tmp/archive"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex", "gemini", "openclaw"]
 """.strip()
         + "\n",
@@ -26,9 +26,9 @@ clients = ["codex", "gemini", "openclaw"]
     )
 
     config = load_config(config_path)
-    command = build_direct_sync_command(config, "imac")
+    command = build_direct_sync_command(config, "machine-a")
 
-    assert command == ["tokscale-pull-remote", "imac", "imac-sync"]
+    assert command == ["tokscale-pull-remote", "machine-a", "session-sync-a"]
 
 
 def test_build_canonicalize_machine_command_uses_import_name(tmp_path: Path) -> None:
@@ -43,9 +43,9 @@ shadow_home = "/tmp/shadow-home"
 local_workspace_extras = "/tmp/extras"
 archive_root = "/tmp/archive"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex"]
 """.strip()
         + "\n",
@@ -53,6 +53,6 @@ clients = ["codex"]
     )
 
     config = load_config(config_path)
-    command = build_canonicalize_machine_command(config, "imac")
+    command = build_canonicalize_machine_command(config, "machine-a")
 
-    assert command == ["tokscale-canonicalize-import-machine", "imac"]
+    assert command == ["tokscale-canonicalize-import-machine", "machine-a"]

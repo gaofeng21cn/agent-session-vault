@@ -6,6 +6,7 @@
 
 - machine name 应该是稳定 hostname，而不是临时 IP
 - `projection-first` 是默认同步主链路
+- raw Tokscale 默认只读取本机/远端 projections 与 managed extras，不直接读取 live HOME
 - raw sync 仍然可用，但必须显式请求
 - Tokscale 是下游，不应该由本仓库去打补丁
 - 机器配置里既可能有 home-level roots，也可能有 project-level root globs
@@ -41,10 +42,12 @@ agent-session-vault sync auto <machine> --json
 日常提交应使用本仓确定性 runner。它会解析 npm latest，通过本仓 Tokscale 入口传入明确包版本，并只在包版本变化时重新检查 help 与官方 preview。
 
 ```bash
-agent-session-vault ops daily-tokscale --json
+agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-一次性人工检查仍应使用本仓 `tokscale exec` 入口，不要裸跑 Tokscale。
+runner 会先增量刷新 `imports/local-home/.raw`，再同步远端。raw 日常链路默认不重建 canonical tree。`--mirror-stable` 完成默认 Tokscale analytics continuity；不要因为可选的 `full_fidelity_restore_ready=false` 把默认流程报告成失败。
+
+一次性人工检查仍应使用本仓 `tokscale exec` 入口，不要裸跑 Tokscale。raw exec 会自动刷新本机 projection；`tokscale env` 只做 readback。
 
 更贴近提交行为的口径：
 
@@ -68,6 +71,7 @@ agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict --
 - 不要把 hostname 风格 machine identity 静默替换成裸 IP
 - 不要为了统计方便去 patch Tokscale、OMX、Gemini CLI、OpenClaw 上游
 - 不要把日常同步流程和 destructive 删除 live roots 绑在一起
+- 不要把完整会话迁移当作默认要求；只有用户明确需要正文恢复、搜索或继续会话时才使用 `--include-live-sessions`
 
 ## 比较稳妥的执行顺序
 

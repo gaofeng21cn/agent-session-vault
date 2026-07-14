@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_session_vault.config import load_config
 from agent_session_vault.local_codex import sync_local_codex_sources
+from agent_session_vault.projection import CODEX_PROJECTION_VERSION
 from scripts.sync_local_codex_tokscale_sources import discover_local_codex_sources, discover_runtime_roots
 
 
@@ -86,6 +87,7 @@ def test_sync_local_codex_sources_projects_live_and_cold_archived_sessions(tmp_p
     assert all("/sessions/" in path.as_posix() for path in projected)
     assert sum(path.read_text(encoding="utf-8").count('"token_count"') for path in projected) == 2
     assert all("not needed" not in path.read_text(encoding="utf-8") for path in projected)
+    assert json.loads(result.state_path.read_text(encoding="utf-8"))["projector_version"] == CODEX_PROJECTION_VERSION
 
     live_session.unlink()
     second = sync_local_codex_sources(config, sources=[quest_root], namespace="volatile-codex-homes")

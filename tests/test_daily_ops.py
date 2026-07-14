@@ -38,8 +38,8 @@ def _write_config(tmp_path: Path, *, create_raw_roots: bool = True) -> Path:
     relay = tmp_path / "relay"
     home.mkdir()
     if create_raw_roots:
-        (imports / "imac" / ".raw" / "codex").mkdir(parents=True)
-        (imports / "m1max-mbp" / ".raw" / "codex").mkdir(parents=True)
+        (imports / "machine-a" / ".raw" / "codex").mkdir(parents=True)
+        (imports / "machine-b" / ".raw" / "codex").mkdir(parents=True)
         (extras / "managed" / "codex").mkdir(parents=True)
         (extras / "managed" / "sync-state.json").write_text("{}\n", encoding="utf-8")
     config_path = tmp_path / "config.toml"
@@ -54,16 +54,16 @@ local_workspace_extras = "{extras}"
 archive_root = "{tmp_path / 'archive'}"
 relay_root = "{relay}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "/remote/home"
 remote_relay_root = "/remote/relay"
 clients = ["codex"]
 
-[machines.m1max-mbp]
-import_name = "m1max-mbp"
-ssh_target = "tokscale-sync-m1max"
+[machines.machine-b]
+import_name = "machine-b"
+ssh_target = "session-sync-b"
 source_home = "/remote/home"
 remote_relay_root = "/remote/relay"
 clients = ["codex"]
@@ -86,6 +86,10 @@ def _bundle(machine_name: str, snapshot_id: str, bundle_dir: Path) -> Projection
         bundle_bytes=1234,
         mode="projection_delta",
         base_snapshot_id=f"{machine_name}-previous",
+        state_status="incremental",
+        files_seen=12,
+        files_projected=2,
+        files_reused=10,
     )
 
 
@@ -202,6 +206,48 @@ def test_daily_tokscale_new_version_checks_help_and_preview(tmp_path: Path, monk
     assert contract["tokscale_version"] == "4.5.2"
 
 
+def test_daily_tokscale_can_mirror_analytics_state_after_confirmed_submit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    run_root = tmp_path / "ops"
+    calls: list[list[str]] = []
+    _write_cached_contract(run_root)
+    _install_sync_fakes(monkeypatch, tmp_path)
+    _install_command_fake(monkeypatch, calls)
+
+    result = run_daily_tokscale(config, run_root=run_root, mirror_stable=True)
+
+    assert result.exit_code == 0
+    assert result.payload["status"] == "confirmed"
+    assert result.payload["stable_mirror"]["status"] == "verified"
+    assert result.payload["stable_mirror"]["profile"] == "analytics"
+
+
+def test_daily_tokscale_preserves_confirmed_submit_when_stable_mirror_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    run_root = tmp_path / "ops"
+    calls: list[list[str]] = []
+    _write_cached_contract(run_root)
+    _install_sync_fakes(monkeypatch, tmp_path)
+    _install_command_fake(monkeypatch, calls)
+    monkeypatch.setattr(
+        "agent_session_vault.daily_ops.mirror_stable_layer",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("cloud unavailable")),
+    )
+
+    result = run_daily_tokscale(config, run_root=run_root, mirror_stable=True)
+
+    assert result.exit_code == 0
+    assert result.payload["status"] == "confirmed"
+    assert result.payload["stable_mirror"]["status"] == "failed"
+    assert result.payload["warnings"] == ["stable_mirror_failed"]
+
+
 def test_daily_tokscale_skips_unavailable_remote_without_blocking_submit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -214,7 +260,7 @@ def test_daily_tokscale_skips_unavailable_remote_without_blocking_submit(
     _install_command_fake(monkeypatch, calls)
 
     def fake_probe(machine, timeout_seconds: float) -> dict[str, object]:
-        status = "skipped_unavailable" if machine.name == "m1max-mbp" else "available"
+        status = "skipped_unavailable" if machine.name == "machine-b" else "available"
         return {"status": status, "duration_seconds": 0.01, "reason": None}
 
     monkeypatch.setattr("agent_session_vault.daily_ops._probe_machine", fake_probe)
@@ -223,8 +269,14 @@ def test_daily_tokscale_skips_unavailable_remote_without_blocking_submit(
 
     assert result.exit_code == 0
     remotes = {item["machine"]: item for item in result.payload["remotes"]}
-    assert remotes["imac"]["status"] == "synced"
-    assert remotes["m1max-mbp"]["status"] == "skipped_unavailable"
+    assert remotes["machine-a"]["status"] == "synced"
+    assert remotes["machine-a"]["bundle"]["projection_state"] == {
+        "status": "incremental",
+        "files_seen": 12,
+        "files_projected": 2,
+        "files_reused": 10,
+    }
+    assert remotes["machine-b"]["status"] == "skipped_unavailable"
     assert result.payload["tokscale"]["submit_status"] == "confirmed"
 
 
@@ -267,13 +319,16 @@ def test_cli_daily_tokscale_emits_runner_json(tmp_path: Path, monkeypatch: pytes
             "ops",
             "daily-tokscale",
             "--machine",
-            "imac",
+            "machine-a",
+            "--mirror-stable",
             "--json",
         ]
     )
 
     assert exit_code == 0
-    assert captured["machine_names"] == ["imac"]
+    assert captured["machine_names"] == ["machine-a"]
+    assert captured["canonicalize_command"] is None
+    assert captured["mirror_stable"] is True
     assert json.loads(capsys.readouterr().out) == {"status": "confirmed"}
 
 

@@ -18,7 +18,9 @@ from .projection import (
     export_machine_projection_ssh,
     fetch_projection_bundle_ssh,
     import_machine_projection,
+    local_home_projection_payload,
     pending_projection_bundle_dirs,
+    refresh_local_home_projection,
 )
 from .relay import (
     export_machine_delta,
@@ -29,7 +31,7 @@ from .relay import (
 )
 from .retention import apply_archive_plan, build_archive_plan
 from .storage import summarize_storage
-from .stable import mirror_stable_layer, stable_mirror_payload
+from .stable import migration_plan_payload, mirror_stable_layer, stable_mirror_payload
 from .syncing import choose_projection_transport, choose_sync_strategy, expected_local_bundle_dir
 from .tokscale import build_tokscale_invocation
 from .views import build_view
@@ -69,10 +71,18 @@ def build_parser() -> argparse.ArgumentParser:
     storage_sub = storage_parser.add_subparsers(dest="storage_command", required=True)
     storage_summary = storage_sub.add_parser("summary", help="Show storage summary")
     storage_summary.add_argument("--json", action="store_true")
-    storage_mirror_stable = storage_sub.add_parser("mirror-stable", help="Mirror the local Tokscale stable layer")
+    storage_mirror_stable = storage_sub.add_parser("mirror-stable", help="Mirror the default Tokscale analytics layer")
     storage_mirror_stable.add_argument("--dest-root", type=Path, default=None)
+    storage_mirror_stable.add_argument(
+        "--include-live-sessions",
+        action="store_true",
+        help="Also mirror optional full-fidelity client sessions",
+    )
     storage_mirror_stable.add_argument("--dry-run", action="store_true")
     storage_mirror_stable.add_argument("--json", action="store_true")
+    storage_migration_plan = storage_sub.add_parser("migration-plan", help="Inspect backup and migration coverage")
+    storage_migration_plan.add_argument("--stable-root", type=Path, default=None)
+    storage_migration_plan.add_argument("--json", action="store_true")
 
     tokscale_parser = subparsers.add_parser("tokscale", help="Tokscale exporter")
     tokscale_sub = tokscale_parser.add_subparsers(dest="tokscale_command", required=True)
@@ -96,11 +106,13 @@ def build_parser() -> argparse.ArgumentParser:
     ops_daily_tokscale.add_argument("--machine", action="append", dest="machines", default=[])
     ops_daily_tokscale.add_argument("--clients", default=",".join(DEFAULT_CLIENTS))
     ops_daily_tokscale.add_argument("--run-root", type=Path, default=None)
-    ops_daily_tokscale.add_argument("--canonicalize-command", default="tokscale-canonicalize-import-machine")
+    ops_daily_tokscale.add_argument("--canonicalize-command", default=None)
     ops_daily_tokscale.add_argument("--probe-timeout-seconds", type=float, default=8)
     ops_daily_tokscale.add_argument("--sync-timeout-seconds", type=float, default=1800)
     ops_daily_tokscale.add_argument("--submit-timeout-seconds", type=float, default=3600)
     ops_daily_tokscale.add_argument("--force-contract-check", action="store_true")
+    ops_daily_tokscale.add_argument("--mirror-stable", action="store_true")
+    ops_daily_tokscale.add_argument("--stable-root", type=Path, default=None)
     ops_daily_tokscale.add_argument("--json", action="store_true")
 
     sync_parser = subparsers.add_parser("sync", help="Sync helpers")
@@ -169,6 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync_local_codex.add_argument("--namespace", default="volatile-codex-homes")
     sync_local_codex.add_argument("--dry-run", action="store_true")
     sync_local_codex.add_argument("--json", action="store_true")
+    sync_local_home = sync_sub.add_parser(
+        "local-home-projection",
+        help="Refresh the current HOME analytics projection without copying full conversations",
+    )
+    sync_local_home.add_argument("--dry-run", action="store_true")
+    sync_local_home.add_argument("--json", action="store_true")
 
     archive_parser = subparsers.add_parser("archive", help="Archive helpers")
     archive_sub = archive_parser.add_subparsers(dest="archive_command", required=True)
@@ -212,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
                 "home": str(config.paths.home),
                 "workspace_root": str(config.paths.workspace_root),
                 "import_root": str(config.paths.import_root),
+                "projection_home": str(config.paths.projection_home),
                 "shadow_home": str(config.paths.shadow_home),
                 "local_workspace_extras": str(config.paths.local_workspace_extras),
                 "archive_root": str(config.paths.archive_root),
@@ -297,7 +316,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "storage" and args.storage_command == "mirror-stable":
-        result = mirror_stable_layer(config, stable_root=args.dest_root, dry_run=args.dry_run)
+        result = mirror_stable_layer(
+            config,
+            stable_root=args.dest_root,
+            dry_run=args.dry_run,
+            include_live_sessions=args.include_live_sessions,
+        )
         payload = stable_mirror_payload(result)
         if args.json:
             _json_dump(payload)
@@ -310,13 +334,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f'stable_root\t{payload["stable_root"]}')
             if payload["manifest_path"]:
                 print(f'manifest_path\t{payload["manifest_path"]}')
+        return 0 if result.status in {"planned", "verified"} else 1
+
+    if args.command == "storage" and args.storage_command == "migration-plan":
+        payload = migration_plan_payload(config, stable_root=args.stable_root)
+        if args.json:
+            _json_dump(payload)
+        else:
+            readiness = payload["readiness"]
+            print(f'analytics_restore_ready\t{readiness["analytics_restore_ready"]}')
+            print(f'full_fidelity_restore_ready\t{readiness["full_fidelity_restore_ready"]}')
+            print(f'blockers\t{",".join(readiness["blockers"])}')
+            print(f'optional_migration_blockers\t{",".join(readiness["optional_migration_blockers"])}')
+            print(f'stable_root\t{payload["stable_root"]}')
         return 0
 
     if args.command == "tokscale" and args.tokscale_command == "env":
         view = build_view(config, mode=args.mode, omx_replay_dedupe=args.omx_replay_dedupe)
         payload = {
             "mode": view.mode,
+            "input_policy": "projection-only" if view.mode == "raw" else "canonical",
             "home": str(view.home),
+            "source_home_excluded": view.home != config.paths.home,
             "omx_replay_dedupe": view.omx_replay_dedupe,
             "extra_dirs": [{"client": client, "path": str(path)} for client, path in view.extra_dirs],
             "env": {
@@ -335,6 +374,8 @@ def main(argv: list[str] | None = None) -> int:
         tokscale_args = list(args.tokscale_args)
         if tokscale_args and tokscale_args[0] == "--":
             tokscale_args = tokscale_args[1:]
+        if args.mode == "raw" and not args.dry_run:
+            refresh_local_home_projection(config)
         invocation = build_tokscale_invocation(
             config,
             mode=args.mode,
@@ -355,6 +396,8 @@ def main(argv: list[str] | None = None) -> int:
             sync_timeout_seconds=args.sync_timeout_seconds,
             submit_timeout_seconds=args.submit_timeout_seconds,
             force_contract_check=args.force_contract_check,
+            mirror_stable=args.mirror_stable,
+            stable_root=args.stable_root,
         )
         if args.json:
             _json_dump(result.payload)
@@ -496,6 +539,13 @@ def main(argv: list[str] | None = None) -> int:
             "base_snapshot_id": bundle.base_snapshot_id,
             "fallback_reason": bundle.fallback_reason,
         }
+        if bundle.state_status is not None:
+            payload["projection_state"] = {
+                "status": bundle.state_status,
+                "files_seen": bundle.files_seen,
+                "files_projected": bundle.files_projected,
+                "files_reused": bundle.files_reused,
+            }
         if args.json:
             _json_dump(payload)
         else:
@@ -527,6 +577,13 @@ def main(argv: list[str] | None = None) -> int:
             "base_snapshot_id": bundle.base_snapshot_id,
             "fallback_reason": bundle.fallback_reason,
         }
+        if bundle.state_status is not None:
+            payload["projection_state"] = {
+                "status": bundle.state_status,
+                "files_seen": bundle.files_seen,
+                "files_projected": bundle.files_projected,
+                "files_reused": bundle.files_reused,
+            }
         if args.json:
             _json_dump(payload)
         else:
@@ -576,6 +633,13 @@ def main(argv: list[str] | None = None) -> int:
             "base_snapshot_id": bundle.base_snapshot_id,
             "fallback_reason": bundle.fallback_reason,
         }
+        if bundle.state_status is not None:
+            payload["projection_state"] = {
+                "status": bundle.state_status,
+                "files_seen": bundle.files_seen,
+                "files_projected": bundle.files_projected,
+                "files_reused": bundle.files_reused,
+            }
         if args.json:
             _json_dump(payload)
         else:
@@ -603,6 +667,15 @@ def main(argv: list[str] | None = None) -> int:
             "missing_sources": [str(path) for path in result.missing_sources],
             "dry_run": args.dry_run,
         }
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "sync" and args.sync_command == "local-home-projection":
+        result = refresh_local_home_projection(config, dry_run=args.dry_run)
+        payload = {**local_home_projection_payload(result), "dry_run": args.dry_run}
         if args.json:
             _json_dump(payload)
         else:
@@ -670,6 +743,13 @@ def main(argv: list[str] | None = None) -> int:
                 "direct_max_bundle_bytes": transport.direct_max_bundle_bytes,
             },
         }
+        if bundle.state_status is not None:
+            payload["bundle"]["projection_state"] = {
+                "status": bundle.state_status,
+                "files_seen": bundle.files_seen,
+                "files_projected": bundle.files_projected,
+                "files_reused": bundle.files_reused,
+            }
 
         local_bundle_dir = expected_local_projection_bundle_dir(config, args.machine, bundle.snapshot_id)
         payload["expected_local_bundle_dir"] = str(local_bundle_dir)

@@ -2,6 +2,7 @@
 home = "~"
 workspace_root = "~/workspace"
 import_root = "~/.config/tokscale/imports"
+projection_home = "~/.config/tokscale/projection-home"
 shadow_home = "~/.config/tokscale/shadow-home"
 local_workspace_extras = "~/.config/tokscale/local-workspace-extras"
 archive_root = "~/agent-session-vault/archive"
@@ -14,47 +15,47 @@ direct_max_delta_bytes = 268435456
 projection_transport = "auto"
 projection_direct_max_bundle_bytes = 1073741824
 
-# Use stable logical hostnames such as "imac", "wsl2-main", or "lab-linux".
+# Use stable logical hostnames such as "machine-a", "wsl2-main", or "lab-linux".
 # Avoid binding the machine identity to a temporary IP address.
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "/Users/your-user"
 remote_relay_root = "/Users/your-user/agent-session-vault/relay"
 remote_state_root = "/Users/your-user/.config/agent-session-vault/relay-state"
 clients = ["codex", "gemini", "openclaw"]
 
 # Fixed home-level roots.
-[[machines.imac.roots]]
+[[machines.machine-a.roots]]
 client = "codex"
 path = "~/.codex"
 kind = "home_root"
 
-[[machines.imac.roots]]
+[[machines.machine-a.roots]]
 client = "gemini"
 path = "~/.gemini"
 kind = "home_root"
 
-[[machines.imac.roots]]
+[[machines.machine-a.roots]]
 client = "openclaw"
 path = "~/.openclaw"
 kind = "home_root"
 
 # Add as many explicit project globs as you actually use.
-[[machines.imac.root_globs]]
+[[machines.machine-a.root_globs]]
 client = "codex"
 glob = "~/workspace/*/.codex"
 kind = "project_root"
 
-[[machines.imac.root_globs]]
+[[machines.machine-a.root_globs]]
 client = "codex"
 glob = "~/projects/*/.codex"
 kind = "project_root"
 
 [[retention.rules]]
-name = "imac-codex-raw-cold"
+name = "machine-a-codex-raw-cold"
 layer = "imports_raw"
-machine = "imac"
+machine = "machine-a"
 client = "codex"
 max_age_days = 30
 min_size_bytes = 104857600

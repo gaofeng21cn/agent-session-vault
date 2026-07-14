@@ -36,9 +36,9 @@ shadow_home = "{shadow_home}"
 local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex", "gemini", "openclaw"]
 """.strip()
         + "\n",
@@ -48,29 +48,29 @@ clients = ["codex", "gemini", "openclaw"]
     config = load_config(config_path)
 
     first = export_machine_delta(
-        machine_name="imac",
+        machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,
         state_root=source_home / ".config" / "agent-session-vault" / "relay-state",
     )
-    import_machine_delta(config=config, machine_name="imac", bundle_dir=first.bundle_dir)
+    import_machine_delta(config=config, machine_name="machine-a", bundle_dir=first.bundle_dir)
 
-    assert (imports / "imac" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "a"
-    assert (imports / "imac" / ".raw" / "gemini" / "proj" / "chats" / "chat.json").read_text(encoding="utf-8") == "g"
+    assert (imports / "machine-a" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "a"
+    assert (imports / "machine-a" / ".raw" / "gemini" / "proj" / "chats" / "chat.json").read_text(encoding="utf-8") == "g"
 
     _write(source_home / ".codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl", "aa")
     _write(source_home / ".openclaw" / "agents" / "main" / "sessions" / "session.jsonl", "o")
 
     second = export_machine_delta(
-        machine_name="imac",
+        machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,
         state_root=source_home / ".config" / "agent-session-vault" / "relay-state",
     )
-    import_machine_delta(config=config, machine_name="imac", bundle_dir=second.bundle_dir)
+    import_machine_delta(config=config, machine_name="machine-a", bundle_dir=second.bundle_dir)
 
-    assert (imports / "imac" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "aa"
-    assert (imports / "imac" / ".raw" / "openclaw" / "agents" / "main" / "sessions" / "session.jsonl").read_text(encoding="utf-8") == "o"
+    assert (imports / "machine-a" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "aa"
+    assert (imports / "machine-a" / ".raw" / "openclaw" / "agents" / "main" / "sessions" / "session.jsonl").read_text(encoding="utf-8") == "o"
 
 
 def test_relay_import_rejects_snapshot_gap(tmp_path: Path) -> None:
@@ -96,9 +96,9 @@ shadow_home = "{shadow_home}"
 local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex"]
 """.strip()
         + "\n",
@@ -108,21 +108,21 @@ clients = ["codex"]
     config = load_config(config_path)
 
     first = export_machine_delta(
-        machine_name="imac",
+        machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,
         state_root=source_home / ".config" / "agent-session-vault" / "relay-state",
     )
     _write(source_home / ".codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl", "aa")
     second = export_machine_delta(
-        machine_name="imac",
+        machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,
         state_root=source_home / ".config" / "agent-session-vault" / "relay-state",
     )
 
     try:
-        import_machine_delta(config=config, machine_name="imac", bundle_dir=second.bundle_dir)
+        import_machine_delta(config=config, machine_name="machine-a", bundle_dir=second.bundle_dir)
     except ValueError as exc:
         assert "previous_snapshot_id" in str(exc)
     else:
@@ -136,7 +136,7 @@ def test_relay_import_reads_bundle_name_from_manifest(tmp_path: Path) -> None:
     shadow_home = target_home / ".config" / "tokscale" / "shadow-home"
     extras = target_home / ".config" / "tokscale" / "local-workspace-extras"
     archive = tmp_path / "archive"
-    bundle_dir = tmp_path / "relay" / "imac" / "imac-000001"
+    bundle_dir = tmp_path / "relay" / "machine-a" / "machine-a-000001"
     payload_root = tmp_path / "payload-root"
     payload_file = payload_root / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl"
     _write(payload_file, "a")
@@ -152,9 +152,9 @@ shadow_home = "{shadow_home}"
 local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "imac-sync"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex"]
 """.strip()
         + "\n",
@@ -170,8 +170,8 @@ clients = ["codex"]
     manifest = {
         "version": 1,
         "mode": "delta",
-        "machine": "imac",
-        "snapshot_id": "imac-000001",
+        "machine": "machine-a",
+        "snapshot_id": "machine-a-000001",
         "previous_snapshot_id": None,
         "bundle": {
             "name": bundle_path.name,
@@ -184,6 +184,6 @@ clients = ["codex"]
     }
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    import_machine_delta(config=config, machine_name="imac", bundle_dir=bundle_dir)
+    import_machine_delta(config=config, machine_name="machine-a", bundle_dir=bundle_dir)
 
-    assert (imports / "imac" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "a"
+    assert (imports / "machine-a" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "a"

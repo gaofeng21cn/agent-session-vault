@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import VaultConfig
+from .projection import LOCAL_HOME_CLIENTS, local_home_projection_root
 
 
 @dataclass(frozen=True)
@@ -78,8 +79,11 @@ def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -
 
     extra_dirs: list[tuple[str, Path]] = []
     seen: set[tuple[str, Path]] = set()
+    local_machine_root = local_home_projection_root(config)
     if mode == "raw":
-        home = config.paths.home
+        home = config.paths.projection_home
+        for client in LOCAL_HOME_CLIENTS:
+            _append_unique_root(extra_dirs, seen, client, local_machine_root / ".raw" / client)
         for machine in config.machines.values():
             for client in machine.clients:
                 root = config.paths.import_root / machine.import_name / ".raw" / client
@@ -89,6 +93,8 @@ def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -
         return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)
 
     home = config.paths.shadow_home
+    for client in LOCAL_HOME_CLIENTS:
+        _append_unique_root(extra_dirs, seen, client, local_machine_root / client)
     for machine in config.machines.values():
         for client in machine.clients:
             root = config.paths.import_root / machine.import_name / client

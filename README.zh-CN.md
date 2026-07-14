@@ -24,7 +24,7 @@
   </tr>
 </table>
 
-> 对外，`agent-session-vault` 是一个面向多机 AI 工作流的 local-first session 管理层。对内，它是一套目录原生的发现、投影、relay 同步、规范化与归档控制面。
+> 默认产品合同是维护一份可供 Tokscale 持续重算和提交的精简 analytics projection。完整会话正文迁移保留为显式可选能力，不属于默认日常链路。
 
 ## 项目定位
 
@@ -74,11 +74,13 @@ mkdir -p ~/.config/agent-session-vault
 cp config/agent-session-vault.example.toml ~/.config/agent-session-vault/config.toml
 ```
 
+真实配置刻意放在仓库外。实际 machine 名、SSH target、用户名、绝对路径和运行输出只保留在该本地配置及配置指定的状态目录中；不要把 session 数据、bundle、receipt 或日志复制进仓库。
+
 编辑 `~/.config/agent-session-vault/config.toml` 中的 machine 定义后，执行常见主链路：
 
 ```bash
 agent-session-vault config --json
-agent-session-vault sync auto imac --json
+agent-session-vault sync auto machine-a --json
 agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
@@ -100,12 +102,19 @@ agent-session-vault config --json
 
 ```bash
 agent-session-vault storage summary --json
+agent-session-vault storage migration-plan --json
 ```
 
 运行默认的 projection-first 同步：
 
 ```bash
-agent-session-vault sync auto imac --json
+agent-session-vault sync auto machine-a --json
+```
+
+单独刷新本机 HOME 的精简 analytics projection：
+
+```bash
+agent-session-vault sync local-home-projection --json
 ```
 
 把本机临时 Codex runtime home 增量同步到只增不减的 Tokscale extras 树：
@@ -119,10 +128,16 @@ agent-session-vault sync local-codex \
 执行确定性的每日 projection 同步与 Tokscale 提交：
 
 ```bash
-agent-session-vault ops daily-tokscale --json
+agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-该命令只使用当前 `HOME`、配置中的 raw imports 与 managed local extras。它会短超时探测远端，依次执行显式 projection export/fetch/import，解析 npm latest，并输出一份终态 JSON 回执。只有 latest 包版本尚未验证时，才运行 Tokscale help 与官方 preview。
+该命令先把当前本机 `HOME` 增量投影到 `imports/local-home/.raw`，再同步远端 projection，并让 Tokscale 只读取本机/远端 projections 与 managed local extras；live HOME 不再是 Tokscale 输入。它随后解析 npm latest 并输出终态 JSON 回执。只有 latest 包版本尚未验证时，才运行 Tokscale help 与官方 preview。`--mirror-stable` 会在 submit confirmed 后镜像完整 analytics 层。
+
+默认换机只需恢复 analytics stable 层即可延续 Tokscale。若还需要完整聊天正文、搜索和继续会话，可显式 dry-run 可选的 full-fidelity migration：
+
+```bash
+agent-session-vault storage mirror-stable --include-live-sessions --dry-run --json
+```
 
 只准备 Tokscale 运行环境：
 
@@ -135,14 +150,16 @@ agent-session-vault tokscale env --mode canonical --omx-replay-dedupe strict --j
 
 ```bash
 agent-session-vault archive offload-tree \
-  --source ~/.config/tokscale/imports/imac/.raw/codex \
-  --bundle-name imac-codex-raw \
+  --source ~/.config/tokscale/imports/machine-a/.raw/codex \
+  --bundle-name machine-a-codex-raw \
   --json
 ```
 
 ## 当前边界
 
 - 默认跨机链路是 `projection delta-first`，完整 raw sync 仍保持显式模式。
+- 默认 raw Tokscale 视图是 projection-only；本机 live HOME 不直接参与扫描。
+- 默认 stable mirror 只承诺 Tokscale analytics continuity；完整会话迁移是显式可选能力。
 - 云同步工具只被视为目录型 relay，而不是一等后端。
 - 当前重点兼容对象是 `Codex`、`Gemini CLI`、`OpenClaw`。
 - 这个仓库管理的是 session 视图与传输面，不处理 provider 计费真相。
@@ -178,3 +195,7 @@ agent-session-vault archive offload-tree \
 ```bash
 python3 -m pytest
 ```
+
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE)。

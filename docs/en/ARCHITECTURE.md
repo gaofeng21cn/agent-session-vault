@@ -28,9 +28,10 @@ This repository does not treat itself as the owner of those trees.
 
 ### 2. Imported Raw Projection Layer
 
-Imported machine data lands under:
+Local and imported-machine analytics projections land under:
 
 ```text
+import_root/local-home/.raw/<client>
 import_root/<machine>/.raw/<client>
 ```
 
@@ -67,33 +68,39 @@ The backend is directory-native by design. A bundle can live on:
 
 `sync auto` is the default cross-machine path.
 
+`sync local-home-projection` incrementally refreshes the current machine. It reads only the standard current-HOME roots, not legacy workspace runtimes or cold archives. The daily runner performs this step automatically before remote sync.
+
 The high-level flow is:
 
 1. discover roots for a configured machine
-2. build a full projection bundle on the remote machine
-3. choose `ssh` or `relay` transport by bundle size threshold
-4. import the bundle locally into `import_root/<machine>/.raw/*`
-5. optionally canonicalize after import
+2. refresh persistent projection state under `remote_state_root`, reprojecting only new or changed files
+3. build a full or delta bundle against the local base snapshot
+4. choose `ssh` or `relay` transport by bundle size threshold
+5. import the bundle locally into `import_root/<machine>/.raw/*`
+6. optionally canonicalize after import
 
 This is why large remote histories no longer require full raw mirroring for the Tokscale use case.
 
-The key distinction is between transport incrementality and submission history:
+The key distinction is among compute incrementality, transport incrementality, and submission history:
 
-- bundles still use true snapshot-based incremental transport
+- remote state reuses unchanged projection blobs by source path, size, mtime, and projector version
+- bundles use true snapshot-based incremental transport; missing or incompatible state triggers a complete projection rebuild
 - local `.raw` and canonical views keep the cumulative history Tokscale needs instead of treating upstream cleanup as local data loss
 
 ## Projection Behavior By Client
 
 ### Codex
 
-Codex projection keeps only the pieces needed for downstream usage accounting and session identity:
+Codex projection preserves the original order of every parseable JSON record because Tokscale's accounting parser is stateful. The slim records retain only parser-relevant fields, including:
 
-- leading `session_meta`
-- the first `turn_context`
-- `token_count` events
-- terminal events such as `task_complete` or `turn_aborted`
+- every `session_meta` identity, fork/source, provider, agent, and workspace field
+- every `turn_context` model and turn identifier
+- `task_started`, human-versus-injected `user_message`, `token_count`, and terminal event structure
+- top-level headless model, timestamp, and usage records
 
-This makes large Codex sessions much smaller while preserving usage-relevant structure.
+Conversation bodies and unrelated payload fields are removed. Human prompts become a `user` sentinel, while known injected-context prefixes remain distinguishable. The projector version is stored in local state and projection manifests so a schema change forces a rebuild instead of reusing an incompatible delta baseline.
+
+This keeps Tokscale totals unchanged while making large Codex sessions substantially smaller; it is not a full-fidelity conversation copy.
 
 ### Gemini CLI
 
@@ -113,11 +120,12 @@ It also normalizes non-standard `.jsonl` suffix variants into standard `.jsonl` 
 
 Raw mode points Tokscale at:
 
-- the local live home
+- an empty `projection_home`, preventing direct live-HOME discovery
+- the current-machine projection under `import_root/local-home/.raw/*`
 - imported machine `.raw` trees
-- local project-level `.codex` roots
+- managed local extras
 
-Use it when you want a view close to actual upstream layout while preserving cumulative local submission history.
+This is the default submission policy. Every usage input first lands in the mirrorable analytics layer; live client roots are not exposed directly to Tokscale.
 
 ### Canonical
 
@@ -135,3 +143,18 @@ Use it when you want a stricter internal accounting view and are willing to appl
 - it does not rewrite Tokscale upstream
 - it does not rewrite upstream client source trees destructively
 - it does not hardcode cloud vendors into the core logic
+
+## Durability And Migration Boundary
+
+Four states must remain distinct:
+
+- `synced`: a remote projection was applied to local hot imports
+- `submitted`: Tokscale returned a confirmed server response
+- `analytics mirrored`: imports, managed extras, and control-plane config passed stable source coverage readback
+- `full-fidelity migration ready`: the explicit optional analytics-plus-live-session profile passed migration readback
+
+The default product contract is Tokscale analytics continuity. Once the local projection, remote projections, managed extras, and control-plane config pass stable readback, they can be restored on another computer for continued recomputation and submission. `full_fidelity_restore_ready=false` does not block that default goal.
+
+Live roots such as `~/.codex/sessions` and `~/.codex/archived_sessions` enter the optional migration profile only when complete conversation text, search, or session resumption is required. Stop client writers before explicitly running `storage mirror-stable --include-live-sessions`.
+
+Credentials are excluded from the stable mirror. Reauthenticate on the new machine, restore session data, and rebuild canonical/cache state.

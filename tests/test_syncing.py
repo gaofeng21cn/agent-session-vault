@@ -45,9 +45,9 @@ default_strategy = "auto"
 direct_max_delta_files = 10
 direct_max_delta_bytes = 100
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "/remote/home"
 remote_relay_root = "/remote/home/agent-session-vault/relay"
 remote_state_root = "/remote/home/.config/agent-session-vault/relay-state"
@@ -60,13 +60,13 @@ clients = ["codex"]
 
     direct = choose_sync_strategy(
         config,
-        "imac",
-        DeltaStats(machine_name="imac", changed_files=2, changed_bytes=32, previous_snapshot_id=None, next_snapshot_id="imac-000001"),
+        "machine-a",
+        DeltaStats(machine_name="machine-a", changed_files=2, changed_bytes=32, previous_snapshot_id=None, next_snapshot_id="machine-a-000001"),
     )
     relay = choose_sync_strategy(
         config,
-        "imac",
-        DeltaStats(machine_name="imac", changed_files=20, changed_bytes=1000, previous_snapshot_id=None, next_snapshot_id="imac-000002"),
+        "machine-a",
+        DeltaStats(machine_name="machine-a", changed_files=20, changed_bytes=1000, previous_snapshot_id=None, next_snapshot_id="machine-a-000002"),
     )
 
     assert direct.strategy == "direct"
@@ -90,9 +90,9 @@ relay_root = "/tmp/relay"
 projection_transport = "auto"
 projection_direct_max_bundle_bytes = 1024
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "/remote/home"
 remote_relay_root = "/remote/home/agent-session-vault/relay"
 remote_state_root = "/remote/home/.config/agent-session-vault/relay-state"
@@ -103,8 +103,8 @@ clients = ["codex"]
     )
     config = load_config(config_path)
 
-    direct = choose_projection_transport(config, "imac", bundle_bytes=100)
-    relay = choose_projection_transport(config, "imac", bundle_bytes=2048)
+    direct = choose_projection_transport(config, "machine-a", bundle_bytes=100)
+    relay = choose_projection_transport(config, "machine-a", bundle_bytes=2048)
 
     assert isinstance(direct, ProjectionTransportDecision)
     assert direct.transport == "ssh"
@@ -142,9 +142,9 @@ default_strategy = "auto"
 direct_max_delta_files = 10
 direct_max_delta_bytes = 100
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "{source_home}"
 remote_relay_root = "{relay_root}"
 remote_state_root = "{remote_state_root}"
@@ -156,7 +156,7 @@ clients = ["codex", "gemini"]
     config = load_config(config_path)
 
     stats = inspect_machine_delta_ssh(
-        machine_name="imac",
+        machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,
         state_root=remote_state_root,
@@ -166,19 +166,19 @@ clients = ["codex", "gemini"]
     assert stats.changed_bytes == 2
 
     bundle = export_machine_delta_ssh(
-        machine_name="imac",
+        machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,
         state_root=remote_state_root,
         command_prefix=["python3", "-"],
     )
-    import_machine_delta(config=config, machine_name="imac", bundle_dir=bundle.bundle_dir)
+    import_machine_delta(config=config, machine_name="machine-a", bundle_dir=bundle.bundle_dir)
 
-    assert (imports / "imac" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "a"
-    assert (imports / "imac" / ".raw" / "gemini" / "proj" / "chats" / "chat.json").read_text(encoding="utf-8") == "g"
+    assert (imports / "machine-a" / ".raw" / "codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl").read_text(encoding="utf-8") == "a"
+    assert (imports / "machine-a" / ".raw" / "gemini" / "proj" / "chats" / "chat.json").read_text(encoding="utf-8") == "g"
 
     post = inspect_machine_delta_ssh(
-        machine_name="imac",
+        machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,
         state_root=remote_state_root,
@@ -222,15 +222,15 @@ relay_root = "{relay_root}"
 projection_transport = "auto"
 projection_direct_max_bundle_bytes = 1073741824
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "{source_home}"
 remote_relay_root = "{relay_root}"
 remote_state_root = "{remote_state_root}"
 clients = ["codex"]
 
-[[machines.imac.roots]]
+[[machines.machine-a.roots]]
 client = "codex"
 path = "~/.codex"
 kind = "home_root"
@@ -239,10 +239,10 @@ kind = "home_root"
         encoding="utf-8",
     )
     config = load_config(config_path)
-    machine_root = imports / "imac"
+    machine_root = imports / "machine-a"
 
     first = export_machine_projection_ssh(
-        machine=config.machines["imac"],
+        machine=config.machines["machine-a"],
         source_home=source_home,
         relay_root=relay_root,
         ssh_target="",
@@ -250,12 +250,18 @@ kind = "home_root"
         base_snapshot_id=None,
     )
     assert first.mode == "projection_full"
-    import_machine_projection(config, "imac", first.bundle_dir, canonicalize_command=None)
+    assert first.state_status == "rebuilt"
+    assert first.files_seen == 1
+    assert first.files_projected == 1
+    assert first.files_reused == 0
+    imported_first = import_machine_projection(config, "machine-a", first.bundle_dir, canonicalize_command=None)
+    assert imported_first.state_status == "rebuilt"
+    assert imported_first.files_projected == 1
 
     _write(source_file, '{"type":"event_msg","payload":{"type":"token_count","n":2}}\n')
 
     second = export_machine_projection_ssh(
-        machine=config.machines["imac"],
+        machine=config.machines["machine-a"],
         source_home=source_home,
         relay_root=relay_root,
         ssh_target="",
@@ -265,6 +271,28 @@ kind = "home_root"
 
     assert second.mode == "projection_delta"
     assert second.base_snapshot_id == first.snapshot_id
+    assert second.state_status == "incremental"
+    assert second.files_seen == 1
+    assert second.files_projected == 1
+    assert second.files_reused == 0
+
+    third = export_machine_projection_ssh(
+        machine=config.machines["machine-a"],
+        source_home=source_home,
+        relay_root=relay_root,
+        ssh_target="",
+        command_prefix=["python3", "-"],
+        base_snapshot_id=first.snapshot_id,
+    )
+    third_manifest = json.loads(third.manifest_path.read_text(encoding="utf-8"))
+    state_path = remote_state_root / "machine-a" / "projection" / "state.json"
+
+    assert third.mode == "projection_delta"
+    assert third.state_status == "incremental"
+    assert third.files_projected == 0
+    assert third.files_reused == 1
+    assert third_manifest["projection_state"]["files_projected"] == 0
+    assert state_path.is_file()
 
 
 def test_sync_auto_json_includes_projection_mode_metadata(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -276,7 +304,7 @@ def test_sync_auto_json_includes_projection_mode_metadata(tmp_path: Path, monkey
     archive = tmp_path / "archive"
     relay_root = tmp_path / "relay-root"
     remote_state_root = tmp_path / "remote-state"
-    bundle_dir = relay_root / "projection" / "imac" / "imac-20260408T000000000000Z"
+    bundle_dir = relay_root / "projection" / "machine-a" / "machine-a-20260408T000000000000Z"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = bundle_dir / "manifest.json"
     bundle_path = bundle_dir / "payload.tar.zst"
@@ -301,15 +329,15 @@ relay_root = "{relay_root}"
 projection_transport = "relay"
 projection_direct_max_bundle_bytes = 1
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "{source_home}"
 remote_relay_root = "{relay_root}"
 remote_state_root = "{remote_state_root}"
 clients = ["codex"]
 
-[[machines.imac.roots]]
+[[machines.machine-a.roots]]
 client = "codex"
 path = "~/.codex"
 kind = "home_root"
@@ -320,8 +348,8 @@ kind = "home_root"
 
     def _fake_export_machine_projection_ssh(*args, **kwargs) -> ProjectionBundle:
         return ProjectionBundle(
-            machine_name="imac",
-            snapshot_id="imac-20260408T000000000000Z",
+            machine_name="machine-a",
+            snapshot_id="machine-a-20260408T000000000000Z",
             bundle_dir=bundle_dir,
             manifest_path=manifest_path,
             bundle_path=bundle_path,
@@ -335,7 +363,7 @@ kind = "home_root"
 
     monkeypatch.setattr("agent_session_vault.cli.export_machine_projection_ssh", _fake_export_machine_projection_ssh)
 
-    exit_code = main(["--config", str(config_path), "sync", "auto", "imac", "--json", "--dry-run"])
+    exit_code = main(["--config", str(config_path), "sync", "auto", "machine-a", "--json", "--dry-run"])
     assert exit_code == 0
 
     payload = json.loads(capsys.readouterr().out)
@@ -358,9 +386,9 @@ local_workspace_extras = "{target_home / ".config" / "tokscale" / "local-workspa
 archive_root = "{tmp_path / "archive"}"
 relay_root = "{relay_root}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "/remote/home"
 remote_relay_root = "/remote/relay"
 remote_state_root = "/remote/state"
@@ -369,8 +397,8 @@ clients = ["codex"]
         + "\n",
         encoding="utf-8",
     )
-    remote_bundle_dir = Path("/remote/relay/projection/imac/imac-20260707T000000000000Z")
-    expected_bundle_dir = relay_root / "projection" / "imac" / "imac-20260707T000000000000Z"
+    remote_bundle_dir = Path("/remote/relay/projection/machine-a/machine-a-20260707T000000000000Z")
+    expected_bundle_dir = relay_root / "projection" / "machine-a" / "machine-a-20260707T000000000000Z"
     calls: list[tuple[str, Path, Path]] = []
 
     def _fake_fetch_projection_bundle_ssh(
@@ -390,7 +418,7 @@ clients = ["codex"]
             str(config_path),
             "sync",
             "projection-fetch-ssh",
-            "imac",
+            "machine-a",
             "--remote-bundle-dir",
             str(remote_bundle_dir),
             "--json",
@@ -398,10 +426,10 @@ clients = ["codex"]
     )
 
     assert exit_code == 0
-    assert calls == [("tokscale-sync-imac", remote_bundle_dir, expected_bundle_dir)]
+    assert calls == [("session-sync-a", remote_bundle_dir, expected_bundle_dir)]
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
-        "machine": "imac",
+        "machine": "machine-a",
         "remote_bundle_dir": str(remote_bundle_dir),
         "bundle_dir": str(expected_bundle_dir),
     }
@@ -432,9 +460,9 @@ local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 relay_root = "{relay_root}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 source_home = "{source_home}"
 remote_relay_root = "{relay_root}"
 remote_state_root = "{remote_state_root}"
@@ -445,13 +473,13 @@ clients = ["codex"]
     )
     config = load_config(config_path)
 
-    first = export_machine_delta("imac", source_home, relay_root, remote_state_root)
+    first = export_machine_delta("machine-a", source_home, relay_root, remote_state_root)
     _write(source_home / ".codex" / "sessions" / "2026" / "04" / "07" / "one.jsonl", "aa")
-    second = export_machine_delta("imac", source_home, relay_root, remote_state_root)
+    second = export_machine_delta("machine-a", source_home, relay_root, remote_state_root)
 
-    pending = pending_relay_bundle_dirs(config, "imac")
+    pending = pending_relay_bundle_dirs(config, "machine-a")
     assert pending == [first.bundle_dir, second.bundle_dir]
 
-    import_machine_delta(config=config, machine_name="imac", bundle_dir=first.bundle_dir)
-    pending_after_first = pending_relay_bundle_dirs(config, "imac")
+    import_machine_delta(config=config, machine_name="machine-a", bundle_dir=first.bundle_dir)
+    pending_after_first = pending_relay_bundle_dirs(config, "machine-a")
     assert pending_after_first == [second.bundle_dir]

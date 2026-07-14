@@ -12,6 +12,14 @@ Start from:
 
 [`config/agent-session-vault.example.toml`](../../config/agent-session-vault.example.toml)
 
+## Public Repository Boundary
+
+The example config is safe to commit; the populated config is not. Keep real
+machine names, SSH targets, home paths, storage paths, and retention choices in
+`~/.config/agent-session-vault/config.toml`. Session trees, projection bundles,
+archives, Tokscale receipts, and run logs are local data and must remain outside
+the repository.
+
 ## Config Structure
 
 The config is intentionally small and explicit.
@@ -28,11 +36,13 @@ It has four top-level areas:
 These paths define where local derived state lives.
 
 - `home`
-  - local home used for Tokscale environment construction
+  - source home for local live clients; Tokscale does not read it directly
 - `workspace_root`
   - local workspace root used by stable-layer sync to discover ingest sources
 - `import_root`
-  - imported machine data lives here
+  - local and remote analytics projections live here
+- `projection_home`
+  - empty HOME used by raw Tokscale to prevent live-root auto-discovery
 - `shadow_home`
   - canonical Tokscale home for stricter views
 - `local_workspace_extras`
@@ -54,8 +64,9 @@ The Tokscale stable layer has two parts:
 `import_root` stores stable local caches imported from remote machines, for example:
 
 ```text
-<import_root>/imac/.raw/codex
-<import_root>/m1max-mbp/.raw/gemini
+<import_root>/local-home/.raw/codex
+<import_root>/machine-a/.raw/codex
+<import_root>/machine-b/.raw/gemini
 ```
 
 `local_workspace_extras` stores stable local caches absorbed from scattered and cleanup-prone workspace sources, including:
@@ -67,7 +78,7 @@ The Tokscale stable layer has two parts:
 <home>/.codex/projects/<project>/archive/<timestamp>/codex
 ```
 
-Scattered directories are ingest sources. The stable layer is the data surface that submit, backup, and migration should depend on. A recurring task can update the local hot stable layer first, then mirror it to a colder OneDrive/NAS copy:
+Scattered directories are ingest sources. The default stable mirror is the `analytics` profile for Tokscale continuity; it can rebuild imported views, but it does not prove that the local clients' full history is portable. A recurring task can update the local hot stable layer first, then mirror it to a colder OneDrive/NAS copy:
 
 ```bash
 agent-session-vault storage mirror-stable --json
@@ -76,13 +87,13 @@ agent-session-vault storage mirror-stable --json
 The default destination is `stable/` next to `archive_root`. If `archive_root` is:
 
 ```text
-/Users/gaofeng/OneDrive/agent-session-vault/archive
+/path/to/agent-session-vault/archive
 ```
 
 the default stable copy is:
 
 ```text
-/Users/gaofeng/OneDrive/agent-session-vault/stable
+/path/to/agent-session-vault/stable
 ```
 
 The command mirrors:
@@ -93,7 +104,18 @@ stable/tokscale/local-workspace-extras
 stable/config/config.toml
 ```
 
-Tokscale submit should still run from the local hot stable layer to avoid cloud-sync latency on many small files. Backup and migration can depend on the stable copy.
+Every attempt writes `stable-layer-attempt.json`. `stable-layer-manifest.json` advances only after transfer succeeds and per-file source coverage readback passes. When the source-manifest fingerprint is unchanged and destination coverage is still complete, the previous verified state skips rsync without skipping the current source/destination readback. The mirror uses source-covered, no-delete semantics; extra old files at the destination do not count as current source coverage.
+
+The default analytics stable layer is sufficient to continue Tokscale recomputation and submission on a new computer. Only when complete conversation text, search, or session resumption is required should you inspect the optional full-fidelity migration:
+
+```bash
+agent-session-vault storage migration-plan --json
+agent-session-vault storage mirror-stable --include-live-sessions --dry-run --json
+```
+
+If this optional capability is selected, stop Codex, Gemini CLI, and OpenClaw writers before removing `--dry-run`. `full_fidelity_restore_ready=false` reports only that optional profile; it does not block default Tokscale continuity.
+
+Tokscale submit should still run from the local hot layer to avoid cloud-sync latency on many small files.
 
 ## `sync`
 
@@ -112,6 +134,14 @@ Tokscale submit should still run from the local hot stable layer to avoid cloud-
 
 ## Local Volatile Codex Homes
 
+The standard current HOME is incrementally projected by the default workflow and can also be refreshed directly:
+
+```bash
+agent-session-vault sync local-home-projection --json
+```
+
+Output lands under `<import_root>/local-home/.raw/<client>`. Both raw `tokscale exec` and the daily runner refresh it first, while Tokscale's `HOME` points to the empty `projection_home`.
+
 Some local runtimes create short-lived Codex homes such as:
 
 ```text
@@ -124,11 +154,7 @@ Do not point Tokscale directly at those volatile directories. First sync them in
 agent-session-vault sync local-codex --source <quest-root> --json
 ```
 
-For the recurring local maintenance path, use the repo script to scan `workspace_root` plus home project archives and sync all discovered local ingest sources:
-
-```bash
-python3 scripts/sync_local_codex_tokscale_sources.py --json
-```
+Use `sync local-codex` only for a newly selected ingest source. The current MAS/Codex daily path does not scan legacy workspace `.ds/codex_homes`, `.ds/cold_archive/codex_sessions`, old runtimes, or cold archives. Historical data already absorbed into managed extras remains durable without depending on those old paths.
 
 The stable Tokscale root is:
 
@@ -145,7 +171,7 @@ Each machine entry should use a stable logical hostname, not a changing IP addre
 
 Good examples:
 
-- `imac`
+- `machine-a`
 - `wsl2-main`
 - `lab-linux`
 
@@ -162,7 +188,7 @@ Important fields:
 - `remote_relay_root`
   - remote directory used as relay staging
 - `remote_state_root`
-  - remote state directory for raw relay tracking
+  - remote state directory for raw relay tracking and projection compute cache; projection state lives under `<machine>/projection/`
 - `clients`
   - enabled client families for that machine
 
@@ -205,13 +231,13 @@ Use them when you want to identify colder imported or canonicalized trees and mo
 
 ```bash
 agent-session-vault config --json
-agent-session-vault sync auto imac --json
+agent-session-vault sync auto machine-a --json
 ```
 
 5. If Tokscale is the goal, run:
 
 ```bash
-agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --openclaw --dry-run
+agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
 6. To mirror the local stable layer into a OneDrive/NAS copy, run:
@@ -219,3 +245,5 @@ agent-session-vault tokscale exec --mode raw -- submit --codex --gemini --opencl
 ```bash
 agent-session-vault storage mirror-stable --json
 ```
+
+This creates analytics continuity only; use `--include-live-sessions` for full-fidelity migration.

@@ -24,7 +24,7 @@
   </tr>
 </table>
 
-> Publicly, `agent-session-vault` is a local-first session management layer for multi-machine AI workflows. Internally, it is a directory-native control plane for discovery, projection, relay sync, canonicalization, and archival.
+> The default product contract is a compact analytics projection that Tokscale can continuously recompute and submit. Full conversation migration is an explicit optional capability, not part of the daily default.
 
 ## Product Position
 
@@ -74,11 +74,16 @@ mkdir -p ~/.config/agent-session-vault
 cp config/agent-session-vault.example.toml ~/.config/agent-session-vault/config.toml
 ```
 
+The real config lives outside the checkout by design. Keep actual machine names,
+SSH targets, usernames, absolute paths, and operational output in that local
+config and under the configured state roots. Do not copy session data, bundles,
+receipts, or logs into the repository.
+
 Edit the machine definitions in `~/.config/agent-session-vault/config.toml`, then run the common path:
 
 ```bash
 agent-session-vault config --json
-agent-session-vault sync auto imac --json
+agent-session-vault sync auto machine-a --json
 agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
@@ -100,12 +105,19 @@ Inspect storage:
 
 ```bash
 agent-session-vault storage summary --json
+agent-session-vault storage migration-plan --json
 ```
 
 Run the default projection-first sync:
 
 ```bash
-agent-session-vault sync auto imac --json
+agent-session-vault sync auto machine-a --json
+```
+
+Refresh the current HOME analytics projection directly:
+
+```bash
+agent-session-vault sync local-home-projection --json
 ```
 
 Sync volatile local Codex runtime homes into an append-only Tokscale extras tree:
@@ -119,10 +131,16 @@ agent-session-vault sync local-codex \
 Run the deterministic daily projection sync and Tokscale submission workflow:
 
 ```bash
-agent-session-vault ops daily-tokscale --json
+agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-The command uses current `HOME`, configured raw imports, and managed local extras. It probes configured remotes with short timeouts, runs explicit projection export/fetch/import, resolves npm latest, and emits one terminal JSON receipt. Tokscale help and the official preview run only when the latest package version has not already been verified.
+The command first incrementally projects the current local `HOME` into `imports/local-home/.raw`, then syncs remote projections. Tokscale reads only local/remote projections and managed local extras; the live HOME is no longer an input. The runner then resolves npm latest and emits one terminal JSON receipt. Tokscale help and the official preview run only when the latest package version has not already been verified. `--mirror-stable` mirrors the complete analytics layer after a confirmed submit.
+
+Restoring the default analytics stable layer is sufficient for Tokscale continuity. If complete conversation text, search, or session resumption is also required, explicitly inspect the optional full-fidelity migration without starting the potentially large copy:
+
+```bash
+agent-session-vault storage mirror-stable --include-live-sessions --dry-run --json
+```
 
 Prepare Tokscale environment only:
 
@@ -135,14 +153,16 @@ Archive a cold tree:
 
 ```bash
 agent-session-vault archive offload-tree \
-  --source ~/.config/tokscale/imports/imac/.raw/codex \
-  --bundle-name imac-codex-raw \
+  --source ~/.config/tokscale/imports/machine-a/.raw/codex \
+  --bundle-name machine-a-codex-raw \
   --json
 ```
 
 ## Current Boundaries
 
 - `projection delta-first` is the default cross-machine path; full raw sync remains explicit.
+- The default raw Tokscale view is projection-only; live local client roots are not scanned directly.
+- The default stable mirror guarantees Tokscale analytics continuity; full-fidelity conversation migration is optional and explicit.
 - Cloud sync tools are treated as directory relays, not first-class backends.
 - The current flagship client set is `Codex`, `Gemini CLI`, and `OpenClaw`.
 - This repository manages session views and transport, not provider billing truth.
@@ -179,3 +199,7 @@ Internal planning notes remain repo-local and Chinese-first unless they are expl
 ```bash
 python3 -m pytest
 ```
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

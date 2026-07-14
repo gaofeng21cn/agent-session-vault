@@ -26,7 +26,7 @@ def test_build_archive_plan_selects_due_import_rule(tmp_path: Path) -> None:
     extras = tmp_path / "extras"
     archive = tmp_path / "archive"
     relay = tmp_path / "relay"
-    source = imports / "imac" / ".raw" / "codex" / "sessions" / "2026" / "03" / "20" / "one.jsonl"
+    source = imports / "machine-a" / ".raw" / "codex" / "sessions" / "2026" / "03" / "20" / "one.jsonl"
     _write(source, "alpha")
     _set_mtime(source, datetime(2026, 3, 20, tzinfo=UTC).timestamp())
 
@@ -42,15 +42,15 @@ local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 relay_root = "{relay}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex"]
 
 [[retention.rules]]
-name = "imac-codex-raw"
+name = "machine-a-codex-raw"
 layer = "imports_raw"
-machine = "imac"
+machine = "machine-a"
 client = "codex"
 max_age_days = 7
 min_size_bytes = 1
@@ -66,8 +66,8 @@ remove_source = false
 
     assert len(plan) == 1
     candidate = plan[0]
-    assert candidate.rule_name == "imac-codex-raw"
-    assert candidate.source == imports / "imac" / ".raw" / "codex"
+    assert candidate.rule_name == "machine-a-codex-raw"
+    assert candidate.source == imports / "machine-a" / ".raw" / "codex"
     assert candidate.archive_dir == archive / "imports-raw"
     assert candidate.age_days >= 7
     assert candidate.size_bytes >= 1
@@ -81,7 +81,7 @@ def test_apply_archive_plan_offloads_bundle_and_removes_source_when_requested(tm
     extras = tmp_path / "extras"
     archive = tmp_path / "archive"
     relay = tmp_path / "relay"
-    source = imports / "imac" / ".raw" / "codex" / "sessions" / "2026" / "03" / "20" / "one.jsonl"
+    source = imports / "machine-a" / ".raw" / "codex" / "sessions" / "2026" / "03" / "20" / "one.jsonl"
     _write(source, "alpha")
     _set_mtime(source, datetime(2026, 3, 20, tzinfo=UTC).timestamp())
 
@@ -97,15 +97,15 @@ local_workspace_extras = "{extras}"
 archive_root = "{archive}"
 relay_root = "{relay}"
 
-[machines.imac]
-import_name = "imac"
-ssh_target = "tokscale-sync-imac"
+[machines.machine-a]
+import_name = "machine-a"
+ssh_target = "session-sync-a"
 clients = ["codex"]
 
 [[retention.rules]]
-name = "imac-codex-raw"
+name = "machine-a-codex-raw"
 layer = "imports_raw"
-machine = "imac"
+machine = "machine-a"
 client = "codex"
 max_age_days = 7
 min_size_bytes = 1
@@ -122,6 +122,6 @@ remove_source = true
 
     assert len(results) == 1
     assert results[0].bundle_path.exists()
-    assert not (imports / "imac" / ".raw" / "codex").exists()
+    assert not (imports / "machine-a" / ".raw" / "codex").exists()
     inventory = inventory_bundles(archive)
     assert results[0].bundle_path in {item.bundle_path for item in inventory}

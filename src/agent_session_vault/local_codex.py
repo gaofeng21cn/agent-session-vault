@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import gzip
 import glob
 import hashlib
 import json
@@ -11,7 +10,7 @@ import re
 import shutil
 
 from .config import VaultConfig
-from .projection import TERMINAL_EVENT_TYPES
+from .projection import CODEX_PROJECTION_VERSION, build_codex_projection_file
 
 
 STATE_FILE_NAME = "sync-state.json"
@@ -44,14 +43,6 @@ class _SessionFile:
     source_path: Path
     session_root: _SessionRoot
     relative_path: Path
-
-
-def _json_load(line: str) -> dict | None:
-    try:
-        value = json.loads(line)
-    except Exception:
-        return None
-    return value if isinstance(value, dict) else None
 
 
 def _sanitize_slug(value: str) -> str:
@@ -178,77 +169,19 @@ def _iter_session_files(session_root: _SessionRoot) -> list[_SessionFile]:
     return sorted(files.values(), key=lambda item: str(item.source_path))
 
 
-def _open_session_text(path: Path):
-    if path.name.endswith(".gz"):
-        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
-    return path.open("r", encoding="utf-8", errors="replace")
-
-
-def _project_codex_session_file(source_path: Path, dest_path: Path) -> dict[str, int]:
-    leading_session_meta_lines: list[str] = []
-    turn_context_line: str | None = None
-    token_event_lines: list[str] = []
-    terminal_line: str | None = None
-    leading_meta_open = True
-
-    with _open_session_text(source_path) as handle:
-        for raw in handle:
-            line = raw.rstrip("\n")
-            obj = _json_load(line)
-            if obj is None:
-                leading_meta_open = False
-                continue
-
-            obj_type = obj.get("type")
-            payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-
-            if obj_type == "session_meta" and leading_meta_open:
-                leading_session_meta_lines.append(line)
-            elif obj_type != "session_meta":
-                leading_meta_open = False
-
-            if obj_type == "turn_context" and turn_context_line is None:
-                turn_context_line = line
-
-            if obj_type != "event_msg":
-                continue
-
-            event_type = payload.get("type")
-            if event_type == "token_count":
-                token_event_lines.append(line)
-            elif event_type in TERMINAL_EVENT_TYPES:
-                terminal_line = line
-
-    lines: list[str] = []
-    lines.extend(leading_session_meta_lines)
-    if turn_context_line is not None:
-        lines.append(turn_context_line)
-    lines.extend(token_event_lines)
-    if terminal_line is not None:
-        lines.append(terminal_line)
-
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with dest_path.open("w", encoding="utf-8") as handle:
-        if lines:
-            handle.write("\n".join(lines))
-            handle.write("\n")
-
-    return {
-        "source_bytes": source_path.stat().st_size,
-        "dest_bytes": dest_path.stat().st_size,
-        "token_events": len(token_event_lines),
-    }
-
-
 def _load_state(state_path: Path) -> dict[str, object]:
     if not state_path.is_file():
-        return {"version": 1, "files": {}}
+        return {"version": 1, "projector_version": CODEX_PROJECTION_VERSION, "files": {}}
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except Exception:
-        return {"version": 1, "files": {}}
-    if not isinstance(payload, dict) or not isinstance(payload.get("files"), dict):
-        return {"version": 1, "files": {}}
+        return {"version": 1, "projector_version": CODEX_PROJECTION_VERSION, "files": {}}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("projector_version") != CODEX_PROJECTION_VERSION
+        or not isinstance(payload.get("files"), dict)
+    ):
+        return {"version": 1, "projector_version": CODEX_PROJECTION_VERSION, "files": {}}
     return payload
 
 
@@ -332,7 +265,7 @@ def sync_local_codex_sources(
             files_written += 1
             continue
 
-        item = _project_codex_session_file(source_path, dest_path)
+        item = build_codex_projection_file(source_path, dest_path)
         files_written += 1
         source_bytes_total += item["source_bytes"]
         dest_bytes_total += item["dest_bytes"]

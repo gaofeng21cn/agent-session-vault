@@ -13,6 +13,7 @@ class PathsConfig:
     home: Path
     workspace_root: Path
     import_root: Path
+    projection_home: Path
     shadow_home: Path
     local_workspace_extras: Path
     archive_root: Path
@@ -121,6 +122,10 @@ def load_config(config_path: Path | None = None) -> VaultConfig:
     import_root = _path_value(
         raw.get("paths", {}).get("import_root") if isinstance(raw.get("paths"), dict) else None,
         home / ".config" / "tokscale" / "imports",
+    )
+    projection_home = _path_value(
+        raw.get("paths", {}).get("projection_home") if isinstance(raw.get("paths"), dict) else None,
+        home / ".config" / "tokscale" / "projection-home",
     )
     shadow_home = _path_value(
         raw.get("paths", {}).get("shadow_home") if isinstance(raw.get("paths"), dict) else None,
@@ -244,6 +249,7 @@ def load_config(config_path: Path | None = None) -> VaultConfig:
             home=home,
             workspace_root=workspace_root,
             import_root=import_root,
+            projection_home=projection_home,
             shadow_home=shadow_home,
             local_workspace_extras=local_workspace_extras,
             archive_root=archive_root,
