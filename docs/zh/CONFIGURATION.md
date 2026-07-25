@@ -90,15 +90,29 @@ agent-session-vault storage mirror-stable --json
 /path/to/agent-session-vault/stable
 ```
 
-该命令会同步：
+该命令不会把零散源文件直接暴露给云盘，而是写入持久分片索引和 zstd 压缩包：
 
 ```text
-stable/tokscale/imports
-stable/tokscale/local-workspace-extras
+stable/packs/imports/index.json
+stable/packs/imports/pack-<shard>-<digest>.tar.zst
+stable/packs/local-workspace-extras/index.json
+stable/packs/local-workspace-extras/pack-<shard>-<digest>.tar.zst
 stable/config/config.toml
 ```
 
-每次成功镜像都会写 `stable-layer-attempt.json`，只有传输成功且逐文件 source coverage readback 通过时才更新 `stable-layer-manifest.json`。若 source manifest 指纹未变化且目的端 coverage 仍完整，会复用上次 verified 状态并跳过 rsync，但不会跳过本轮 source/destination 回读。镜像采用 source-covered、no-delete 语义，云端多余旧文件不会被当成本轮 source coverage。
+默认分片目标是 256 MiB 未压缩数据。文件与分片的归属会持久保存；新文件追加到当前分片，已有文件变化时只重建所在分片，未变化的内容寻址包保持原文件名和字节不动。每次成功镜像都会写 `stable-layer-attempt.json`，只有分片索引、包存在性和 source coverage readback 都通过时才更新 `stable-layer-manifest.json`。
+
+从旧的展开式 stable 层首次切换时，先生成并验证全部包，再显式清理旧树：
+
+```bash
+agent-session-vault storage mirror-stable --prune-unpacked --json
+```
+
+新机器恢复时必须先落到一个不存在的 staging 目录。恢复命令会逐包校验 SHA-256、解包并核对文件集合和大小：
+
+```bash
+agent-session-vault storage restore-stable --dest-root /path/to/restore-staging --json
+```
 
 默认 analytics stable 层已经足够在新机器继续 Tokscale 重算和提交。只有需要完整聊天正文、搜索或继续会话时，才显式盘点可选 full-fidelity migration：
 
@@ -109,7 +123,7 @@ agent-session-vault storage mirror-stable --include-live-sessions --dry-run --js
 
 若选择这项能力，确认体积并停止 Codex、Gemini CLI、OpenClaw 的写入后，再去掉 `--dry-run`。`full_fidelity_restore_ready=false` 只表示这个可选 profile 尚未完成，不是默认 Tokscale continuity 的 blocker。
 
-Tokscale submit 仍从本机热层运行，避免云盘小文件同步延迟影响运行。
+Tokscale submit 仍从本机热层运行；云端 packed stable 只承担恢复副本，不进入日常读取路径。
 
 ## `sync`
 

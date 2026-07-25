@@ -96,15 +96,29 @@ the default stable copy is:
 /path/to/agent-session-vault/stable
 ```
 
-The command mirrors:
+The command does not expose the scattered source files directly to the cloud-sync client. It writes persistent shard indexes and zstd-compressed archives:
 
 ```text
-stable/tokscale/imports
-stable/tokscale/local-workspace-extras
+stable/packs/imports/index.json
+stable/packs/imports/pack-<shard>-<digest>.tar.zst
+stable/packs/local-workspace-extras/index.json
+stable/packs/local-workspace-extras/pack-<shard>-<digest>.tar.zst
 stable/config/config.toml
 ```
 
-Every attempt writes `stable-layer-attempt.json`. `stable-layer-manifest.json` advances only after transfer succeeds and per-file source coverage readback passes. When the source-manifest fingerprint is unchanged and destination coverage is still complete, the previous verified state skips rsync without skipping the current source/destination readback. The mirror uses source-covered, no-delete semantics; extra old files at the destination do not count as current source coverage.
+The default shard target is 256 MiB of uncompressed data. File-to-shard assignments are persistent: new files append to the active shard, a changed file rebuilds only its assigned shard, and unchanged content-addressed archives retain the same name and bytes. Every attempt writes `stable-layer-attempt.json`; `stable-layer-manifest.json` advances only after the shard index, archive presence, and source coverage readback pass.
+
+For the first conversion from a legacy unpacked stable layer, build and verify every archive before explicitly pruning the old trees:
+
+```bash
+agent-session-vault storage mirror-stable --prune-unpacked --json
+```
+
+Restore to a new staging directory. The restore command verifies every archive's SHA-256, extracts it, and checks the restored file set and sizes:
+
+```bash
+agent-session-vault storage restore-stable --dest-root /path/to/restore-staging --json
+```
 
 The default analytics stable layer is sufficient to continue Tokscale recomputation and submission on a new computer. Only when complete conversation text, search, or session resumption is required should you inspect the optional full-fidelity migration:
 
@@ -115,7 +129,7 @@ agent-session-vault storage mirror-stable --include-live-sessions --dry-run --js
 
 If this optional capability is selected, stop Codex, Gemini CLI, and OpenClaw writers before removing `--dry-run`. `full_fidelity_restore_ready=false` reports only that optional profile; it does not block default Tokscale continuity.
 
-Tokscale submit should still run from the local hot layer to avoid cloud-sync latency on many small files.
+Tokscale submit still runs from the local hot layer. The packed cloud stable layer is a restore copy, not a routine read path.
 
 ## `sync`
 

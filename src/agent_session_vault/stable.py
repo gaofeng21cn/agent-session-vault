@@ -7,10 +7,17 @@ import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import time
 
 from .config import VaultConfig
+from .stable_pack import (
+    DEFAULT_SHARD_TARGET_BYTES,
+    PACKED_STABLE_FORMAT,
+    PackedSourceSnapshot,
+    mirror_packed_directory,
+    packed_directory_coverage,
+    restore_packed_directory,
+)
 
 
 @dataclass(frozen=True)
@@ -20,6 +27,7 @@ class StableMirrorItem:
     role: str
     source: Path
     destination: Path
+    restore_relative_path: Path
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,10 @@ class StableMirrorItemResult:
     mismatched_files: int
     source_manifest_fingerprint: str | None
     transfer_status: str
+    restore_relative_path: Path
+    archive_format: str | None = None
+    archive_count: int = 0
+    archive_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -55,6 +67,10 @@ class StableMirrorResult:
     status: str
     mirrored_at: str
     items: list[StableMirrorItemResult]
+    pruned_unpacked_files: int = 0
+    pruned_unpacked_bytes: int = 0
+    pruned_unpacked_paths: tuple[Path, ...] = ()
+    prune_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,14 +104,16 @@ def stable_mirror_items(
             kind="directory",
             role="durable_analytics_projection",
             source=config.paths.import_root.expanduser(),
-            destination=root / "tokscale" / "imports",
+            destination=root / "packs" / "imports",
+            restore_relative_path=Path("tokscale") / "imports",
         ),
         StableMirrorItem(
             label="local_workspace_extras",
             kind="directory",
             role="durable_local_ingest",
             source=config.paths.local_workspace_extras.expanduser(),
-            destination=root / "tokscale" / "local-workspace-extras",
+            destination=root / "packs" / "local-workspace-extras",
+            restore_relative_path=Path("tokscale") / "local-workspace-extras",
         ),
         StableMirrorItem(
             label="config",
@@ -103,6 +121,7 @@ def stable_mirror_items(
             role="control_plane",
             source=config.config_path.expanduser(),
             destination=root / "config" / "config.toml",
+            restore_relative_path=Path("config") / "config.toml",
         ),
     ]
     if not include_live_sessions:
@@ -116,14 +135,16 @@ def stable_mirror_items(
                 kind="directory",
                 role="authoritative_live_session",
                 source=home / ".codex" / "sessions",
-                destination=root / "live" / "codex" / "sessions",
+                destination=root / "packs" / "live-codex-sessions",
+                restore_relative_path=Path("live") / "codex" / "sessions",
             ),
             StableMirrorItem(
                 label="live_codex_archived_sessions",
                 kind="directory",
                 role="authoritative_live_session",
                 source=home / ".codex" / "archived_sessions",
-                destination=root / "live" / "codex" / "archived_sessions",
+                destination=root / "packs" / "live-codex-archived-sessions",
+                restore_relative_path=Path("live") / "codex" / "archived_sessions",
             ),
             StableMirrorItem(
                 label="live_codex_session_index",
@@ -131,6 +152,7 @@ def stable_mirror_items(
                 role="live_session_index",
                 source=home / ".codex" / "session_index.jsonl",
                 destination=root / "live" / "codex" / "session_index.jsonl",
+                restore_relative_path=Path("live") / "codex" / "session_index.jsonl",
             ),
             StableMirrorItem(
                 label="live_codex_history",
@@ -138,20 +160,23 @@ def stable_mirror_items(
                 role="live_session_index",
                 source=home / ".codex" / "history.jsonl",
                 destination=root / "live" / "codex" / "history.jsonl",
+                restore_relative_path=Path("live") / "codex" / "history.jsonl",
             ),
             StableMirrorItem(
                 label="live_gemini_chats",
                 kind="directory",
                 role="authoritative_live_session",
                 source=home / ".gemini" / "tmp",
-                destination=root / "live" / "gemini" / "tmp",
+                destination=root / "packs" / "live-gemini-tmp",
+                restore_relative_path=Path("live") / "gemini" / "tmp",
             ),
             StableMirrorItem(
                 label="live_openclaw_agents",
                 kind="directory",
                 role="authoritative_live_session",
                 source=home / ".openclaw" / "agents",
-                destination=root / "live" / "openclaw" / "agents",
+                destination=root / "packs" / "live-openclaw-agents",
+                restore_relative_path=Path("live") / "openclaw" / "agents",
             ),
         ]
     )
@@ -168,11 +193,6 @@ def _tree_snapshot(path: Path) -> _TreeSnapshot:
             stat = child.stat()
             entries[child.relative_to(path).as_posix()] = (stat.st_size, stat.st_mtime_ns)
     return _TreeSnapshot(is_file=False, entries=entries)
-
-
-def _tree_stats(path: Path) -> tuple[int, int]:
-    snapshot = _tree_snapshot(path)
-    return snapshot.total_bytes, snapshot.total_files
 
 
 def _snapshot_fingerprint(snapshot: _TreeSnapshot) -> str:
@@ -211,10 +231,6 @@ def _coverage_from_snapshot(
 
 def _source_coverage(source: Path, destination: Path) -> tuple[str, int, int, int]:
     return _coverage_from_snapshot(_tree_snapshot(source), destination)
-
-
-def _rsync_source(path: Path) -> str:
-    return f"{path}/"
 
 
 def _destination_matches_snapshot_entry(destination: Path, entry: tuple[int, int]) -> bool:
@@ -314,6 +330,8 @@ def mirror_stable_layer(
     stable_root: Path | None = None,
     dry_run: bool = False,
     include_live_sessions: bool = False,
+    prune_unpacked: bool = False,
+    shard_target_bytes: int = DEFAULT_SHARD_TARGET_BYTES,
 ) -> StableMirrorResult:
     root = (stable_root or default_stable_root(config)).expanduser()
     mirrored_at = datetime.now(UTC).isoformat()
@@ -321,10 +339,11 @@ def mirror_stable_layer(
     replacement_root = root / ".asv-replaced" / replacement_run_id
     profile = "migration" if include_live_sessions else "analytics"
     previous_items = _load_verified_manifest_items(root / "stable-layer-manifest.json")
+    mirror_items = stable_mirror_items(config, root, include_live_sessions=include_live_sessions)
     results: list[StableMirrorItemResult] = []
     failed = False
 
-    for item in stable_mirror_items(config, root, include_live_sessions=include_live_sessions):
+    for item in mirror_items:
         started = time.monotonic()
         source = item.source.expanduser()
         destination = item.destination.expanduser()
@@ -352,8 +371,68 @@ def mirror_stable_layer(
                     mismatched_files=0,
                     source_manifest_fingerprint=None,
                     transfer_status="not_applicable",
+                    restore_relative_path=item.restore_relative_path,
                 )
             )
+            continue
+
+        if item.kind == "directory":
+            try:
+                packed = mirror_packed_directory(
+                    source,
+                    destination,
+                    dry_run=dry_run,
+                    shard_target_bytes=shard_target_bytes,
+                )
+                status = "planned" if dry_run else "mirrored"
+                coverage_status = "planned" if dry_run else "verified"
+                exit_code = None if dry_run else 0
+                stderr = None
+                verified_files = 0 if dry_run else packed.source_snapshot.total_files
+            except Exception as exc:
+                source_snapshot = _tree_snapshot(source)
+                packed = None
+                status = "failed"
+                coverage_status = "failed"
+                exit_code = 1
+                stderr = f"packed mirror failed: {type(exc).__name__}: {exc}"
+                verified_files = 0
+
+            snapshot = (
+                packed.source_snapshot
+                if packed is not None
+                else PackedSourceSnapshot(entries=source_snapshot.entries)
+            )
+            results.append(
+                StableMirrorItemResult(
+                    label=item.label,
+                    kind=item.kind,
+                    role=item.role,
+                    source=source,
+                    destination=destination,
+                    source_exists=True,
+                    source_bytes=snapshot.total_bytes,
+                    source_files=snapshot.total_files,
+                    status=status,
+                    duration_seconds=round(time.monotonic() - started, 3),
+                    command=None,
+                    exit_code=exit_code,
+                    stderr=stderr,
+                    coverage_status=coverage_status,
+                    verified_files=verified_files,
+                    missing_files=0,
+                    mismatched_files=0,
+                    source_manifest_fingerprint=snapshot.fingerprint,
+                    transfer_status=packed.transfer_status if packed is not None else "failed",
+                    restore_relative_path=item.restore_relative_path,
+                    archive_format=PACKED_STABLE_FORMAT,
+                    archive_count=packed.archive_count if packed is not None else 0,
+                    archive_bytes=packed.archive_bytes if packed is not None else 0,
+                )
+            )
+            if status == "failed":
+                failed = True
+                break
             continue
 
         source_snapshot = _tree_snapshot(source)
@@ -411,6 +490,7 @@ def mirror_stable_layer(
                         mismatched_files=0,
                         source_manifest_fingerprint=source_manifest_fingerprint,
                         transfer_status="reused_verified",
+                        restore_relative_path=item.restore_relative_path,
                     )
                 )
                 continue
@@ -457,27 +537,13 @@ def mirror_stable_layer(
                         mismatched_files=0,
                         source_manifest_fingerprint=source_manifest_fingerprint,
                         transfer_status="failed",
+                        restore_relative_path=item.restore_relative_path,
                     )
                 )
                 failed = True
                 break
 
-        if item.kind == "directory":
-            command = ["rsync", "-a", _rsync_source(source), _rsync_source(destination)]
-            if dry_run:
-                status = "planned"
-            else:
-                transfer_status = "transferred"
-                destination.mkdir(parents=True, exist_ok=True)
-                try:
-                    completed = subprocess.run(command, text=True, capture_output=True)
-                    exit_code = completed.returncode
-                    stderr = completed.stderr.strip() or None
-                except OSError as exc:
-                    exit_code = 127
-                    stderr = f"{type(exc).__name__}: {exc}"
-                status = "mirrored" if exit_code == 0 else "failed"
-        elif item.kind == "file":
+        if item.kind == "file":
             if dry_run:
                 status = "planned"
             elif file_destination_current:
@@ -547,6 +613,7 @@ def mirror_stable_layer(
                 mismatched_files=mismatched_files,
                 source_manifest_fingerprint=source_manifest_fingerprint,
                 transfer_status=transfer_status,
+                restore_relative_path=item.restore_relative_path,
             )
         )
         if status in {"failed", "verification_failed"}:
@@ -555,6 +622,27 @@ def mirror_stable_layer(
 
     if not dry_run and not failed and replacement_root.exists():
         shutil.rmtree(replacement_root, ignore_errors=True)
+    pruned_unpacked_files = 0
+    pruned_unpacked_bytes = 0
+    pruned_unpacked_paths: list[Path] = []
+    prune_error: str | None = None
+    if prune_unpacked and not dry_run and not failed:
+        try:
+            for item in mirror_items:
+                if item.kind != "directory":
+                    continue
+                unpacked_path = root / item.restore_relative_path
+                if not unpacked_path.exists():
+                    continue
+                snapshot = _tree_snapshot(unpacked_path)
+                pruned_unpacked_files += snapshot.total_files
+                pruned_unpacked_bytes += snapshot.total_bytes
+                shutil.rmtree(unpacked_path)
+                pruned_unpacked_paths.append(unpacked_path)
+        except OSError as exc:
+            failed = True
+            prune_error = f"unpacked stable cleanup failed: {type(exc).__name__}: {exc}"
+
     status = "planned" if dry_run else "failed" if failed else "verified"
     manifest_path = None if dry_run or failed else root / "stable-layer-manifest.json"
     attempt_path = None if dry_run else root / "stable-layer-attempt.json"
@@ -567,6 +655,10 @@ def mirror_stable_layer(
         status=status,
         mirrored_at=mirrored_at,
         items=results,
+        pruned_unpacked_files=pruned_unpacked_files,
+        pruned_unpacked_bytes=pruned_unpacked_bytes,
+        pruned_unpacked_paths=tuple(pruned_unpacked_paths),
+        prune_error=prune_error,
     )
     if attempt_path is not None:
         _write_json_atomic(attempt_path, stable_mirror_payload(result))
@@ -577,15 +669,19 @@ def mirror_stable_layer(
 
 def stable_mirror_payload(result: StableMirrorResult) -> dict[str, object]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "stable_root": str(result.stable_root),
         "manifest_path": str(result.manifest_path) if result.manifest_path else None,
         "attempt_path": str(result.attempt_path) if result.attempt_path else None,
         "dry_run": result.dry_run,
         "profile": result.profile,
         "status": result.status,
-        "mirror_semantics": "source-covered-no-delete",
+        "mirror_semantics": "packed-source-covered",
         "mirrored_at": result.mirrored_at,
+        "pruned_unpacked_files": result.pruned_unpacked_files,
+        "pruned_unpacked_bytes": result.pruned_unpacked_bytes,
+        "pruned_unpacked_paths": [str(path) for path in result.pruned_unpacked_paths],
+        "prune_error": result.prune_error,
         "items": [
             {
                 "label": item.label,
@@ -593,6 +689,7 @@ def stable_mirror_payload(result: StableMirrorResult) -> dict[str, object]:
                 "role": item.role,
                 "source": str(item.source),
                 "destination": str(item.destination),
+                "stable_relative_path": item.destination.relative_to(result.stable_root).as_posix(),
                 "source_exists": item.source_exists,
                 "source_bytes": item.source_bytes,
                 "source_files": item.source_files,
@@ -607,9 +704,101 @@ def stable_mirror_payload(result: StableMirrorResult) -> dict[str, object]:
                 "mismatched_files": item.mismatched_files,
                 "source_manifest_fingerprint": item.source_manifest_fingerprint,
                 "transfer_status": item.transfer_status,
+                "restore_relative_path": item.restore_relative_path.as_posix(),
+                "archive_format": item.archive_format,
+                "archive_count": item.archive_count,
+                "archive_bytes": item.archive_bytes,
             }
             for item in result.items
         ],
+    }
+
+
+def restore_stable_layer(
+    stable_root: Path,
+    destination_root: Path,
+    *,
+    labels: set[str] | None = None,
+) -> dict[str, object]:
+    root = stable_root.expanduser()
+    destination = destination_root.expanduser()
+    manifest_path = root / "stable-layer-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"stable manifest is missing or unreadable: {manifest_path}") from exc
+    if not isinstance(manifest, dict) or manifest.get("status") != "verified":
+        raise ValueError(f"stable manifest is not verified: {manifest_path}")
+    raw_items = manifest.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError(f"stable manifest items are missing: {manifest_path}")
+
+    restored_items: list[dict[str, object]] = []
+    destination.mkdir(parents=True, exist_ok=True)
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict) or raw_item.get("source_exists") is not True:
+            continue
+        label = raw_item.get("label")
+        if not isinstance(label, str) or labels is not None and label not in labels:
+            continue
+        relative_text = raw_item.get("restore_relative_path")
+        if not isinstance(relative_text, str):
+            raise ValueError(f"stable item has no restore path: {label}")
+        relative_path = Path(relative_text)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ValueError(f"unsafe stable restore path for {label}: {relative_text}")
+        restore_path = destination / relative_path
+        if restore_path.exists() or restore_path.is_symlink():
+            raise FileExistsError(f"stable restore destination already exists: {restore_path}")
+
+        stable_relative_text = raw_item.get("stable_relative_path")
+        if not isinstance(stable_relative_text, str):
+            raise ValueError(f"stable item has no relative source path: {label}")
+        stable_relative_path = Path(stable_relative_text)
+        if stable_relative_path.is_absolute() or ".." in stable_relative_path.parts:
+            raise ValueError(f"unsafe stable source path for {label}: {stable_relative_text}")
+        source = root / stable_relative_path
+        kind = raw_item.get("kind")
+        if kind == "directory" and raw_item.get("archive_format") == PACKED_STABLE_FORMAT:
+            restored_files, restored_bytes = restore_packed_directory(source, restore_path)
+        elif kind == "file":
+            restore_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, restore_path)
+            restored_files = 1
+            restored_bytes = restore_path.stat().st_size
+        else:
+            raise ValueError(f"unsupported stable restore item: {label}")
+        restored_items.append(
+            {
+                "label": label,
+                "source": str(source),
+                "destination": str(restore_path),
+                "restored_files": restored_files,
+                "restored_bytes": restored_bytes,
+                "status": "verified",
+            }
+        )
+
+    expected_labels = {
+        str(item.get("label"))
+        for item in raw_items
+        if isinstance(item, dict)
+        and item.get("source_exists") is True
+        and (labels is None or item.get("label") in labels)
+    }
+    restored_labels = {str(item["label"]) for item in restored_items}
+    if expected_labels != restored_labels:
+        missing = ",".join(sorted(expected_labels - restored_labels))
+        raise ValueError(f"stable restore did not cover requested items: {missing}")
+    return {
+        "schema_version": 1,
+        "status": "verified",
+        "stable_root": str(root),
+        "destination_root": str(destination),
+        "manifest_path": str(manifest_path),
+        "items": restored_items,
+        "restored_files": sum(int(item["restored_files"]) for item in restored_items),
+        "restored_bytes": sum(int(item["restored_bytes"]) for item in restored_items),
     }
 
 
@@ -625,7 +814,9 @@ def migration_plan_payload(config: VaultConfig, *, stable_root: Path | None = No
 
     for item in all_items:
         exists = item.source.exists()
-        source_bytes, source_files = _tree_stats(item.source) if exists else (0, 0)
+        snapshot = _tree_snapshot(item.source) if exists else None
+        source_bytes = snapshot.total_bytes if snapshot else 0
+        source_files = snapshot.total_files if snapshot else 0
         profile = "analytics" if item.label in analytics_labels else "migration"
         item_payloads.append(
             {
@@ -636,9 +827,11 @@ def migration_plan_payload(config: VaultConfig, *, stable_root: Path | None = No
                 "source": str(item.source),
                 "stable_destination": str(item.destination),
                 "restore_destination": str(item.source),
+                "restore_relative_path": item.restore_relative_path.as_posix(),
                 "source_exists": exists,
                 "source_bytes": source_bytes,
                 "source_files": source_files,
+                "source_manifest_fingerprint": _snapshot_fingerprint(snapshot) if snapshot else None,
             }
         )
         if profile == "analytics":
@@ -679,10 +872,16 @@ def migration_plan_payload(config: VaultConfig, *, stable_root: Path | None = No
                     "source_files"
                 ) != current_item["source_files"]:
                     continue
-                coverage_status, _, _, _ = _source_coverage(
-                    Path(str(current_item["source"])),
-                    Path(str(current_item["stable_destination"])),
-                )
+                source = Path(str(current_item["source"]))
+                destination = Path(str(current_item["stable_destination"]))
+                if raw_item.get("archive_format") == PACKED_STABLE_FORMAT and source.is_dir():
+                    source_snapshot = _tree_snapshot(source)
+                    coverage_status, _, _, _, _ = packed_directory_coverage(
+                        PackedSourceSnapshot(entries=source_snapshot.entries),
+                        destination,
+                    )
+                else:
+                    coverage_status, _, _, _ = _source_coverage(source, destination)
                 if coverage_status == "verified":
                     covered_labels.add(label)
 

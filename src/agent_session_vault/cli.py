@@ -31,7 +31,14 @@ from .relay import (
 )
 from .retention import apply_archive_plan, build_archive_plan
 from .storage import summarize_storage
-from .stable import migration_plan_payload, mirror_stable_layer, stable_mirror_payload
+from .stable import (
+    default_stable_root,
+    migration_plan_payload,
+    mirror_stable_layer,
+    restore_stable_layer,
+    stable_mirror_payload,
+)
+from .stable_pack import DEFAULT_SHARD_TARGET_BYTES
 from .syncing import choose_projection_transport, choose_sync_strategy, expected_local_bundle_dir
 from .tokscale import build_tokscale_invocation
 from .views import build_view
@@ -79,7 +86,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also mirror optional full-fidelity client sessions",
     )
     storage_mirror_stable.add_argument("--dry-run", action="store_true")
+    storage_mirror_stable.add_argument(
+        "--shard-target-mib",
+        type=int,
+        default=DEFAULT_SHARD_TARGET_BYTES // (1024 * 1024),
+        help="Approximate uncompressed target size for each packed shard",
+    )
+    storage_mirror_stable.add_argument(
+        "--prune-unpacked",
+        action="store_true",
+        help="Remove legacy unpacked stable trees after packed verification succeeds",
+    )
     storage_mirror_stable.add_argument("--json", action="store_true")
+    storage_restore_stable = storage_sub.add_parser("restore-stable", help="Restore a verified packed stable layer")
+    storage_restore_stable.add_argument("--stable-root", type=Path, default=None)
+    storage_restore_stable.add_argument("--dest-root", type=Path, required=True)
+    storage_restore_stable.add_argument("--label", action="append", dest="labels", default=[])
+    storage_restore_stable.add_argument("--json", action="store_true")
     storage_migration_plan = storage_sub.add_parser("migration-plan", help="Inspect backup and migration coverage")
     storage_migration_plan.add_argument("--stable-root", type=Path, default=None)
     storage_migration_plan.add_argument("--json", action="store_true")
@@ -321,6 +344,8 @@ def main(argv: list[str] | None = None) -> int:
             stable_root=args.dest_root,
             dry_run=args.dry_run,
             include_live_sessions=args.include_live_sessions,
+            prune_unpacked=args.prune_unpacked,
+            shard_target_bytes=args.shard_target_mib * 1024 * 1024,
         )
         payload = stable_mirror_payload(result)
         if args.json:
@@ -335,6 +360,23 @@ def main(argv: list[str] | None = None) -> int:
             if payload["manifest_path"]:
                 print(f'manifest_path\t{payload["manifest_path"]}')
         return 0 if result.status in {"planned", "verified"} else 1
+
+    if args.command == "storage" and args.storage_command == "restore-stable":
+        payload = restore_stable_layer(
+            args.stable_root or default_stable_root(config),
+            args.dest_root,
+            labels=set(args.labels) if args.labels else None,
+        )
+        if args.json:
+            _json_dump(payload)
+        else:
+            for item in payload["items"]:
+                print(
+                    f'{item["label"]}\t{item["status"]}\t{item["restored_files"]}\t'
+                    f'{item["destination"]}'
+                )
+            print(f'destination_root\t{payload["destination_root"]}')
+        return 0
 
     if args.command == "storage" and args.storage_command == "migration-plan":
         payload = migration_plan_payload(config, stable_root=args.stable_root)

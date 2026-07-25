@@ -134,12 +134,18 @@ Run the deterministic daily projection sync and Tokscale submission workflow:
 agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-The command first incrementally projects the current local `HOME` into `imports/local-home/.raw`, then syncs remote projections. Tokscale reads only local/remote projections and managed local extras; the live HOME is no longer an input. The runner then resolves npm latest and emits one terminal JSON receipt. Tokscale help and the official preview run only when the latest package version has not already been verified. `--mirror-stable` mirrors the complete analytics layer after a confirmed submit.
+The command first incrementally projects the current local `HOME` into `imports/local-home/.raw`, then syncs remote projections. Tokscale reads only local/remote projections and managed local extras; the live HOME is no longer an input. The runner then resolves npm latest and emits one terminal JSON receipt. Tokscale help and the official preview run only when the latest package version has not already been verified. After a confirmed submit, `--mirror-stable` writes the analytics layer as incrementally reusable zstd shards so OneDrive does not have to manage tens of thousands of small files.
 
 Restoring the default analytics stable layer is sufficient for Tokscale continuity. If complete conversation text, search, or session resumption is also required, explicitly inspect the optional full-fidelity migration without starting the potentially large copy:
 
 ```bash
 agent-session-vault storage mirror-stable --include-live-sessions --dry-run --json
+```
+
+Verify a packed stable restore:
+
+```bash
+agent-session-vault storage restore-stable --dest-root /path/to/restore-staging --json
 ```
 
 Prepare Tokscale environment only:

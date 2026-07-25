@@ -131,12 +131,18 @@ agent-session-vault sync local-codex \
 agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-该命令先把当前本机 `HOME` 增量投影到 `imports/local-home/.raw`，再同步远端 projection，并让 Tokscale 只读取本机/远端 projections 与 managed local extras；live HOME 不再是 Tokscale 输入。它随后解析 npm latest 并输出终态 JSON 回执。只有 latest 包版本尚未验证时，才运行 Tokscale help 与官方 preview。`--mirror-stable` 会在 submit confirmed 后镜像完整 analytics 层。
+该命令先把当前本机 `HOME` 增量投影到 `imports/local-home/.raw`，再同步远端 projection，并让 Tokscale 只读取本机/远端 projections 与 managed local extras；live HOME 不再是 Tokscale 输入。它随后解析 npm latest 并输出终态 JSON 回执。只有 latest 包版本尚未验证时，才运行 Tokscale help 与官方 preview。`--mirror-stable` 会在 submit confirmed 后把 analytics 层写成可增量复用的 zstd 分片包，避免 OneDrive 承载数万个零碎文件。
 
 默认换机只需恢复 analytics stable 层即可延续 Tokscale。若还需要完整聊天正文、搜索和继续会话，可显式 dry-run 可选的 full-fidelity migration：
 
 ```bash
 agent-session-vault storage mirror-stable --include-live-sessions --dry-run --json
+```
+
+验证 packed stable 层的恢复：
+
+```bash
+agent-session-vault storage restore-stable --dest-root /path/to/restore-staging --json
 ```
 
 只准备 Tokscale 运行环境：

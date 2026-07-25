@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import hashlib
+import tempfile
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ def _run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
-def _sha256_file(path: Path) -> str:
+def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -34,11 +35,46 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+_sha256_file = sha256_file
+
+
 def _pack_to_bundle_path(source: Path, bundle_path: Path) -> None:
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     if bundle_path.exists():
         bundle_path.unlink()
     _run(["bsdtar", "--zstd", "-cf", str(bundle_path), "-C", str(source), "."])
+
+
+def pack_paths(source: Path, relative_paths: list[str], bundle_path: Path) -> None:
+    if not source.is_dir():
+        raise FileNotFoundError(f"source tree not found: {source}")
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    if bundle_path.exists():
+        bundle_path.unlink()
+
+    list_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="asv-pack-", suffix=".list", delete=False) as handle:
+            list_path = Path(handle.name)
+            for relative in relative_paths:
+                handle.write(relative.encode("utf-8", errors="surrogateescape"))
+                handle.write(b"\0")
+        _run(
+            [
+                "bsdtar",
+                "--zstd",
+                "-cf",
+                str(bundle_path),
+                "-C",
+                str(source),
+                "--null",
+                "-T",
+                str(list_path),
+            ]
+        )
+    finally:
+        if list_path is not None:
+            list_path.unlink(missing_ok=True)
 
 
 def pack_tree(source: Path, output_dir: Path, bundle_name: str) -> PackedBundle:
@@ -94,6 +130,6 @@ def inventory_bundles(archive_root: Path) -> list[BundleInventoryItem]:
             continue
         bundle_path = manifest_path.with_suffix("").with_suffix(".tar.zst")
         if bundle_path.exists():
-            payload.setdefault("sha256", _sha256_file(bundle_path))
+            payload.setdefault("sha256", sha256_file(bundle_path))
             items.append(BundleInventoryItem(bundle_path=bundle_path, manifest_path=manifest_path, payload=payload))
     return items
