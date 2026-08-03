@@ -104,7 +104,10 @@ stable/packs/imports/pack-<shard>-<digest>.tar.zst
 stable/packs/local-workspace-extras/index.json
 stable/packs/local-workspace-extras/pack-<shard>-<digest>.tar.zst
 stable/config/config.toml
+stable/config/tokscale/custom-pricing.json
 ```
+
+When present, Tokscale's `custom-pricing.json` is read from the projection home's effective config directory and mirrored as control-plane data. This keeps exact local model pricing recoverable without making the cold mirror a runtime read path.
 
 The default shard target is 256 MiB of uncompressed data. File-to-shard assignments are persistent: new files append to the active shard, a changed file rebuilds only its assigned shard, and unchanged content-addressed archives retain the same name and bytes. Every attempt writes `stable-layer-attempt.json`; `stable-layer-manifest.json` advances only after the shard index, archive presence, and source coverage readback pass.
 

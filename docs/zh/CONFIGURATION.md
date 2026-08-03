@@ -98,7 +98,10 @@ stable/packs/imports/pack-<shard>-<digest>.tar.zst
 stable/packs/local-workspace-extras/index.json
 stable/packs/local-workspace-extras/pack-<shard>-<digest>.tar.zst
 stable/config/config.toml
+stable/config/tokscale/custom-pricing.json
 ```
+
+若 Tokscale 的 `custom-pricing.json` 存在，系统会从 projection home 的实际配置目录读取，并将其作为控制面数据一并镜像。这样可以恢复本地精确模型定价，同时不会把冷镜像变成日常运行时读取路径。
 
 默认分片目标是 256 MiB 未压缩数据。文件与分片的归属会持久保存；新文件追加到当前分片，已有文件变化时只重建所在分片，未变化的内容寻址包保持原文件名和字节不动。每次成功镜像都会写 `stable-layer-attempt.json`，只有分片索引、包存在性和 source coverage readback 都通过时才更新 `stable-layer-manifest.json`。
 

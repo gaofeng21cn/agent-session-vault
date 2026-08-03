@@ -123,6 +123,16 @@ def stable_mirror_items(
             destination=root / "config" / "config.toml",
             restore_relative_path=Path("config") / "config.toml",
         ),
+        StableMirrorItem(
+            label="tokscale_custom_pricing",
+            kind="file",
+            role="control_plane",
+            source=config.paths.projection_home.expanduser() / ".config" / "tokscale" / "custom-pricing.json",
+            destination=root / "config" / "tokscale" / "custom-pricing.json",
+            restore_relative_path=(
+                Path("tokscale") / "projection-home" / ".config" / "tokscale" / "custom-pricing.json"
+            ),
+        ),
     ]
     if not include_live_sessions:
         return items

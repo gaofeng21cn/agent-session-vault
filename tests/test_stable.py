@@ -43,6 +43,9 @@ clients = ["codex"]
     (imports / "machine-a" / ".raw" / "codex" / "one.jsonl").write_text("codex", encoding="utf-8")
     (extras / "volatile-codex-homes" / "codex").mkdir(parents=True)
     (extras / "volatile-codex-homes" / "codex" / "two.jsonl").write_text("extra", encoding="utf-8")
+    pricing_path = home / ".config" / "tokscale" / "projection-home" / ".config" / "tokscale" / "custom-pricing.json"
+    pricing_path.parent.mkdir(parents=True)
+    pricing_path.write_text('{"models":{"custom-model":{"input_cost_per_million_tokens":1}}}\n', encoding="utf-8")
     return config_path
 
 
@@ -63,6 +66,7 @@ def test_mirror_stable_layer_plans_imports_extras_and_config(tmp_path: Path) -> 
     assert destinations["imports"].endswith("/stable/packs/imports")
     assert destinations["local_workspace_extras"].endswith("/stable/packs/local-workspace-extras")
     assert destinations["config"].endswith("/stable/config/config.toml")
+    assert destinations["tokscale_custom_pricing"].endswith("/stable/config/tokscale/custom-pricing.json")
     assert {item["status"] for item in payload["items"]} == {"planned"}
     assert payload["mirror_semantics"] == "packed-source-covered"
 
@@ -77,6 +81,11 @@ def test_mirror_stable_layer_packs_directories_and_copies_config(tmp_path: Path)
     assert list((stable_root / "packs" / "imports").glob("pack-*.tar.zst"))
     assert list((stable_root / "packs" / "local-workspace-extras").glob("pack-*.tar.zst"))
     assert (default_stable_root(config) / "config" / "config.toml").read_text(encoding="utf-8") == config.config_path.read_text(
+        encoding="utf-8"
+    )
+    assert (default_stable_root(config) / "config" / "tokscale" / "custom-pricing.json").read_text(
+        encoding="utf-8"
+    ) == (config.paths.projection_home / ".config" / "tokscale" / "custom-pricing.json").read_text(
         encoding="utf-8"
     )
     assert payload["manifest_path"].endswith("/stable/stable-layer-manifest.json")
@@ -227,7 +236,7 @@ def test_restore_stable_layer_round_trip_all_analytics_items(tmp_path: Path) -> 
 
     assert result.status == "verified"
     assert restored["status"] == "verified"
-    assert restored["restored_files"] == 3
+    assert restored["restored_files"] == 4
     assert (
         restore_root / "tokscale" / "imports" / "machine-a" / ".raw" / "codex" / "one.jsonl"
     ).read_text(encoding="utf-8") == "codex"
@@ -240,6 +249,9 @@ def test_restore_stable_layer_round_trip_all_analytics_items(tmp_path: Path) -> 
         / "two.jsonl"
     ).read_text(encoding="utf-8") == "extra"
     assert (restore_root / "config" / "config.toml").is_file()
+    assert (
+        restore_root / "tokscale" / "projection-home" / ".config" / "tokscale" / "custom-pricing.json"
+    ).is_file()
 
 
 def test_cli_mirror_and_restore_stable_round_trip(tmp_path: Path, capsys) -> None:
@@ -265,4 +277,7 @@ def test_cli_mirror_and_restore_stable_round_trip(tmp_path: Path, capsys) -> Non
     assert mirror_payload["status"] == "verified"
     assert restore_exit == 0
     assert restore_payload["status"] == "verified"
-    assert restore_payload["restored_files"] == 3
+    assert restore_payload["restored_files"] == 4
+    assert (
+        restore_root / "tokscale" / "projection-home" / ".config" / "tokscale" / "custom-pricing.json"
+    ).is_file()
