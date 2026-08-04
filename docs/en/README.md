@@ -16,9 +16,11 @@ If your immediate goal is Tokscale:
 
 1. read the root [README](../../README.md)
 2. copy the example config from [`config/agent-session-vault.example.toml`](../../config/agent-session-vault.example.toml)
-3. define your machines and roots
-4. run `agent-session-vault sync auto <machine>`
+3. enroll machines through OPL Fleet; no duplicate Session Vault machine capability is needed
+4. run `agent-session-vault sync fleet`
 5. run `agent-session-vault tokscale exec ...`
+
+Use `sync auto <machine>` only for legacy configuration compatibility or focused diagnosis.
 
 If your immediate goal is storage tiering or archive planning:
 

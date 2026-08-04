@@ -16,9 +16,11 @@
 
 1. 先看 [根 README](../../README.zh-CN.md)
 2. 从 [`config/agent-session-vault.example.toml`](../../config/agent-session-vault.example.toml) 复制样例配置
-3. 配好机器与 roots
-4. 执行 `agent-session-vault sync auto <machine>`
+3. 通过 OPL Fleet 纳管机器，不需要重复声明 Session Vault capability
+4. 执行 `agent-session-vault sync fleet`
 5. 再执行 `agent-session-vault tokscale exec ...`
+
+`sync auto <machine>` 只用于旧配置兼容或聚焦诊断。
 
 如果你的直接目标是冷热分层与归档：
 
