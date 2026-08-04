@@ -5,6 +5,8 @@ from pathlib import Path
 import threading
 import time
 
+import pytest
+
 from agent_session_vault.config import load_config
 from agent_session_vault.fleet import (
     FleetNode,
@@ -108,6 +110,17 @@ def test_discover_fleet_nodes_uses_controller_and_approved_nodes(monkeypatch) ->
         FleetNode(node_id="node-controller", local=True),
         FleetNode(node_id="node-a", local=False),
     ]
+
+
+def test_discover_fleet_nodes_fails_closed_when_controller_is_missing(monkeypatch) -> None:
+    class Completed:
+        returncode = 0
+        stdout = json.dumps({"nodes": []})
+        stderr = ""
+
+    monkeypatch.setattr("agent_session_vault.fleet.subprocess.run", lambda *args, **kwargs: Completed())
+    with pytest.raises(RuntimeError, match="missing controller"):
+        discover_fleet_nodes("opl-fleet", instance=Path("/instance"))
 
 
 def test_sync_fleet_runs_remote_nodes_concurrently_and_preserves_order(tmp_path: Path, monkeypatch) -> None:

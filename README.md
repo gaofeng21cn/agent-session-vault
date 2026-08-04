@@ -137,7 +137,7 @@ Run the deterministic daily projection sync and Tokscale submission workflow:
 agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-The command first incrementally projects the current local `HOME` into `imports/local-home/.raw`, then syncs remote projections. Tokscale reads only local/remote projections and managed local extras; the live HOME is no longer an input. The runner then resolves npm latest and emits one terminal JSON receipt. Tokscale help and the official preview run only when the latest package version has not already been verified. After a confirmed submit, `--mirror-stable` writes the analytics layer as incrementally reusable zstd shards so OneDrive does not have to manage tens of thousands of small files.
+The command first incrementally projects the controller's local `HOME`, then asks OPL Fleet to run the same projection job on every approved node that passes fresh data-job admission. Fleet returns the remote projection artifacts to the controller; nodes never run independent Tokscale submits. The controller builds one projection-only raw view, takes one process lock, and performs exactly one aggregate submit. Tokscale resolves duplicate Codex active/archive copies by session identity, while Session Vault keeps machine roots separate and verifies that the same frozen view, Tokscale version, pricing, and dedupe policy produce the same totals regardless of the eligible execution node. After a confirmed submit, `--mirror-stable` writes the analytics layer as incrementally reusable zstd shards so OneDrive does not have to manage tens of thousands of small files.
 
 Restoring the default analytics stable layer is sufficient for Tokscale continuity. If complete conversation text, search, or session resumption is also required, explicitly inspect the optional full-fidelity migration without starting the potentially large copy:
 
@@ -171,6 +171,8 @@ agent-session-vault archive offload-tree \
 
 - OPL Fleet is the only multi-machine node, network, admission, and dispatch control plane; Session Vault does not maintain another one.
 - Session Vault is a standard Fleet data job, not a per-node capability or installation requirement.
+- Approved nodes run projection work; one controller owns the aggregate raw view, run lock, and exactly-once Tokscale submit.
+- Cross-node numerical parity requires the same frozen projection inputs, Tokscale package, custom pricing, and dedupe policy; it does not require copying the full aggregate dataset to every node.
 - `projection delta-first` is the default cross-machine path; full raw sync remains explicit.
 - The default raw Tokscale view is projection-only; live local client roots are not scanned directly.
 - The default stable mirror guarantees Tokscale analytics continuity; full-fidelity conversation migration is optional and explicit.

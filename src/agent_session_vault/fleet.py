@@ -74,6 +74,9 @@ def discover_fleet_nodes(
     entries = payload.get("nodes")
     if not isinstance(entries, list):
         raise RuntimeError("Fleet nodes payload is missing nodes")
+    controller = payload.get("controller")
+    if not isinstance(controller, str) or not controller:
+        raise RuntimeError("Fleet nodes payload is missing controller")
     nodes: list[FleetNode] = []
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("node_id"), str):
@@ -81,7 +84,7 @@ def discover_fleet_nodes(
         policy = entry.get("policy") or {}
         if not isinstance(policy, dict) or policy.get("approved") is not True:
             continue
-        route_local = entry.get("node_id") == payload.get("controller")
+        route_local = entry.get("node_id") == controller
         nodes.append(FleetNode(node_id=str(entry["node_id"]), local=route_local))
     return nodes
 

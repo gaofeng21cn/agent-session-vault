@@ -403,9 +403,17 @@ def test_daily_tokscale_fleet_validates_reused_import_name(
 
     assert result.exit_code == 0
     assert result.payload["status"] == "confirmed"
+    assert result.payload["machine_source"] == "fleet"
+    assert result.payload["fleet"]["nodes"] == [
+        {"node_id": "controller", "local": True},
+        {"node_id": "fleet-node-a", "local": False},
+    ]
     assert result.payload["remotes"][1]["machine"] == "fleet-node-a"
     assert result.payload["remotes"][1]["import_name"] == "machine-a"
     assert result.payload["raw_env"]["validation"]["remote_raw_root_counts"]["machine-a"] > 0
+    submit_calls = [command for command in calls if "submit" in command]
+    assert len(submit_calls) == 1
+    assert "--dry-run" not in submit_calls[0]
 
 
 def test_npm_latest_parser_ignores_non_version_log_lines() -> None:

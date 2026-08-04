@@ -133,7 +133,7 @@ agent-session-vault sync local-codex \
 agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-该命令先把当前本机 `HOME` 增量投影到 `imports/local-home/.raw`，再同步远端 projection，并让 Tokscale 只读取本机/远端 projections 与 managed local extras；live HOME 不再是 Tokscale 输入。它随后解析 npm latest 并输出终态 JSON 回执。只有 latest 包版本尚未验证时，才运行 Tokscale help 与官方 preview。`--mirror-stable` 会在 submit confirmed 后把 analytics 层写成可增量复用的 zstd 分片包，避免 OneDrive 承载数万个零碎文件。
+该命令先增量投影控制节点的本机 `HOME`，再由 OPL Fleet 向所有通过 fresh data-job admission 的 approved 节点投放同一 projection 任务。Fleet 把远端 projection 产物带回控制节点，各节点不会分别执行 Tokscale submit。控制节点构造唯一 projection-only raw view、持有单一进程锁，并且只执行一次聚合提交。Tokscale 按 session identity 处理 Codex active/archive 重复副本；Session Vault 保持机器根目录隔离，并验证在冻结输入、Tokscale 版本、pricing 与 dedupe policy 相同的前提下，换到任一准入执行节点仍得到相同数字。`--mirror-stable` 会在 submit confirmed 后把 analytics 层写成可增量复用的 zstd 分片包，避免 OneDrive 承载数万个零碎文件。
 
 默认换机只需恢复 analytics stable 层即可延续 Tokscale。若还需要完整聊天正文、搜索和继续会话，可显式 dry-run 可选的 full-fidelity migration：
 
@@ -167,6 +167,8 @@ agent-session-vault archive offload-tree \
 
 - OPL Fleet 是唯一多机节点、网络、准入与任务投放基座；Session Vault 不维护第二套机器控制面。
 - Session Vault 是 Fleet 的标准数据任务，不是节点需单独声明或安装的 capability。
+- approved 节点执行 projection；唯一控制节点持有聚合 raw view、运行锁与 exactly-once Tokscale submit。
+- 跨节点数值等价要求冻结的 projection 输入、Tokscale 包、custom pricing 和 dedupe policy 一致，不要求把完整聚合数据复制到每台节点。
 - 默认跨机链路是 `projection delta-first`，完整 raw sync 仍保持显式模式。
 - 默认 raw Tokscale 视图是 projection-only；本机 live HOME 不直接参与扫描。
 - 默认 stable mirror 只承诺 Tokscale analytics continuity；完整会话迁移是显式可选能力。
