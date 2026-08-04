@@ -1,9 +1,10 @@
 # Agent Session Vault Repository Guide
 
-This repository owns the local-first session control plane for multi-machine AI
-agent histories, with projection-only Tokscale continuity as the default product
-contract. Full-fidelity conversation migration remains an explicit optional
-capability.
+This repository owns the local-first session projection and Tokscale aggregation
+job that runs across OPL Fleet. OPL Fleet is the only multi-machine node,
+network, admission, dispatch, and artifact-transport control plane.
+Projection-only Tokscale continuity is the default product contract;
+full-fidelity conversation migration remains an explicit optional capability.
 
 ## Working Rules
 
@@ -21,12 +22,17 @@ capability.
 - Prefer the repository CLI over ad hoc scripts:
   `agent-session-vault config --json`,
   `agent-session-vault ops daily-tokscale --json`,
-  `agent-session-vault sync auto <machine> --json`,
+  `agent-session-vault sync fleet --json`,
   `agent-session-vault tokscale env --mode raw --json`, and
   `agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw`.
-- Keep `projection-first` as the default cross-machine sync path. Raw sync,
-  relay details, archive/offload, and package-version overrides must stay
-  explicit operator choices.
+- Treat every approved Fleet node as a candidate for the standard projection
+  job. Do not require or duplicate a Session Vault capability declaration;
+  Fleet performs fresh task admission and records why an ineligible node was
+  skipped.
+- Keep Fleet-dispatched `projection-first` as the default cross-machine path.
+  `sync auto <machine>`, raw sync, relay details, archive/offload, and
+  package-version overrides must stay explicit compatibility or operator
+  choices.
 - When a task requires Tokscale package currentness, check the package version
   fresh and pass it through `AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=<package>`;
   do not run a naked `tokscale` command outside this repo entrypoint.

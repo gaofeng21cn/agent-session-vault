@@ -18,6 +18,8 @@ CLI 默认读取：
 
 ## 配置结构
 
+默认 Fleet 模式只要求本机 paths、sync 和 retention 配置。`[machines.<name>]` 不再是多机纳管 SSOT，只保留给旧 `sync auto` 路径，以及将旧 import 目录映射到 Fleet node ID 的迁移兼容。
+
 配置刻意保持为小而显式的几块：
 
 - `[paths]`
@@ -177,6 +179,8 @@ agent-session-vault sync local-codex --source <quest-root> --json
 `canonical` 视图继续包含所有 `local_workspace_extras/*/codex` 目录。
 
 ## `machines.<name>`
+
+日常 `sync fleet` / `ops daily-tokscale` 不要求逐机 stanza。节点地址、SSH route、上线/下线与批准状态只在 OPL Fleet 维护。若已有历史 stanza，Fleet 模式会用 `ssh_target == Fleet node_id` 复用原 `import_name`，避免重复导入；新节点无需新增 stanza。
 
 每台机器都应该使用稳定的逻辑主机名，而不是临时 IP 地址。
 

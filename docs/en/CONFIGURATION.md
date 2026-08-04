@@ -22,6 +22,8 @@ the repository.
 
 ## Config Structure
 
+Fleet mode needs only local paths, sync, and retention settings. `[machines.<name>]` is no longer the multi-machine source of truth; it remains for legacy `sync auto` and for mapping existing import directories to Fleet node IDs during migration.
+
 The config is intentionally small and explicit.
 
 It has four top-level areas:
@@ -183,6 +185,8 @@ The `raw` Tokscale view includes managed local sync extras that have `sync-state
 The `canonical` view includes all `local_workspace_extras/*/codex` directories.
 
 ## `machines.<name>`
+
+Routine `sync fleet` and `ops daily-tokscale` runs do not require per-node stanzas. Node addresses, SSH routes, online/offline state, and approval live only in OPL Fleet. Existing stanzas are reused when `ssh_target` matches the Fleet node ID so historical imports are not duplicated; new Fleet nodes need no stanza.
 
 Each machine entry should use a stable logical hostname, not a changing IP address.
 

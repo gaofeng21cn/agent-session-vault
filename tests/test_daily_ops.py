@@ -9,6 +9,7 @@ import pytest
 from agent_session_vault.cli import main
 from agent_session_vault.config import load_config
 from agent_session_vault.daily_ops import CommandResult, DailyTokscaleResult, run_daily_tokscale
+from agent_session_vault.fleet import FleetNode, FleetSyncResult, FleetSyncSummary
 from agent_session_vault.projection import ProjectionBundle
 
 
@@ -327,9 +328,84 @@ def test_cli_daily_tokscale_emits_runner_json(tmp_path: Path, monkeypatch: pytes
 
     assert exit_code == 0
     assert captured["machine_names"] == ["machine-a"]
+    assert captured["use_fleet"] is False
     assert captured["canonicalize_command"] is None
     assert captured["mirror_stable"] is True
     assert json.loads(capsys.readouterr().out) == {"status": "confirmed"}
+
+
+def test_cli_daily_tokscale_defaults_to_fleet_without_machine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    config_path = _write_config(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_daily(config, **kwargs) -> DailyTokscaleResult:
+        captured.update(kwargs)
+        return DailyTokscaleResult(payload={"status": "confirmed"}, exit_code=0)
+
+    monkeypatch.setattr("agent_session_vault.cli.run_daily_tokscale", fake_daily)
+    exit_code = main(
+        [
+            "--config",
+            str(config_path),
+            "ops",
+            "daily-tokscale",
+            "--json",
+        ]
+    )
+    assert exit_code == 0
+    assert captured["machine_names"] is None
+    assert captured["use_fleet"] is True
+    assert json.loads(capsys.readouterr().out) == {"status": "confirmed"}
+
+
+def test_daily_tokscale_fleet_validates_reused_import_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    run_root = tmp_path / "ops"
+    calls: list[list[str]] = []
+    _write_cached_contract(run_root)
+    _install_command_fake(monkeypatch, calls)
+    monkeypatch.setattr(
+        "agent_session_vault.daily_ops.sync_fleet",
+        lambda *args, **kwargs: FleetSyncSummary(
+            nodes=(FleetNode(node_id="controller", local=True), FleetNode(node_id="fleet-node-a", local=False)),
+            results=(
+                FleetSyncResult(
+                    node_id="controller",
+                    import_name="controller",
+                    status="local_projection",
+                    payload={},
+                    bundle=None,
+                ),
+                FleetSyncResult(
+                    node_id="fleet-node-a",
+                    import_name="machine-a",
+                    status="synced",
+                    payload={"status": "completed"},
+                    bundle=_bundle("fleet-node-a", "fleet-node-a-snapshot", tmp_path / "bundle"),
+                ),
+            ),
+        ),
+    )
+
+    result = run_daily_tokscale(
+        config,
+        run_root=run_root,
+        canonicalize_command=None,
+        use_fleet=True,
+    )
+
+    assert result.exit_code == 0
+    assert result.payload["status"] == "confirmed"
+    assert result.payload["remotes"][1]["machine"] == "fleet-node-a"
+    assert result.payload["remotes"][1]["import_name"] == "machine-a"
+    assert result.payload["raw_env"]["validation"]["remote_raw_root_counts"]["machine-a"] > 0
 
 
 def test_npm_latest_parser_ignores_non_version_log_lines() -> None:

@@ -13,6 +13,7 @@ import time
 from typing import Callable
 
 from .config import MachineConfig, VaultConfig
+from .fleet import sync_fleet
 from .projection import (
     LOCAL_HOME_CLIENTS,
     LOCAL_HOME_STATE_NAME,
@@ -201,8 +202,8 @@ def _raw_env_payload(
     view = build_view(config, mode="raw")
     machine_root_counts: dict[str, int] = {}
     for machine_name in machine_names:
-        machine = config.machines[machine_name]
-        expected_root = config.paths.import_root / machine.import_name / ".raw"
+        machine = config.machines.get(machine_name)
+        expected_root = config.paths.import_root / (machine.import_name if machine else machine_name) / ".raw"
         machine_root_counts[machine_name] = sum(
             1 for _, path in view.extra_dirs if path == expected_root or expected_root in path.parents
         )
@@ -349,8 +350,16 @@ def run_daily_tokscale(
     force_contract_check: bool = False,
     mirror_stable: bool = False,
     stable_root: Path | None = None,
+    use_fleet: bool = False,
+    fleet_command: str = "opl-fleet",
+    fleet_instance: Path | None = None,
 ) -> DailyTokscaleResult:
-    selected_machines = list(config.machines if machine_names is None else machine_names)
+    if use_fleet and machine_names:
+        raise ValueError("--machine cannot be combined with Fleet mode")
+    if use_fleet:
+        selected_machines: list[str] = []
+    else:
+        selected_machines = list(config.machines if machine_names is None else machine_names)
     unknown_machines = [name for name in selected_machines if name not in config.machines]
     if unknown_machines:
         raise ValueError(f"unknown machines: {', '.join(unknown_machines)}")
@@ -382,6 +391,7 @@ def run_daily_tokscale(
         "current_status_path": str(current_path),
         "receipt_path": str(receipt_path),
         "remotes": [],
+        "machine_source": "fleet" if use_fleet else "config",
     }
 
     try:
@@ -455,7 +465,39 @@ def run_daily_tokscale(
                 )
 
         remote_results: list[dict[str, object]] = []
-        for machine_name in selected_machines:
+        if use_fleet:
+            update_status("fleet_discovery")
+            fleet_sync = sync_fleet(
+                config,
+                fleet_command=fleet_command,
+                instance=fleet_instance,
+                timeout_seconds=sync_timeout_seconds,
+            )
+            nodes = list(fleet_sync.nodes)
+            selected_machines = [node.node_id for node in nodes if not node.local]
+            payload["fleet"] = {
+                "status": "discovered",
+                "command": fleet_command,
+                "instance": str(fleet_instance) if fleet_instance else None,
+                "nodes": [
+                    {"node_id": node.node_id, "local": node.local}
+                    for node in nodes
+                ],
+            }
+            for result in fleet_sync.results:
+                remote: dict[str, object] = {
+                    "machine": result.node_id,
+                    "import_name": result.import_name,
+                    "status": result.status,
+                    "fleet": result.payload,
+                }
+                if result.bundle is not None:
+                    remote["bundle"] = _bundle_payload(result.bundle)
+                remote_results.append(remote)
+            payload["remotes"] = remote_results
+            update_status("fleet_sync_complete")
+
+        for machine_name in [] if use_fleet else selected_machines:
             machine_started = time.monotonic()
             machine = config.machines[machine_name]
             update_status(f"probe:{machine_name}")
@@ -536,7 +578,16 @@ def run_daily_tokscale(
             update_status(f"remote_complete:{machine_name}")
 
         update_status("raw_env")
-        raw_env = _raw_env_payload(config, selected_machines)
+        expected_remote_roots = (
+            [
+                str(remote["import_name"])
+                for remote in remote_results
+                if remote.get("status") == "synced"
+            ]
+            if use_fleet
+            else selected_machines
+        )
+        raw_env = _raw_env_payload(config, expected_remote_roots)
         payload["raw_env"] = raw_env
         if raw_env["status"] != "valid":
             raise DailyTokscaleError(

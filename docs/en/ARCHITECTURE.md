@@ -2,7 +2,7 @@
 
 ## Design Goal
 
-`agent-session-vault` is not trying to become a cloud sync platform.
+`agent-session-vault` is neither a multi-machine platform nor a cloud sync platform. OPL Fleet is the multi-machine foundation; this repository provides a Fleet-dispatched session projection and Tokscale aggregation job.
 
 Its job is narrower and more practical:
 
@@ -64,9 +64,9 @@ The backend is directory-native by design. A bundle can live on:
 - a OneDrive-synced directory
 - an iCloud-synced directory
 
-## Projection-First Sync
+## Fleet-Dispatched Projection Sync
 
-`sync auto` is the default cross-machine path.
+`sync fleet` is the default cross-machine path. Fleet owns nodes, the standard runtime, private routes, fresh data admission, concurrent dispatch, and artifact retrieval. Session Vault owns projection schemas, incremental snapshots, imports, and Tokscale rules. Session Vault is a standard Fleet data job rather than a declared node capability: every approved node is considered, then fresh task admission either runs it or records a skip reason. `sync auto <machine>` remains an explicit compatibility and diagnostic path.
 
 `sync local-home-projection` incrementally refreshes the current machine. It reads only the standard current-HOME roots, not legacy workspace runtimes or cold archives. The daily runner performs this step automatically before remote sync.
 

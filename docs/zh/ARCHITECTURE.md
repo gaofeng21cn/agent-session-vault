@@ -2,7 +2,7 @@
 
 ## 设计目标
 
-`agent-session-vault` 不是要变成一个云同步平台。
+`agent-session-vault` 不是多机平台，也不是云同步平台。OPL Fleet 是多机协同基座；本仓是 Fleet 投放的一类 session projection / Tokscale 聚合任务。
 
 它当前更具体、更务实的职责是：
 
@@ -64,9 +64,9 @@ canonical 视图是更严格的本地 session 布局，供 Tokscale 或内部分
 - OneDrive 同步目录
 - iCloud 同步目录
 
-## Projection-First Sync
+## Fleet-Dispatched Projection Sync
 
-`sync auto` 是默认跨机路径。
+`sync fleet` 是默认跨机路径。Fleet 拥有节点、标准运行时、私有 route、fresh data-admission、并发投放和产物回收；Session Vault 拥有 projection schema、增量 snapshot、导入与 Tokscale 规则。Session Vault 是标准 Fleet 数据任务，不是节点声明的 capability：所有 approved 节点都会进入候选集，再由 fresh task admission 决定执行或带原因跳过。`sync auto <machine>` 保留为显式兼容/诊断入口。
 
 本机路径由 `sync local-home-projection` 增量刷新。它只读取当前标准 HOME roots，不扫描旧 workspace runtime 或 cold archive；日常 runner 会在远端同步前自动完成这一步。
 

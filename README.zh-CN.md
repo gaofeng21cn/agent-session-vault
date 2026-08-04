@@ -4,8 +4,8 @@
 
 <h1 align="center">Agent Session Vault</h1>
 
-<p align="center"><strong>面向多机 AI Agent 工作流的 local-first session 控制层</strong></p>
-<p align="center">Projection Delta-First 同步 · Tokscale 视图构造 · 可归档存储分层</p>
+<p align="center"><strong>运行在 OPL Fleet 之上的 local-first session projection 与 Tokscale 聚合任务</strong></p>
+<p align="center">Fleet 全节点投放 · Projection Delta-First · Tokscale 视图构造 · 可归档存储分层</p>
 
 <table>
   <tr>
@@ -76,11 +76,11 @@ cp config/agent-session-vault.example.toml ~/.config/agent-session-vault/config.
 
 真实配置刻意放在仓库外。实际 machine 名、SSH target、用户名、绝对路径和运行输出只保留在该本地配置及配置指定的状态目录中；不要把 session 数据、bundle、receipt 或日志复制进仓库。
 
-编辑 `~/.config/agent-session-vault/config.toml` 中的 machine 定义后，执行常见主链路：
+OPL Fleet 已纳管的机器无需在这里重复维护地址、SSH route 或 HOME 路径。执行常见主链路：
 
 ```bash
 agent-session-vault config --json
-agent-session-vault sync auto machine-a --json
+agent-session-vault sync fleet --json
 agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
@@ -105,11 +105,13 @@ agent-session-vault storage summary --json
 agent-session-vault storage migration-plan --json
 ```
 
-运行默认的 projection-first 同步：
+运行默认的 Fleet 全节点 projection 同步：
 
 ```bash
-agent-session-vault sync auto machine-a --json
+agent-session-vault sync fleet --json
 ```
+
+OPL Fleet 负责节点清单、标准 Python/SSH 能力、fresh admission、任务投放和产物通道；本仓只负责 session projection、增量 state、导入与 Tokscale 语义。所有 approved Fleet 节点都会自动成为候选，不需要声明单独的 Session Vault capability；不满足任务条件的节点会带明确原因跳过。
 
 单独刷新本机 HOME 的精简 analytics projection：
 
@@ -163,6 +165,8 @@ agent-session-vault archive offload-tree \
 
 ## 当前边界
 
+- OPL Fleet 是唯一多机节点、网络、准入与任务投放基座；Session Vault 不维护第二套机器控制面。
+- Session Vault 是 Fleet 的标准数据任务，不是节点需单独声明或安装的 capability。
 - 默认跨机链路是 `projection delta-first`，完整 raw sync 仍保持显式模式。
 - 默认 raw Tokscale 视图是 projection-only；本机 live HOME 不直接参与扫描。
 - 默认 stable mirror 只承诺 Tokscale analytics continuity；完整会话迁移是显式可选能力。
@@ -177,8 +181,8 @@ agent-session-vault archive offload-tree \
 
 典型 Agent 任务：
 
-- 配置机器定义与 root rules
-- 执行 `sync auto <machine>`
+- 通过 OPL Fleet 纳管机器，然后执行 `sync fleet`
+- 仅在兼容或诊断旧路径时配置 machine/root rules 并执行 `sync auto <machine>`
 - 当本机 Codex session 位于易清理的 runtime home 下时，先执行 `sync local-codex --source <root>`
 - 构造 `raw` 或 `canonical` Tokscale 视图
 - 在本地空间需要收缩时，把旧 raw tree 打包归档

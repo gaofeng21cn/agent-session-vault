@@ -4,7 +4,8 @@
 
 When an agent is asked to use this repository, the safe default assumptions are:
 
-- machine names should be stable hostnames, not temporary IP addresses
+- OPL Fleet is the node, network, and task-dispatch source of truth; do not rebuild a machine control plane in Session Vault
+- Session Vault is a standard Fleet data job; do not require a separate per-node capability declaration or installation
 - `projection-first` is the default sync path
 - raw Tokscale reads local/remote projections and managed extras, not the live HOME
 - raw sync remains available, but should be explicit
@@ -14,28 +15,24 @@ When an agent is asked to use this repository, the safe default assumptions are:
 ## Recommended Agent Prompt
 
 ```text
-Install and use this repository. Configure agent-session-vault for my current machines using hostname-based machine names, discover both home-level and project-level agent session roots, keep projection-first sync as the default path, and prepare Tokscale raw or canonical views without modifying Tokscale upstream.
+Install and use this repository. Enroll every machine through OPL Fleet and treat Session Vault as a Fleet-dispatched projection/Tokscale aggregation job. Do not duplicate node addresses or SSH routes, and prepare Tokscale raw or canonical views without modifying Tokscale upstream.
 ```
 
 ## Common Agent Tasks
 
-### Configure A Machine
+### Enroll Machines
 
-Typical outcome:
-
-- a machine stanza in `~/.config/agent-session-vault/config.toml`
-- explicit root rules for `~/.codex`, `~/.gemini`, and `~/.openclaw` where relevant
-- explicit root glob rules for project-scoped `.codex` directories
+Join and reconcile each node through OPL Fleet. Session Vault requires no duplicate node address, SSH route, or HOME path.
 
 ### Import A Remote Machine
 
 Use:
 
 ```bash
-agent-session-vault sync auto <machine> --json
+agent-session-vault sync fleet --json
 ```
 
-This should remain the default recommendation unless the operator explicitly asks for raw direct or raw relay behavior.
+Use `sync auto <machine>` only for legacy configuration compatibility or focused single-node diagnosis.
 
 ### Prepare Tokscale
 
@@ -67,7 +64,7 @@ Use archive commands when the task is about storage pressure, not when the task 
 
 ## What An Agent Should Not Do
 
-- Do not invent root discovery heuristics that are not encoded in config.
+- Do not read Fleet's private route file or copy its node inventory.
 - Do not silently replace hostname-based machine identity with raw IP addresses.
 - Do not patch Tokscale, OMX, Gemini CLI, or OpenClaw upstream just to make accounting easier.
 - Do not delete live client roots as part of routine sync.
@@ -75,7 +72,7 @@ Use archive commands when the task is about storage pressure, not when the task 
 
 ## Good Operational Pattern
 
-1. inspect config
-2. sync a machine with `projection-first`
+1. inspect Fleet node status and local paths
+2. run `sync fleet` for concurrent all-node projection sync
 3. build `raw` or `canonical` Tokscale view
 4. only reach for archive or explicit raw sync when the operator actually needs those layers

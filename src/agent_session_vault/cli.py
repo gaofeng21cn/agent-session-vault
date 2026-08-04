@@ -11,6 +11,7 @@ from .adapters import build_canonicalize_machine_command, build_direct_sync_comm
 from .archive import inventory_bundles, offload_tree, pack_tree, restore_bundle
 from .config import load_config
 from .daily_ops import DEFAULT_CLIENTS, run_daily_tokscale
+from .fleet import sync_fleet
 from .local_codex import sync_local_codex_sources
 from .projection import (
     expected_local_projection_bundle_dir,
@@ -127,6 +128,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the deterministic projection sync and Tokscale submit workflow",
     )
     ops_daily_tokscale.add_argument("--machine", action="append", dest="machines", default=[])
+    ops_daily_tokscale.add_argument(
+        "--fleet",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Discover and sync every approved OPL Fleet node",
+    )
+    ops_daily_tokscale.add_argument("--fleet-command", default="opl-fleet")
+    ops_daily_tokscale.add_argument("--fleet-instance", type=Path, default=None)
     ops_daily_tokscale.add_argument("--clients", default=",".join(DEFAULT_CLIENTS))
     ops_daily_tokscale.add_argument("--run-root", type=Path, default=None)
     ops_daily_tokscale.add_argument("--canonicalize-command", default=None)
@@ -210,6 +219,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_local_home.add_argument("--dry-run", action="store_true")
     sync_local_home.add_argument("--json", action="store_true")
+    sync_fleet_parser = sync_sub.add_parser(
+        "fleet",
+        help="Sync projections from every approved OPL Fleet node without submitting Tokscale",
+    )
+    sync_fleet_parser.add_argument("--fleet-command", default="opl-fleet")
+    sync_fleet_parser.add_argument("--fleet-instance", type=Path, default=None)
+    sync_fleet_parser.add_argument("--timeout-seconds", type=float, default=1800)
+    sync_fleet_parser.add_argument("--json", action="store_true")
 
     archive_parser = subparsers.add_parser("archive", help="Archive helpers")
     archive_sub = archive_parser.add_subparsers(dest="archive_command", required=True)
@@ -440,6 +457,9 @@ def main(argv: list[str] | None = None) -> int:
             force_contract_check=args.force_contract_check,
             mirror_stable=args.mirror_stable,
             stable_root=args.stable_root,
+            use_fleet=args.fleet if args.fleet is not None else not bool(args.machines),
+            fleet_command=args.fleet_command,
+            fleet_instance=args.fleet_instance,
         )
         if args.json:
             _json_dump(result.payload)
@@ -718,6 +738,46 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync" and args.sync_command == "local-home-projection":
         result = refresh_local_home_projection(config, dry_run=args.dry_run)
         payload = {**local_home_projection_payload(result), "dry_run": args.dry_run}
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "sync" and args.sync_command == "fleet":
+        local = refresh_local_home_projection(config)
+        result = sync_fleet(
+            config,
+            fleet_command=args.fleet_command,
+            instance=args.fleet_instance,
+            timeout_seconds=args.timeout_seconds,
+        )
+        payload = {
+            "status": "completed",
+            "local_projection": local_home_projection_payload(local),
+            "nodes": [
+                {"node_id": node.node_id, "local": node.local}
+                for node in result.nodes
+            ],
+            "results": [
+                {
+                    "node_id": item.node_id,
+                    "import_name": item.import_name,
+                    "status": item.status,
+                    "fleet": item.payload,
+                    "bundle": (
+                        {
+                            "snapshot_id": item.bundle.snapshot_id,
+                            "mode": item.bundle.mode,
+                            "bundle_bytes": item.bundle.bundle_bytes,
+                        }
+                        if item.bundle
+                        else None
+                    ),
+                }
+                for item in result.results
+            ],
+        }
         if args.json:
             _json_dump(payload)
         else:

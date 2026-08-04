@@ -943,6 +943,7 @@ def import_machine_projection(
     machine_name: str,
     bundle_dir: Path,
     canonicalize_command: str | None = None,
+    import_name: str | None = None,
 ) -> ProjectionBundle:
     bundle_dir = bundle_dir.expanduser().resolve()
     manifest_path = bundle_dir / "manifest.json"
@@ -961,8 +962,9 @@ def import_machine_projection(
     if actual_sha256 != expected_sha256:
         raise ValueError(f"bundle sha256 mismatch: expected {expected_sha256}, got {actual_sha256}")
 
-    machine = config.machines[machine_name]
-    machine_root = config.paths.import_root / machine.import_name
+    machine = config.machines.get(machine_name)
+    resolved_import_name = import_name or (machine.import_name if machine else machine_name)
+    machine_root = config.paths.import_root / resolved_import_name
     raw_root = machine_root / ".raw"
     extract_root = bundle_dir / ".extract"
     if extract_root.exists():
@@ -1053,8 +1055,8 @@ def pending_projection_bundle_dirs(config: VaultConfig, machine_name: str) -> li
     bundle_root = config.paths.relay_root / "projection" / machine_name
     if not bundle_root.is_dir():
         return []
-    machine = config.machines[machine_name]
-    machine_root = config.paths.import_root / machine.import_name
+    machine = config.machines.get(machine_name)
+    machine_root = config.paths.import_root / (machine.import_name if machine else machine_name)
     current_snapshot_id = _load_current_snapshot_id(machine_root)
 
     candidates: list[tuple[str, str, str | None, Path]] = []
@@ -1641,9 +1643,10 @@ def main():
     source_home = Path(request["source_home"]).expanduser().resolve()
     relay_root = Path(request["relay_root"]).expanduser().resolve()
     state_root_raw = request.get("state_root")
+    prune_previous_bundles = request.get("prune_previous_bundles") is True
     roots = request["roots"]
     requested_base_snapshot_id = request.get("base_snapshot_id")
-    snapshot_id = f"{machine_name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    snapshot_id = request.get("snapshot_id") or f"{machine_name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
     bundle_dir = relay_root / "projection" / machine_name / snapshot_id
     if bundle_dir.exists():
         shutil.rmtree(bundle_dir)
@@ -1758,6 +1761,10 @@ def main():
             },
         )
         _cleanup_projection_blobs(blob_root, current_files)
+    if prune_previous_bundles:
+        for sibling in bundle_dir.parent.iterdir():
+            if sibling.is_dir() and sibling != bundle_dir:
+                shutil.rmtree(sibling)
     print(
         json.dumps(
             {
@@ -1867,6 +1874,51 @@ def export_machine_projection_ssh(
         files_projected=int(payload.get("files_projected", 0)),
         files_reused=int(payload.get("files_reused", 0)),
     )
+
+
+def fleet_projection_request(
+    machine_name: str,
+    *,
+    snapshot_id: str,
+    import_name: str | None = None,
+    base_snapshot_id: str | None = None,
+) -> tuple[str, str]:
+    artifact_root = ".local/state/agent-session-vault/fleet-jobs"
+    relay_root = f"~/{artifact_root}"
+    artifact_path = f"{artifact_root}/projection/{machine_name}/{snapshot_id}"
+    encoded = base64.b64encode(
+        json.dumps(
+            {
+                "machine_name": machine_name,
+                "import_name": import_name or machine_name,
+                "snapshot_id": snapshot_id,
+                "source_home": "~",
+                "relay_root": relay_root,
+                "state_root": "~/.local/state/agent-session-vault/projection-state",
+                "roots": [
+                    {
+                        "client": client,
+                        "path": f"~/.{client}",
+                        "glob": None,
+                        "label": "home",
+                        "kind": "home_root",
+                    }
+                    for client in LOCAL_HOME_CLIENTS
+                ],
+                "base_snapshot_id": base_snapshot_id,
+                "prune_previous_bundles": True,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).decode("ascii")
+    helper = _remote_helper_source()
+    helper = helper.replace(
+        "from __future__ import annotations",
+        "from __future__ import annotations\n"
+        f"import os\nos.environ['ASV_REQUEST_B64'] = {encoded!r}",
+        1,
+    )
+    return helper, artifact_path
 
 
 def fetch_projection_bundle_ssh(

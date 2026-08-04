@@ -15,8 +15,9 @@ direct_max_delta_bytes = 268435456
 projection_transport = "auto"
 projection_direct_max_bundle_bytes = 1073741824
 
-# Use stable logical hostnames such as "machine-a", "wsl2-main", or "lab-linux".
-# Avoid binding the machine identity to a temporary IP address.
+# OPL Fleet is the default machine/network/dispatch source of truth. New Fleet
+# nodes do not need a stanza here. Keep entries only for legacy `sync auto` or
+# to reuse an existing import_name while migrating.
 [machines.machine-a]
 import_name = "machine-a"
 ssh_target = "session-sync-a"

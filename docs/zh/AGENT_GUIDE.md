@@ -4,7 +4,8 @@
 
 当一个 Agent 被要求使用这个仓库时，默认应该采用以下假设：
 
-- machine name 应该是稳定 hostname，而不是临时 IP
+- OPL Fleet 是节点、网络和任务投放 SSOT；不要在 Session Vault 重建机器控制面
+- Session Vault 是标准 Fleet 数据任务；不要要求节点单独声明 capability 或逐机安装
 - `projection-first` 是默认同步主链路
 - raw Tokscale 默认只读取本机/远端 projections 与 managed extras，不直接读取 live HOME
 - raw sync 仍然可用，但必须显式请求
@@ -14,28 +15,24 @@
 ## 推荐提示词
 
 ```text
-安装并使用这个仓库。为我的机器集合配置 agent-session-vault，使用基于 hostname 的 machine 名称，同时发现 home-level 与 project-level agent session roots，把 projection-first 作为默认同步链路，并在不修改 Tokscale 上游的前提下准备 Tokscale raw 或 canonical 视图。
+安装并使用这个仓库。通过 OPL Fleet 纳管全部机器，把 Session Vault 作为 Fleet 投放的 projection/Tokscale 聚合任务；不要重复维护节点地址或 SSH route，并在不修改 Tokscale 上游的前提下准备 Tokscale raw 或 canonical 视图。
 ```
 
 ## 常见 Agent 任务
 
-### 配置一台机器
+### 纳管机器
 
-典型结果应该包括：
-
-- 在 `~/.config/agent-session-vault/config.toml` 中写好 machine stanza
-- 为 `~/.codex`、`~/.gemini`、`~/.openclaw` 等固定 roots 配规则
-- 为项目级 `.codex` 配 root globs
+先在 OPL Fleet 完成 join/reconcile。Session Vault 不需要再写一份节点地址、SSH route 或 HOME 路径。
 
 ### 导入一台远端机器
 
 优先使用：
 
 ```bash
-agent-session-vault sync auto <machine> --json
+agent-session-vault sync fleet --json
 ```
 
-除非操作者明确要求 raw direct 或 raw relay，否则这应该保持为默认建议。
+`sync auto <machine>` 只保留给旧配置兼容或单节点诊断。
 
 ### 为 Tokscale 准备环境
 
@@ -67,7 +64,7 @@ agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict --
 
 ## Agent 不应该做什么
 
-- 不要发明配置里没有定义的 root discovery heuristic
+- 不要读取 Fleet 私有 route 文件或复制节点 inventory
 - 不要把 hostname 风格 machine identity 静默替换成裸 IP
 - 不要为了统计方便去 patch Tokscale、OMX、Gemini CLI、OpenClaw 上游
 - 不要把日常同步流程和 destructive 删除 live roots 绑在一起
@@ -75,7 +72,7 @@ agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict --
 
 ## 比较稳妥的执行顺序
 
-1. 先检查配置
-2. 用 `projection-first` 同步机器
+1. 先检查 Fleet 节点状态与本机 paths
+2. 用 `sync fleet` 并发同步所有受管节点
 3. 构造 `raw` 或 `canonical` Tokscale 视图
 4. 只有在操作者真的需要冷热分层时，才继续进入 archive 或显式 raw sync

@@ -4,8 +4,8 @@
 
 <h1 align="center">Agent Session Vault</h1>
 
-<p align="center"><strong>Local-first session control for multi-machine AI agent workflows</strong></p>
-<p align="center">Projection Delta-First Sync · Tokscale Views · Archive-Ready Storage</p>
+<p align="center"><strong>Local-first session projection and Tokscale aggregation jobs on OPL Fleet</strong></p>
+<p align="center">Fleet-wide Dispatch · Projection Delta-First · Tokscale Views · Archive-Ready Storage</p>
 
 <table>
   <tr>
@@ -79,11 +79,12 @@ SSH targets, usernames, absolute paths, and operational output in that local
 config and under the configured state roots. Do not copy session data, bundles,
 receipts, or logs into the repository.
 
-Edit the machine definitions in `~/.config/agent-session-vault/config.toml`, then run the common path:
+Fleet-managed nodes do not need duplicate machine definitions in
+`~/.config/agent-session-vault/config.toml`. Run the common path directly:
 
 ```bash
 agent-session-vault config --json
-agent-session-vault sync auto machine-a --json
+agent-session-vault sync fleet --json
 agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
 ```
 
@@ -108,11 +109,13 @@ agent-session-vault storage summary --json
 agent-session-vault storage migration-plan --json
 ```
 
-Run the default projection-first sync:
+Run the default OPL Fleet-wide projection sync:
 
 ```bash
-agent-session-vault sync auto machine-a --json
+agent-session-vault sync fleet --json
 ```
+
+OPL Fleet owns the node registry, standard Python/SSH baseline, fresh admission, task dispatch, and artifact route. This repository owns session projection, incremental state, import, and Tokscale semantics. Every approved Fleet node is considered automatically; nodes do not declare a separate Session Vault capability, and an ineligible node is skipped with an explicit admission reason.
 
 Refresh the current HOME analytics projection directly:
 
@@ -166,6 +169,8 @@ agent-session-vault archive offload-tree \
 
 ## Current Boundaries
 
+- OPL Fleet is the only multi-machine node, network, admission, and dispatch control plane; Session Vault does not maintain another one.
+- Session Vault is a standard Fleet data job, not a per-node capability or installation requirement.
 - `projection delta-first` is the default cross-machine path; full raw sync remains explicit.
 - The default raw Tokscale view is projection-only; live local client roots are not scanned directly.
 - The default stable mirror guarantees Tokscale analytics continuity; full-fidelity conversation migration is optional and explicit.
@@ -180,9 +185,10 @@ Use the repository CLI rather than re-implementing sync, projection, or archive 
 
 Typical agent tasks:
 
-- define machines and root rules
+- enroll machines through OPL Fleet and run `sync fleet`
+- use configured machine/root rules only for legacy compatibility or focused diagnostics
 - run `ops daily-tokscale --json` for routine sync and submit automation
-- run `sync auto <machine>`
+- run `sync auto <machine>` only for the legacy or diagnostic path
 - run `sync local-codex --source <root>` before Tokscale when local Codex sessions live under volatile runtime homes
 - build `raw` or `canonical` Tokscale views
 - offload older raw trees into archive bundles when local storage should shrink

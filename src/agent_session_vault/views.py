@@ -84,10 +84,18 @@ def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -
         home = config.paths.projection_home
         for client in LOCAL_HOME_CLIENTS:
             _append_unique_root(extra_dirs, seen, client, local_machine_root / ".raw" / client)
+        configured_imports: set[str] = set()
         for machine in config.machines.values():
+            configured_imports.add(machine.import_name)
             for client in machine.clients:
                 root = config.paths.import_root / machine.import_name / ".raw" / client
                 _append_unique_root(extra_dirs, seen, client, root)
+        if config.paths.import_root.is_dir():
+            for machine_root in sorted(config.paths.import_root.iterdir()):
+                if not machine_root.is_dir() or machine_root.name in configured_imports | {"local-home"}:
+                    continue
+                for client in LOCAL_HOME_CLIENTS:
+                    _append_unique_root(extra_dirs, seen, client, machine_root / ".raw" / client)
         for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras, managed_only=True):
             _append_unique_root(extra_dirs, seen, "codex", root)
         return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)
@@ -95,10 +103,18 @@ def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -
     home = config.paths.shadow_home
     for client in LOCAL_HOME_CLIENTS:
         _append_unique_root(extra_dirs, seen, client, local_machine_root / client)
+    configured_imports = set()
     for machine in config.machines.values():
+        configured_imports.add(machine.import_name)
         for client in machine.clients:
             root = config.paths.import_root / machine.import_name / client
             _append_unique_root(extra_dirs, seen, client, root)
+    if config.paths.import_root.is_dir():
+        for machine_root in sorted(config.paths.import_root.iterdir()):
+            if not machine_root.is_dir() or machine_root.name in configured_imports | {"local-home"}:
+                continue
+            for client in LOCAL_HOME_CLIENTS:
+                _append_unique_root(extra_dirs, seen, client, machine_root / client)
     for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras):
         _append_unique_root(extra_dirs, seen, "codex", root)
     return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)

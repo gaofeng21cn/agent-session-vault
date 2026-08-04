@@ -71,22 +71,34 @@ def summarize_storage(config: VaultConfig) -> StorageSummary:
             )
         )
 
-    for machine in config.machines.values():
-        for client in machine.clients:
-            raw_root = config.paths.import_root / machine.import_name / ".raw" / client
+    import_names = {machine.import_name for machine in config.machines.values()}
+    if config.paths.import_root.is_dir():
+        import_names.update(
+            path.name
+            for path in config.paths.import_root.iterdir()
+            if path.is_dir() and path.name != "local-home"
+        )
+    for import_name in sorted(import_names):
+        machine = next(
+            (item for item in config.machines.values() if item.import_name == import_name),
+            None,
+        )
+        clients = machine.clients if machine else ("codex", "gemini", "openclaw")
+        for client in clients:
+            raw_root = config.paths.import_root / import_name / ".raw" / client
             if raw_root.exists():
                 items.append(
                     StorageItem(
-                        label=f"imports_raw:{machine.import_name}:{client}",
+                        label=f"imports_raw:{import_name}:{client}",
                         path=raw_root,
                         size_bytes=_directory_size(raw_root),
                     )
                 )
-            canonical_root = config.paths.import_root / machine.import_name / client
+            canonical_root = config.paths.import_root / import_name / client
             if canonical_root.exists():
                 items.append(
                     StorageItem(
-                        label=f"canonical:{machine.import_name}:{client}",
+                        label=f"canonical:{import_name}:{client}",
                         path=canonical_root,
                         size_bytes=_directory_size(canonical_root),
                     )
