@@ -55,6 +55,7 @@ class StableMirrorItemResult:
     archive_format: str | None = None
     archive_count: int = 0
     archive_bytes: int = 0
+    index_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,18 @@ class _TreeSnapshot:
 
 def default_stable_root(config: VaultConfig) -> Path:
     return config.paths.archive_root.expanduser().parent / "stable"
+
+
+def _stable_pack_index_cache_path(config: VaultConfig, destination: Path) -> Path:
+    destination_key = hashlib.sha256(str(destination.absolute()).encode("utf-8")).hexdigest()[:16]
+    return (
+        config.paths.home.expanduser()
+        / ".config"
+        / "agent-session-vault"
+        / "stable-pack-index-cache"
+        / destination_key
+        / "index.json"
+    )
 
 
 def stable_mirror_items(
@@ -393,6 +406,7 @@ def mirror_stable_layer(
                     destination,
                     dry_run=dry_run,
                     shard_target_bytes=shard_target_bytes,
+                    index_cache_path=_stable_pack_index_cache_path(config, destination),
                 )
                 status = "planned" if dry_run else "mirrored"
                 coverage_status = "planned" if dry_run else "verified"
@@ -438,6 +452,7 @@ def mirror_stable_layer(
                     archive_format=PACKED_STABLE_FORMAT,
                     archive_count=packed.archive_count if packed is not None else 0,
                     archive_bytes=packed.archive_bytes if packed is not None else 0,
+                    index_source=packed.index_source if packed is not None else None,
                 )
             )
             if status == "failed":
@@ -718,6 +733,7 @@ def stable_mirror_payload(result: StableMirrorResult) -> dict[str, object]:
                 "archive_format": item.archive_format,
                 "archive_count": item.archive_count,
                 "archive_bytes": item.archive_bytes,
+                "index_source": item.index_source,
             }
             for item in result.items
         ],

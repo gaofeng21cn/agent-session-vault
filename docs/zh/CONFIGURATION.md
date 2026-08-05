@@ -80,6 +80,11 @@ Tokscale 的稳定层由两部分组成：
 agent-session-vault storage mirror-stable --json
 ```
 
+分片会先在本机临时目录完成打包，再发布到 stable root。本机
+`~/.config/agent-session-vault/stable-pack-index-cache/` 仅保存可丢弃的派生索引，
+用于云盘暂时将 `index.json` 置为 dataless 占位文件时继续增量判断；恢复权威仍是
+stable root。
+
 默认目标是 `archive_root` 同级的 `stable/` 目录。若 `archive_root` 是：
 
 ```text

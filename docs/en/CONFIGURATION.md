@@ -86,6 +86,12 @@ Scattered directories are ingest sources. The default stable mirror is the `anal
 agent-session-vault storage mirror-stable --json
 ```
 
+Packed shards are built in a local temporary directory before publication to the
+stable root. A disposable local index cache under
+`~/.config/agent-session-vault/stable-pack-index-cache/` preserves incremental
+assignments when a cloud file provider temporarily leaves `index.json` dataless;
+the stable root remains the restore authority.
+
 The default destination is `stable/` next to `archive_root`. If `archive_root` is:
 
 ```text

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 import shutil
 
+import agent_session_vault.stable_pack as stable_pack
 from agent_session_vault.cli import main
 from agent_session_vault.config import load_config
 from agent_session_vault.stable import (
@@ -157,6 +159,84 @@ def test_stable_mirror_reuses_verified_packs(tmp_path: Path) -> None:
     assert second.status == "verified"
     assert [(path.name, path.stat().st_mtime_ns) for path in packs] == first_pack_state
     assert {item.transfer_status for item in second.items} == {"reused_verified"}
+
+
+def test_stable_mirror_uses_local_index_cache_when_cloud_index_times_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    first = mirror_stable_layer(config)
+    stable_root = default_stable_root(config)
+    extras_index = stable_root / "packs" / "local-workspace-extras" / "index.json"
+    real_load_index = stable_pack._load_index
+
+    def load_index(path: Path):
+        if path == extras_index:
+            raise TimeoutError(errno.ETIMEDOUT, "Operation timed out")
+        return real_load_index(path)
+
+    def unexpected_pack(*args, **kwargs):
+        raise AssertionError("unchanged cached mirror must not repack")
+
+    monkeypatch.setattr(stable_pack, "_load_index", load_index)
+    monkeypatch.setattr(stable_pack, "pack_paths", unexpected_pack)
+
+    second = mirror_stable_layer(config)
+    extras_result = next(item for item in second.items if item.label == "local_workspace_extras")
+
+    assert first.status == "verified"
+    assert second.status == "verified"
+    assert extras_result.transfer_status == "reused_verified"
+    assert extras_result.index_source == "local_cache"
+
+
+def test_stable_mirror_rebuilds_locally_without_reading_dataless_pack(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    first = mirror_stable_layer(config)
+    stable_root = default_stable_root(config)
+    extras_pack_root = stable_root / "packs" / "local-workspace-extras"
+    extras_index = extras_pack_root / "index.json"
+    cache_root = config.paths.home / ".config" / "agent-session-vault" / "stable-pack-index-cache"
+    for cache_index in cache_root.rglob("index.json"):
+        payload = json.loads(cache_index.read_text(encoding="utf-8"))
+        if payload.get("source") == str(config.paths.local_workspace_extras):
+            cache_index.unlink()
+
+    real_load_index = stable_pack._load_index
+    real_pack_paths = stable_pack.pack_paths
+    real_sha256_file = stable_pack.sha256_file
+    staged_paths: list[Path] = []
+
+    def load_index(path: Path):
+        if path == extras_index:
+            raise TimeoutError(errno.ETIMEDOUT, "Operation timed out")
+        return real_load_index(path)
+
+    def pack_paths(source: Path, relative_paths: list[str], bundle_path: Path) -> None:
+        staged_paths.append(bundle_path)
+        real_pack_paths(source, relative_paths, bundle_path)
+
+    def sha256_file(path: Path) -> str:
+        if extras_pack_root in path.parents:
+            raise AssertionError("existing cloud packs must not be hydrated")
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(stable_pack, "_load_index", load_index)
+    monkeypatch.setattr(stable_pack, "pack_paths", pack_paths)
+    monkeypatch.setattr(stable_pack, "sha256_file", sha256_file)
+
+    second = mirror_stable_layer(config)
+    extras_result = next(item for item in second.items if item.label == "local_workspace_extras")
+
+    assert first.status == "verified"
+    assert second.status == "verified"
+    assert extras_result.index_source == "rebuilt_after_destination_error"
+    assert extras_result.transfer_status == "packed"
+    assert staged_paths
+    assert all(stable_root not in path.parents for path in staged_paths)
+    assert any(cache_root.rglob("index.json"))
 
 
 def test_stable_mirror_repairs_missing_pack_after_manifest_reuse(tmp_path: Path) -> None:

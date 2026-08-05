@@ -2,17 +2,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import tempfile
+import time
 
 from .archive import pack_paths, restore_bundle, sha256_file
 
 
 PACKED_STABLE_FORMAT = "tar-zstd-shards-v1"
 DEFAULT_SHARD_TARGET_BYTES = 256 * 1024 * 1024
+_TRANSIENT_IO_ERRNOS = {errno.EAGAIN, errno.EBUSY, errno.ETIMEDOUT}
+_TRANSIENT_IO_DELAYS = (0.1, 0.5, 1.0)
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,7 @@ class PackedDirectoryResult:
     archive_bytes: int
     transferred_archives: int
     reused_archives: int
+    index_source: str
 
 
 def snapshot_directory(source: Path) -> PackedSourceSnapshot:
@@ -61,28 +67,42 @@ def snapshot_directory(source: Path) -> PackedSourceSnapshot:
     return PackedSourceSnapshot(entries=entries)
 
 
+def _retry_transient_io(operation, *, description: str):
+    for attempt in range(len(_TRANSIENT_IO_DELAYS) + 1):
+        try:
+            return operation()
+        except OSError as exc:
+            if exc.errno not in _TRANSIENT_IO_ERRNOS or attempt == len(_TRANSIENT_IO_DELAYS):
+                raise OSError(exc.errno, f"{description}: {exc.strerror}") from exc
+            time.sleep(_TRANSIENT_IO_DELAYS[attempt])
+
+
 def _write_json_atomic(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    previous = path.with_name(f".{path.name}.{os.getpid()}.previous")
-    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    if path.exists() or path.is_symlink():
-        path.replace(previous)
-    try:
-        temporary.replace(path)
-    except Exception:
-        if previous.exists() or previous.is_symlink():
-            previous.replace(path)
-        raise
-    previous.unlink(missing_ok=True)
+    serialized = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+    def write_once() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_text(serialized, encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    _retry_transient_io(write_once, description=f"write packed index {path}")
 
 
 def _load_index(path: Path) -> dict[str, object] | None:
-    if not path.is_file():
+    try:
+        raw = _retry_transient_io(
+            lambda: path.read_text(encoding="utf-8"),
+            description=f"read packed index {path}",
+        )
+    except FileNotFoundError:
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
         return None
     if not isinstance(payload, dict) or payload.get("archive_format") != PACKED_STABLE_FORMAT:
         return None
@@ -156,19 +176,53 @@ def _archive_is_present(destination: Path, raw: object) -> bool:
         return False
 
 
+def _publish_archive(source: Path, destination: Path) -> None:
+    expected_size = source.stat().st_size
+
+    def publish_once() -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.upload")
+        try:
+            shutil.copyfile(source, temporary)
+            if temporary.stat().st_size != expected_size:
+                raise OSError(errno.EIO, f"short packed archive copy to {temporary}")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    _retry_transient_io(publish_once, description=f"publish packed archive {destination}")
+
+
 def mirror_packed_directory(
     source: Path,
     destination: Path,
     *,
     dry_run: bool = False,
     shard_target_bytes: int = DEFAULT_SHARD_TARGET_BYTES,
+    index_cache_path: Path | None = None,
 ) -> PackedDirectoryResult:
     if shard_target_bytes <= 0:
         raise ValueError("shard_target_bytes must be positive")
 
     source_snapshot = snapshot_directory(source)
     index_path = destination / "index.json"
-    previous_index = _load_index(index_path) or {}
+    destination_index_error: OSError | None = None
+    try:
+        destination_index = _load_index(index_path)
+    except OSError as exc:
+        destination_index = None
+        destination_index_error = exc
+
+    cache_index = _load_index(index_cache_path) if index_cache_path is not None else None
+    if destination_index is not None:
+        previous_index = destination_index
+        index_source = "destination"
+    elif cache_index is not None:
+        previous_index = cache_index
+        index_source = "local_cache"
+    else:
+        previous_index = {}
+        index_source = "rebuilt_after_destination_error" if destination_index_error else "rebuilt"
     previous_files = previous_index.get("files")
     previous_shards = previous_index.get("shards")
     previous_files = previous_files if isinstance(previous_files, dict) else {}
@@ -211,103 +265,109 @@ def mirror_packed_directory(
             archive_bytes=reusable_bytes,
             transferred_archives=len(dirty_shards),
             reused_archives=len(reusable_shards),
+            index_source=index_source,
         )
 
     destination.mkdir(parents=True, exist_ok=True)
-    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    staging_root = destination / ".staging" / run_id
     staged: dict[str, tuple[Path, dict[str, object]]] = {}
     moved_new: list[Path] = []
-    try:
-        for shard in sorted(dirty_shards):
-            relatives = groups.get(shard, [])
-            if not relatives:
-                continue
-            staged_path = staging_root / f"pack-{shard}.tar.zst"
-            pack_paths(source, relatives, staged_path)
-            archive_sha256 = sha256_file(staged_path)
-            archive_name = f"pack-{shard}-{archive_sha256[:16]}.tar.zst"
-            source_bytes = sum(source_snapshot.entries[relative][0] for relative in relatives)
-            staged[shard] = (
-                staged_path,
-                {
-                    "archive_path": archive_name,
-                    "archive_bytes": staged_path.stat().st_size,
-                    "sha256": archive_sha256,
-                    "source_bytes": source_bytes,
-                    "file_count": len(relatives),
-                },
-            )
+    with tempfile.TemporaryDirectory(prefix="agent-session-vault-stable-pack-") as temporary_root:
+        staging_root = Path(temporary_root)
+        try:
+            for shard in sorted(dirty_shards):
+                relatives = groups.get(shard, [])
+                if not relatives:
+                    continue
+                staged_path = staging_root / f"pack-{shard}.tar.zst"
+                pack_paths(source, relatives, staged_path)
+                archive_sha256 = sha256_file(staged_path)
+                archive_name = f"pack-{shard}-{archive_sha256[:16]}.tar.zst"
+                source_bytes = sum(source_snapshot.entries[relative][0] for relative in relatives)
+                staged[shard] = (
+                    staged_path,
+                    {
+                        "archive_path": archive_name,
+                        "archive_bytes": staged_path.stat().st_size,
+                        "sha256": archive_sha256,
+                        "source_bytes": source_bytes,
+                        "file_count": len(relatives),
+                    },
+                )
 
-        final_snapshot = snapshot_directory(source)
-        if final_snapshot != source_snapshot:
-            raise RuntimeError("source changed during packed mirror; retry after writers are quiescent")
+            final_snapshot = snapshot_directory(source)
+            if final_snapshot != source_snapshot:
+                raise RuntimeError("source changed during packed mirror; retry after writers are quiescent")
 
-        shard_payloads: dict[str, dict[str, object]] = {}
-        for shard in sorted(groups):
-            if shard in staged:
-                staged_path, shard_payload = staged[shard]
-                final_path = destination / str(shard_payload["archive_path"])
-                if final_path.exists():
-                    if final_path.stat().st_size != shard_payload["archive_bytes"] or sha256_file(
-                        final_path
-                    ) != shard_payload["sha256"]:
-                        raise FileExistsError(f"packed archive collision: {final_path}")
-                    staged_path.unlink()
+            shard_payloads: dict[str, dict[str, object]] = {}
+            for shard in sorted(groups):
+                if shard in staged:
+                    staged_path, shard_payload = staged[shard]
+                    final_path = destination / str(shard_payload["archive_path"])
+                    if final_path.exists():
+                        if final_path.stat().st_size != shard_payload["archive_bytes"]:
+                            raise FileExistsError(f"packed archive collision: {final_path}")
+                        staged_path.unlink()
+                    else:
+                        _publish_archive(staged_path, final_path)
+                        moved_new.append(final_path)
+                    shard_payloads[shard] = shard_payload
                 else:
-                    staged_path.replace(final_path)
-                    moved_new.append(final_path)
-                shard_payloads[shard] = shard_payload
-            else:
-                previous_payload = previous_shards.get(shard)
-                if not isinstance(previous_payload, dict):
-                    raise RuntimeError(f"reusable shard metadata missing: {shard}")
-                shard_payloads[shard] = dict(previous_payload)
+                    previous_payload = previous_shards.get(shard)
+                    if not isinstance(previous_payload, dict):
+                        raise RuntimeError(f"reusable shard metadata missing: {shard}")
+                    shard_payloads[shard] = dict(previous_payload)
 
-        file_payloads = {
-            relative: {
-                "size": size,
-                "mtime_ns": mtime_ns,
-                "shard": assignments[relative],
+            file_payloads = {
+                relative: {
+                    "size": size,
+                    "mtime_ns": mtime_ns,
+                    "shard": assignments[relative],
+                }
+                for relative, (size, mtime_ns) in sorted(source_snapshot.entries.items())
             }
-            for relative, (size, mtime_ns) in sorted(source_snapshot.entries.items())
-        }
-        index_payload = {
-            "schema_version": 1,
-            "archive_format": PACKED_STABLE_FORMAT,
-            "source": str(source),
-            "source_manifest_fingerprint": source_snapshot.fingerprint,
-            "source_files": source_snapshot.total_files,
-            "source_bytes": source_snapshot.total_bytes,
-            "shard_target_bytes": shard_target_bytes,
-            "created_at": datetime.now(UTC).isoformat(),
-            "files": file_payloads,
-            "shards": shard_payloads,
-        }
-        _write_json_atomic(index_path, index_payload)
+            index_payload = {
+                "schema_version": 1,
+                "archive_format": PACKED_STABLE_FORMAT,
+                "source": str(source),
+                "source_manifest_fingerprint": source_snapshot.fingerprint,
+                "source_files": source_snapshot.total_files,
+                "source_bytes": source_snapshot.total_bytes,
+                "shard_target_bytes": shard_target_bytes,
+                "created_at": datetime.now(UTC).isoformat(),
+                "files": file_payloads,
+                "shards": shard_payloads,
+            }
+            if index_cache_path is not None:
+                _write_json_atomic(index_cache_path, index_payload)
+            if dirty_shards or (
+                destination_index is None
+                and (destination_index_error is None or cache_index is None)
+            ):
+                _write_json_atomic(index_path, index_payload)
+                moved_new.clear()
 
-        referenced = {str(payload["archive_path"]) for payload in shard_payloads.values()}
-        for archive_path in destination.glob("pack-*.tar.zst"):
-            if archive_path.name not in referenced:
-                archive_path.unlink()
-        shutil.rmtree(destination / ".staging", ignore_errors=True)
+            referenced = {str(payload["archive_path"]) for payload in shard_payloads.values()}
+            for archive_path in destination.glob("pack-*.tar.zst"):
+                if archive_path.name not in referenced:
+                    archive_path.unlink()
+            shutil.rmtree(destination / ".staging", ignore_errors=True)
 
-        archive_bytes = sum(int(payload["archive_bytes"]) for payload in shard_payloads.values())
-        return PackedDirectoryResult(
-            source_snapshot=source_snapshot,
-            index_path=index_path,
-            status="verified",
-            transfer_status="packed" if dirty_shards else "reused_verified",
-            archive_count=len(shard_payloads),
-            archive_bytes=archive_bytes,
-            transferred_archives=len(dirty_shards),
-            reused_archives=len(reusable_shards),
-        )
-    except Exception:
-        shutil.rmtree(staging_root, ignore_errors=True)
-        for path in moved_new:
-            path.unlink(missing_ok=True)
-        raise
+            archive_bytes = sum(int(payload["archive_bytes"]) for payload in shard_payloads.values())
+            return PackedDirectoryResult(
+                source_snapshot=source_snapshot,
+                index_path=index_path,
+                status="verified",
+                transfer_status="packed" if dirty_shards else "reused_verified",
+                archive_count=len(shard_payloads),
+                archive_bytes=archive_bytes,
+                transferred_archives=len(dirty_shards),
+                reused_archives=len(reusable_shards),
+                index_source=index_source,
+            )
+        except Exception:
+            for path in moved_new:
+                path.unlink(missing_ok=True)
+            raise
 
 
 def packed_directory_coverage(
