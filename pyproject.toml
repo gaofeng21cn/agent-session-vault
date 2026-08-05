@@ -14,7 +14,7 @@ readme = "README.md"
 agent-session-vault = "agent_session_vault.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.12"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -25,3 +25,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

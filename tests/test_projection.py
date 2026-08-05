@@ -851,7 +851,7 @@ kind = "home_root"
     import_machine_projection(config, "machine-a", first.bundle_dir, canonicalize_command=None)
 
     _write(source_file, json.dumps({"type": "event_msg", "payload": {"type": "token_count", "n": 2}}) + "\n")
-    second = export_machine_projection(
+    export_machine_projection(
         machine=config.machines["machine-a"],
         source_home=source_home,
         relay_root=tmp_path / "relay",

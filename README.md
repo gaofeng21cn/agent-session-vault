@@ -211,6 +211,7 @@ Internal planning notes remain repo-local and Chinese-first unless they are expl
 ## Technical Validation
 
 ```bash
+ruff check .
 python3 -m pytest
 ```
 

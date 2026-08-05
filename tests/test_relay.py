@@ -107,7 +107,7 @@ clients = ["codex"]
 
     config = load_config(config_path)
 
-    first = export_machine_delta(
+    export_machine_delta(
         machine_name="machine-a",
         source_home=source_home,
         relay_root=relay_root,

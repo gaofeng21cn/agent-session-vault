@@ -7,7 +7,6 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import shutil
 
 from .config import VaultConfig
 from .projection import CODEX_PROJECTION_VERSION, build_codex_projection_file
