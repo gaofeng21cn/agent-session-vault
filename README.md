@@ -64,8 +64,13 @@ Clone the repository and install the CLI:
 ```bash
 git clone <your-repo-url> agent-session-vault
 cd agent-session-vault
-python3 -m pip install -e ".[dev]"
+uv tool install --python 3.12 --editable .
 ```
+
+`uv tool` owns the Python 3.12 environment and exposes the CLI from its managed
+binary directory (normally `~/.local/bin`). Scheduled automation should invoke
+that resolved executable by absolute path instead of depending on an inherited
+shell `PATH`.
 
 Create a local config:
 

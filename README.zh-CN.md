@@ -64,8 +64,12 @@ Tokscale 是一个很好的 exporter，但它不是下面这些问题的控制�
 ```bash
 git clone <your-repo-url> agent-session-vault
 cd agent-session-vault
-python3 -m pip install -e ".[dev]"
+uv tool install --python 3.12 --editable .
 ```
+
+`uv tool` 负责管理 Python 3.12 环境，并从其受管二进制目录（通常为
+`~/.local/bin`）暴露 CLI。定时自动化应使用解析后的绝对路径调用该入口，
+不要依赖继承的 shell `PATH`。
 
 准备本地配置：
 
