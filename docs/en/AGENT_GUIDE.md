@@ -1,5 +1,22 @@
 # Agent Guide
 
+## Primary Skill
+
+`agent-session-vault` is the Primary Skill for this repository. It routes natural-language
+requests to the single `agent-session-vault` CLI; it does not own a second state store,
+scheduler, or archive implementation. Its canonical source is
+[`skills/agent-session-vault/SKILL.md`](../../skills/agent-session-vault/SKILL.md).
+
+In a Codex environment where the Skill is installed, invoke `$agent-session-vault` directly.
+It selects the read-only, projection, Tokscale, full-fidelity archive, pruning, or staging
+restore route. Without explicit user authorization, it must not submit Tokscale data, prune
+sessions, restore to a Codex live root, or modify an upstream client.
+
+The repository owns the Skill source. After this repository is pushed to its authoritative
+GitHub remote, install `skills/agent-session-vault` with `$skill-installer` to the Codex Skill
+root. Do not treat the installed copy as source or edit it in place; the local copy must match
+the repository source.
+
 ## What An Agent Should Assume
 
 When an agent is asked to use this repository, the safe default assumptions are:
@@ -61,6 +78,20 @@ agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict --
 ### Archive Cold Data
 
 Use archive commands when the task is about storage pressure, not when the task is simply “make Tokscale see the latest remote usage”.
+
+Create and verify a full-fidelity snapshot with:
+
+```bash
+agent-session-vault ops archive-cycle --due-only --deep --json
+```
+
+It never removes local sessions. Only when the user explicitly requests local space recovery,
+create `archive prune-plan`, then run `archive prune-apply` only after the plan succeeds and has
+candidates. Stop on every NAS, stable analytics, projection, or Tokscale parity failure; never
+substitute direct deletion.
+
+Restore only through `archive plan-restore --mode staging` followed by `archive restore --plan ...`.
+Never manually merge restored files into `~/.codex`.
 
 ## What An Agent Should Not Do
 

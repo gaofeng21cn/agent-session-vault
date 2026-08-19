@@ -14,7 +14,9 @@ CLI 默认读取：
 
 ## Public 仓库边界
 
-示例配置可以提交，填入真实环境信息后的配置不可以。实际 machine 名、SSH target、home 路径、存储路径和 retention 选择只保留在 `~/.config/agent-session-vault/config.toml`。Session tree、projection bundle、archive、Tokscale receipt 和运行日志都属于本地数据，不应进入仓库。
+示例配置可以提交，填入真实环境信息后的配置不可以。实际 machine 名、SSH target、home 路径、存储路径和 retention 选择只保留在 `~/.config/agent-session-vault/config.toml`，该文件被仓库 `.gitignore` 排除。Session tree、projection bundle、archive、Tokscale receipt 和运行日志都属于本地数据，不应进入仓库。
+
+`storage mirror-stable --json` 会把当前配置作为灾难恢复用 control-plane 副本写入 stable root 的 `config/config.toml`；这不是 Git 源码，也不是运行时读取路径。配置变化后应重新运行该命令并检查返回的 `status=verified` 与 `config` 项覆盖。
 
 ## 配置结构
 

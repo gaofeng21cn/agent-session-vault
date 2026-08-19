@@ -1,5 +1,19 @@
 # Agent 使用指南
 
+## Primary Skill
+
+`agent-session-vault` 是调用本仓库的 Primary Skill。它把自然语言任务路由到唯一的
+`agent-session-vault` CLI，不拥有第二套状态、调度器或归档实现。Skill 的权威源码位于
+[`skills/agent-session-vault/SKILL.md`](../../skills/agent-session-vault/SKILL.md)。
+
+在已安装该 Skill 的 Codex 环境中，用户或 Agent 应直接使用 `$agent-session-vault`。它会按任务
+选择只读、projection、Tokscale、完整归档、裁剪或 staging 恢复路径。没有用户明确授权时，它不会
+提交 Tokscale、裁剪会话、恢复到 Codex live root 或修改上游客户端。
+
+仓库负责 Skill 源码；本仓推送到权威 GitHub 后，通过 `$skill-installer` 从
+`skills/agent-session-vault` 路径安装到 Codex Skill 根后才可自动发现。不要把安装副本当成源码
+或在其中手改规则；本机已安装副本必须与仓库源码保持一致。
+
 ## Agent 应该默认怎么理解这个仓库
 
 当一个 Agent 被要求使用这个仓库时，默认应该采用以下假设：
@@ -61,6 +75,19 @@ agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict --
 ### 归档冷数据
 
 只有当任务目标明确是“降低本地存储压力”时，再进入 archive 命令；如果只是为了让 Tokscale 看到最新远端用量，不应该默认走 archive。
+
+完整归档先使用：
+
+```bash
+agent-session-vault ops archive-cycle --due-only --deep --json
+```
+
+它不会删除本机会话。只有用户明确要求空间回收时，才先生成 `archive prune-plan`，确认成功且有
+候选后再运行 `archive prune-apply`。任一 NAS、stable analytics、projection 或 Tokscale parity
+校验失败时停止，不得改用直接删除。
+
+恢复只允许先 `archive plan-restore --mode staging`，再以 `archive restore --plan ...` 写入 staging
+目录；不得手工合并到 `~/.codex`。
 
 ## Agent 不应该做什么
 

@@ -16,9 +16,14 @@ Start from:
 
 The example config is safe to commit; the populated config is not. Keep real
 machine names, SSH targets, home paths, storage paths, and retention choices in
-`~/.config/agent-session-vault/config.toml`. Session trees, projection bundles,
-archives, Tokscale receipts, and run logs are local data and must remain outside
-the repository.
+`~/.config/agent-session-vault/config.toml`, which is excluded by the repository's
+`.gitignore`. Session trees, projection bundles, archives, Tokscale receipts, and
+run logs are local data and must remain outside the repository.
+
+`storage mirror-stable --json` writes the current config to the stable root's
+`config/config.toml` as a disaster-recovery control-plane copy. That file is not
+Git source and is not a runtime read path. After config changes, rerun the command
+and confirm `status=verified` with a verified `config` item.
 
 ## Config Structure
 

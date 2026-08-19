@@ -71,6 +71,12 @@ uv tool install --python 3.12 --editable .
 `~/.local/bin`）暴露 CLI。定时自动化应使用解析后的绝对路径调用该入口，
 不要依赖继承的 shell `PATH`。
 
+对于 Agent，Primary Skill 是
+[`agent-session-vault`](skills/agent-session-vault/SKILL.md)。它只负责把任务路由到这个 CLI，
+不维护第二套同步、归档或配置状态。将本仓推送到权威 GitHub 后，可用
+`$skill-installer` 从 `skills/agent-session-vault` 安装；Agent 应使用
+`$agent-session-vault`，真实写入前仍按 Skill 的授权边界执行。
+
 准备本地配置：
 
 ```bash
