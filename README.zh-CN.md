@@ -2,64 +2,27 @@
   <a href="./README.md">English</a> | <strong>中文</strong>
 </p>
 
-<h1 align="center">Agent Session Vault</h1>
+# Agent Session Vault
 
-<p align="center"><strong>运行在 OPL Fleet 之上的 local-first session projection 与 Tokscale 聚合任务</strong></p>
-<p align="center">Fleet 全节点投放 · Projection Delta-First · Tokscale 视图构造 · 可归档存储分层</p>
+Agent Session Vault 是运行在 OPL Fleet 上的本地优先会话投影、Tokscale 聚合与
+Codex 完整归档任务。
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <strong>主要用途</strong><br/>
-      管理分散在多台机器、多个客户端、多个项目目录里的 session 历史，而不把云盘抬升为真相源
-    </td>
-    <td width="33%" valign="top">
-      <strong>操作入口</strong><br/>
-      Python CLI，覆盖配置检查、同步编排、Tokscale 投影、存储摘要与归档流程
-    </td>
-    <td width="33%" valign="top">
-      <strong>当前旗舰场景</strong><br/>
-      让 Tokscale 在 <code>Codex</code>、<code>Gemini CLI</code>、<code>OpenClaw</code>、多机与多根目录环境下依然可用
-    </td>
-  </tr>
-</table>
+默认产品合同刻意保持精简：从每个已批准的 Fleet 节点构建体积小、可复现的统计投影，
+不让 Tokscale 读取客户端实时目录，并且只在控制节点提交一次。完整会话归档是另一条
+需要显式执行的工作流。
 
-> 默认产品合同是维护一份可供 Tokscale 持续重算和提交的精简 analytics projection。完整会话正文迁移保留为显式可选能力，不属于默认日常链路。
+## 职责
 
-## 项目定位
+| 负责人 | 职责 |
+| --- | --- |
+| OPL Fleet | 节点清单、网络路由、准入、任务投放与产物传输 |
+| Agent Session Vault | 投影语义、导入、stable analytics 副本、Tokscale 执行与 Codex 归档 |
+| Tokscale | 下游用量计算与提交 |
+| Codex、Gemini CLI、OpenClaw | 各自的实时会话目录 |
 
-现在的 agent session 很少会老老实实待在一个整洁目录里。更常见的情况是同时分散在：
+跨机只有一条路径，Tokscale 只有一个受管视图，两者都由本仓负责，不在本机配置中重复维护。
 
-- `~/.codex`、`~/.gemini`、`~/.openclaw` 这样的 home-level roots
-- `~/workspace/<project>/.codex` 这样的 project-scoped roots
-- 多台机器，包括 macOS、Linux、WSL2
-- 长线任务产生的大体积、重放型 session 历史
-
-`agent-session-vault` 的职责，就是在不改上游客户端、不把 OneDrive/NAS/iCloud 当成权威真相的前提下，把这些历史变成可管理、可迁移、可审计的运行面。
-
-## 它解决什么问题
-
-- 按机器、客户端、项目目录发现 session roots
-- 默认走 `projection delta-first` 的跨机同步路径
-- 为 Tokscale 构造 `raw` 与 `canonical` 两种视图
-- 为更冷、更重的存储层保留显式 raw sync 与 archive 流程
-- 把目录型 relay 当作传输面，而不是把云服务 SDK 写进核心逻辑
-
-## 为什么 Tokscale 需要它
-
-Tokscale 是一个很好的 exporter，但它不是下面这些问题的控制面：
-
-- 跨机 session 发现
-- 项目级 root 发现
-- relay bundle 与 projection delta 管理
-- 像 OMX 风格 replay dedupe 这类显式规范化口径
-- 旧 raw tree 的归档规划
-
-`agent-session-vault` 负责准备 Tokscale 应该读取的 session 视图，而不是改 Tokscale 上游。
-
-## 快速开始
-
-先克隆仓库并安装 CLI：
+## 安装
 
 ```bash
 git clone <your-repo-url> agent-session-vault
@@ -67,198 +30,72 @@ cd agent-session-vault
 uv tool install --python 3.12 --editable .
 ```
 
-`uv tool` 负责管理 Python 3.12 环境，并从其受管二进制目录（通常为
-`~/.local/bin`）暴露 CLI。定时自动化应使用解析后的绝对路径调用该入口，
-不要依赖继承的 shell `PATH`。
-
-对于 Agent，Primary Skill 是
-[`agent-session-vault`](skills/agent-session-vault/SKILL.md)。它只负责把任务路由到这个 CLI，
-不维护第二套同步、归档或配置状态。将本仓推送到权威 GitHub 后，可用
-`$skill-installer` 从 `skills/agent-session-vault` 安装；Agent 应使用
-`$agent-session-vault`，真实写入前仍按 Skill 的授权边界执行。
-
-准备本地配置：
+创建本机配置：
 
 ```bash
 mkdir -p ~/.config/agent-session-vault
-cp config/agent-session-vault.example.toml ~/.config/agent-session-vault/config.toml
-```
-
-真实配置刻意放在仓库外。实际 machine 名、SSH target、用户名、绝对路径和运行输出只保留在该本地配置及配置指定的状态目录中；不要把 session 数据、bundle、receipt 或日志复制进仓库。
-
-OPL Fleet 已纳管的机器无需在这里重复维护地址、SSH route 或 HOME 路径。执行常见主链路：
-
-```bash
-agent-session-vault config --json
-agent-session-vault sync fleet --json
-agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
-```
-
-如果你要更严格的内部统计口径：
-
-```bash
-agent-session-vault tokscale exec --mode canonical --omx-replay-dedupe strict -- submit -c codex,gemini,openclaw --dry-run
-```
-
-## 常用工作流
-
-查看加载后的配置：
-
-```bash
+cp config/agent-session-vault.example.toml \
+  ~/.config/agent-session-vault/config.toml
 agent-session-vault config --json
 ```
 
-查看存储摘要：
+真实机器路径、归档位置、回执、投影和会话数据都保存在仓库外。
 
-```bash
-agent-session-vault storage summary --json
-agent-session-vault storage migration-plan --json
-```
+## 日常使用
 
-运行默认的 Fleet 全节点 projection 同步：
+刷新控制节点和全部已批准的 Fleet 节点：
 
 ```bash
 agent-session-vault sync fleet --json
 ```
 
-OPL Fleet 负责节点清单、标准 Python/SSH 能力、fresh admission、任务投放和产物通道；本仓只负责 session projection、增量 state、导入与 Tokscale 语义。所有 approved Fleet 节点都会自动成为候选，不需要声明单独的 Session Vault capability；不满足任务条件的节点会带明确原因跳过。
-
-单独刷新本机 HOME 的精简 analytics projection：
+检查或运行 Tokscale 的官方预览：
 
 ```bash
-agent-session-vault sync local-home-projection --json
+agent-session-vault tokscale env --json
+agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run
 ```
 
-把本机临时 Codex runtime home 增量同步到只增不减的 Tokscale extras 树：
-
-```bash
-agent-session-vault sync local-codex \
-  --source /path/to/quest-or-runtime-root \
-  --json
-```
-
-执行确定性的每日 projection 同步与 Tokscale 提交：
+执行完整的每日同步与单次提交：
 
 ```bash
 agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
-该命令先增量投影控制节点的本机 `HOME`，再由 OPL Fleet 向所有通过 fresh data-job admission 的 approved 节点投放同一 projection 任务。Fleet 把远端 projection 产物带回控制节点，各节点不会分别执行 Tokscale submit。控制节点构造唯一 projection-only raw view、持有单一进程锁，并且只执行一次聚合提交。Tokscale 按 session identity 处理 Codex active/archive 重复副本；Session Vault 保持机器根目录隔离，并验证在冻结输入、Tokscale 版本、pricing 与 dedupe policy 相同的前提下，换到任一准入执行节点仍得到相同数字。`--mirror-stable` 会在 submit confirmed 后把 analytics 层写成可增量复用的 zstd 分片包，避免 OneDrive 承载数万个零碎文件。
-
-默认换机只需恢复 analytics stable 层即可延续 Tokscale。若还需要完整聊天正文、搜索和继续会话，可显式 dry-run 可选的 full-fidelity migration：
-
-```bash
-agent-session-vault storage mirror-stable --include-live-sessions --dry-run --json
-```
-
-验证 packed stable 层的恢复：
-
-```bash
-agent-session-vault storage restore-stable --dest-root /path/to/restore-staging --json
-```
-
-只准备 Tokscale 运行环境：
-
-```bash
-agent-session-vault tokscale env --mode raw --json
-agent-session-vault tokscale env --mode canonical --omx-replay-dedupe strict --json
-```
-
-归档一个冷数据树：
-
-```bash
-agent-session-vault archive offload-tree \
-  --source ~/.config/tokscale/imports/machine-a/.raw/codex \
-  --bundle-name machine-a-codex-raw \
-  --json
-```
-
-完整 Codex 会话归档使用独立的 snapshot 流程。NAS 必须先初始化，之后再执行
-snapshot、publish 和深度校验；这条链路不会改变 Tokscale projection，也不会删除本机源文件：
+归档完整 Codex 会话，但不删除本机源文件：
 
 ```bash
 agent-session-vault archive init --json
-agent-session-vault archive snapshot --json
-agent-session-vault archive publish --staging-root <snapshot-staging-root> --json
-agent-session-vault archive verify --snapshot <snapshot-id> --deep --json
-agent-session-vault archive list --from 2026-07-01T00:00:00Z --to 2026-08-01T00:00:00Z --json
-agent-session-vault archive plan-restore --destination /tmp/codex-restore --session-id <session-id> --plan-path /tmp/restore-plan.json --json
-agent-session-vault archive restore --plan /tmp/restore-plan.json --json
-```
-
-周期任务由外部调度器触发，Vault 自己负责 14 天 due 判断、单机锁、幂等发布和 receipt：
-
-```bash
 agent-session-vault ops archive-cycle --due-only --deep --json
 ```
 
-该周期入口只做 snapshot、publish、verify，不做本机 prune。需要回收本机空间时，先显式
-生成并审阅裁剪计划，再单独执行：
+本机裁剪与恢复都必须经过显式计划。执行前请阅读操作手册。
 
-```bash
-agent-session-vault archive prune-plan \
-  --plan-path ~/.config/agent-session-vault/prune-plans/current.json \
-  --json
-agent-session-vault archive prune-apply \
-  --plan ~/.config/agent-session-vault/prune-plans/current.json \
-  --json
-```
+## 当前保证
 
-`prune-plan` 只接受 `archived_sessions` 中超过 `cold_age_days` 的文件。它要求最新 NAS
-snapshot 深度校验通过、当前源 SHA 与 snapshot 一致、没有指向 `sessions` 或其他位置的硬链接、
-对应的 local Tokscale projection 存在且当前 imports 已被 verified stable mirror 覆盖。计划还会
-以最近的 verified Tokscale submit contract 执行官方 dry-run。`prune-apply` 在删除前后各执行一次
-同样的 dry-run；任一准入或数值不一致都会拒绝删除或报告 partial receipt。NAS snapshot、stable
-analytics 和 projection 都不是 Codex live root。
-
-`archive restore` 当前只允许 staging mode。Codex live merge、自动 prune、OneDrive
-secondary mirror 和 OPL Cordis contribution 必须等各自的 owner 合同与验证阶段完成后再启用。
-
-## 当前边界
-
-- OPL Fleet 是唯一多机节点、网络、准入与任务投放基座；Session Vault 不维护第二套机器控制面。
-- Session Vault 是 Fleet 的标准数据任务，不是节点需单独声明或安装的 capability。
-- approved 节点执行 projection；唯一控制节点持有聚合 raw view、运行锁与 exactly-once Tokscale submit。
-- 跨节点数值等价要求冻结的 projection 输入、Tokscale 包、custom pricing 和 dedupe policy 一致，不要求把完整聚合数据复制到每台节点。
-- 默认跨机链路是 `projection delta-first`，完整 raw sync 仍保持显式模式。
-- 默认 raw Tokscale 视图是 projection-only；本机 live HOME 不直接参与扫描。
-- 默认 stable mirror 只承诺 Tokscale analytics continuity；完整会话迁移是显式可选能力。
-- 云同步工具只被视为目录型 relay，而不是一等后端。
-- 当前重点兼容对象是 `Codex`、`Gemini CLI`、`OpenClaw`。
-- 这个仓库管理的是 session 视图与传输面，不处理 provider 计费真相。
-- live client roots 不会被 destructive 改写。
-
-## 面向 Agent
-
-建议直接使用本仓库 CLI，而不是重写同步、投影或归档逻辑。
-
-典型 Agent 任务：
-
-- 通过 OPL Fleet 纳管机器，然后执行 `sync fleet`
-- 仅在兼容或诊断旧路径时配置 machine/root rules 并执行 `sync auto <machine>`
-- 当本机 Codex session 位于易清理的 runtime home 下时，先执行 `sync local-codex --source <root>`
-- 构造 `raw` 或 `canonical` Tokscale 视图
-- 在本地空间需要收缩时，把旧 raw tree 打包归档
+- Tokscale 只读取受管投影和受管 extras，不读取客户端实时目录。
+- 只有控制节点执行一次聚合提交，Fleet 节点不会分别提交。
+- 上游节点删除旧文件时，已导入的投影仍保留累计用量历史。
+- stable 层用于恢复统计连续性，不参与日常运行读取。
+- 完整归档使用不可变 snapshot object、catalog、深度校验、staging 恢复和受控裁剪。
+- 云同步目录或 NAS 只是存储位置，不是客户端实时目录。
 
 ## 文档
 
-- [Docs index (English)](docs/en/README.md)
-- [Configuration guide (English)](docs/en/CONFIGURATION.md)
-- [Architecture guide (English)](docs/en/ARCHITECTURE.md)
-- [Agent guide (English)](docs/en/AGENT_GUIDE.md)
-- [文档索引（中文）](docs/zh/README.md)
-- [配置说明（中文）](docs/zh/CONFIGURATION.md)
-- [架构说明（中文）](docs/zh/ARCHITECTURE.md)
-- [Agent 使用指南（中文）](docs/zh/AGENT_GUIDE.md)
+- [文档职责与生命周期](docs/README.md)
+- [中文操作手册](docs/zh/OPERATIONS.md)
+- [中文配置参考](docs/zh/CONFIGURATION.md)
+- [中文架构说明](docs/zh/ARCHITECTURE.md)
+- [Operations guide](docs/en/OPERATIONS.md)
+- [Configuration reference](docs/en/CONFIGURATION.md)
+- [Architecture](docs/en/ARCHITECTURE.md)
+- [Primary Agent Skill](skills/agent-session-vault/SKILL.md)
 
-内部规划文档仍然保持 repo-local、中文优先，只有在显式升格后才进入公开双语面。
-
-## 技术验证
+## 验证
 
 ```bash
+ruff check .
 python3 -m pytest
 ```
-
-## 许可证
 
 本项目采用 [Apache License 2.0](LICENSE)。

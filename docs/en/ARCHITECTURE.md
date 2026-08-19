@@ -1,160 +1,116 @@
-# Architecture Guide
+# Architecture
 
-## Design Goal
+This file owns system responsibilities, data flow, storage domains, and
+invariants. It does not define configuration fields or operating procedures.
 
-`agent-session-vault` is neither a multi-machine platform nor a cloud sync platform. OPL Fleet is the multi-machine foundation; this repository provides a Fleet-dispatched session projection and Tokscale aggregation job.
+## Ownership
 
-Its job is narrower and more practical:
+| Component | Owns | Does not own |
+| --- | --- | --- |
+| OPL Fleet | Approved node inventory, controller identity, routes, admission, job dispatch, artifact return | Projection semantics, Tokscale submission, archive contents |
+| Agent Session Vault | Projection format and state, imported analytics history, managed Tokscale environment, stable recovery copies, Codex archive lifecycle | Fleet inventory, live client state, provider billing truth |
+| Tokscale | Usage calculation, official preview, external submission | Cross-machine discovery, source collection, archive lifecycle |
+| Codex, Gemini CLI, OpenClaw | Authoritative live session roots | Analytics projection and Vault archive state |
 
-- discover session roots
-- move or project them between machines
-- build views that downstream tools such as Tokscale can read
-- keep colder data archivable without making the hot layer grow forever
+Each responsibility has one owner. Session Vault consumes Fleet and client
+interfaces without copying their control state.
 
-## Core Layers
-
-The current model is easiest to reason about as four layers.
-
-### 1. Live Roots
-
-These are upstream-owned directories such as:
-
-- `~/.codex`
-- `~/.gemini`
-- `~/.openclaw`
-- project-level `.codex`
-
-This repository does not treat itself as the owner of those trees.
-
-### 2. Imported Raw Projection Layer
-
-Local and imported-machine analytics projections land under:
+## Runtime Data Flow
 
 ```text
-import_root/local-home/.raw/<client>
-import_root/<machine>/.raw/<client>
+live client roots on controller
+             |
+             v
+       local projection ----+
+                            |
+approved Fleet nodes        |       managed projection HOME
+       |                     |               +
+       v                     v               |
+Fleet projection jobs -> imported projections + managed local extras
+                                            |
+                                            v
+                                      one Tokscale run
+                                      on controller
 ```
 
-For the default path, this is usually imported from a projection bundle, not a byte-for-byte raw mirror.
+`sync fleet` is the only cross-machine path. Fleet selects approved candidates,
+performs fresh admission, runs a self-contained projection job, and returns the
+artifact. Session Vault verifies and imports that artifact below `import_root`
+under the stable Fleet node identity.
 
-For Tokscale workflows, this layer accumulates imported history in an append-only way.
+The local controller projection and imported Fleet projections are kept in
+per-machine `.raw/<client>` trees. The name `.raw` is a storage layout detail,
+not a selectable view: the product exposes one managed Tokscale projection.
 
-If the remote machine later deletes session files or an entire root, projection manifests and inventories still record that change, but the local `.raw` tree does not discard already imported history.
+## Projection Contract
 
-### 3. Canonical Layer
+- Supported clients are Codex, Gemini CLI, and OpenClaw.
+- Tokscale receives `projection_home` as `HOME`; it never receives the real
+  user HOME or `CODEX_HOME`.
+- `TOKSCALE_EXTRA_DIRS` contains the local projection, imported Fleet
+  projections, and explicit local Codex namespaces carrying `sync-state.json`.
+- Workspace `.codex` roots and client live roots never enter Tokscale directly.
+- Projection imports are history-preserving. A source deletion does not delete
+  an already imported usage record.
+- Fleet projection state supports full initialization followed by validated
+  deltas. A base-snapshot mismatch is rejected instead of guessed.
+- The controller performs the only aggregate submit. Remote nodes project and
+  return artifacts; they do not submit.
 
-Canonical views are stricter local session layouts used for Tokscale or internal analysis.
+Projection data is derived and rebuildable from available sources. It is not a
+full conversation backup.
 
-Examples:
+## Storage Domains
 
-- `shadow_home`
-- `import_root/<machine>/<client>`
-- `local_workspace_extras/*/codex`
+| Domain | Role | Routine Tokscale input | Destructive authority |
+| --- | --- | --- | --- |
+| Live client roots | Authoritative client state | Never | Client owner only |
+| Projection imports | Compact, history-preserving analytics input | Yes | Rebuildable; never used to delete live sources by itself |
+| Managed local extras | Explicit append-only Codex ingestion | Yes | Vault-managed namespace only |
+| Stable analytics | Packed, verified recovery copy of analytics and control files | No | Restore to a separate destination |
+| Optional stable migration profile | Explicit copy of live session roots for machine migration | No | Requires quiescent clients; no live merge |
+| Full-fidelity Codex archive | Immutable objects, snapshots, catalog, verification, and receipts | No | Can authorize plan-driven pruning only with all other evidence |
 
-When canonical mode is selected, the current implementation requires `--omx-replay-dedupe strict`.
+Cloud-synced or NAS directories may host stable or archive data, but storage
+location does not make them a live client root.
 
-## 4. Archive Layer
+## Stable Analytics
 
-Cold data can be packed into `tar.zst` bundles and moved under `archive_root`.
+The stable layer packages projection imports and managed extras into indexed
+zstd shards and copies the Vault configuration and Tokscale custom pricing.
+Every successful mirror has a verified manifest. Restore refuses missing or
+unverified manifests and writes only below a separate destination.
 
-The backend is directory-native by design. A bundle can live on:
+This layer protects analytics continuity. Its optional live-session profile is
+an explicit migration copy and remains separate from both routine Tokscale
+inputs and the searchable Codex archive.
 
-- a local disk
-- a NAS mount
-- a OneDrive-synced directory
-- an iCloud-synced directory
+## Full-Fidelity Archive
 
-## Fleet-Dispatched Projection Sync
+The archive scans only configured Codex sources and allowed session/index
+files. It identifies a source by stable machine identity and source root,
+stores immutable content-addressed objects, publishes snapshot manifests, and
+builds catalog segments for query and restore.
 
-`sync fleet` is the default cross-machine path. Fleet owns nodes, the standard runtime, private routes, fresh data admission, concurrent dispatch, and artifact retrieval. Session Vault owns projection schemas, incremental snapshots, imports, and Tokscale rules. Session Vault is a standard Fleet data job rather than a declared node capability: every approved node is considered, then fresh task admission either runs it or records a skip reason. `sync auto <machine>` remains an explicit compatibility and diagnostic path.
+Restore plans are digest-protected and always use staging mode. Local pruning
+is a separate digest-protected plan that requires all of the following at plan
+and apply time:
 
-`sync local-home-projection` incrementally refreshes the current machine. It reads only the standard current-HOME roots, not legacy workspace runtimes or cold archives. The daily runner performs this step automatically before remote sync.
+- current source identity, metadata, and checksums;
+- deep verification of the referenced archive snapshots;
+- current projection coverage for every candidate;
+- a verified stable mirror covering projection imports;
+- no live-session or external hard-link sharing;
+- unchanged official Tokscale preview before and after deletion.
 
-The high-level flow is:
+No snapshot, stable mirror, projection, or successful test alone authorizes
+deletion.
 
-1. discover roots for a configured machine
-2. refresh persistent projection state under `remote_state_root`, reprojecting only new or changed files
-3. build a full or delta bundle against the local base snapshot
-4. choose `ssh` or `relay` transport by bundle size threshold
-5. import the bundle locally into `import_root/<machine>/.raw/*`
-6. optionally canonicalize after import
+## Non-Goals
 
-This is why large remote histories no longer require full raw mirroring for the Tokscale use case.
-
-The key distinction is among compute incrementality, transport incrementality, and submission history:
-
-- remote state reuses unchanged projection blobs by source path, size, mtime, and projector version
-- bundles use true snapshot-based incremental transport; missing or incompatible state triggers a complete projection rebuild
-- local `.raw` and canonical views keep the cumulative history Tokscale needs instead of treating upstream cleanup as local data loss
-
-## Projection Behavior By Client
-
-### Codex
-
-Codex projection preserves the original order of every parseable JSON record because Tokscale's accounting parser is stateful. The slim records retain only parser-relevant fields, including:
-
-- every `session_meta` identity, fork/source, provider, agent, and workspace field
-- every `turn_context` model and turn identifier
-- `task_started`, human-versus-injected `user_message`, `token_count`, and terminal event structure
-- top-level headless model, timestamp, and usage records
-
-Conversation bodies and unrelated payload fields are removed. Human prompts become a `user` sentinel, while known injected-context prefixes remain distinguishable. The projector version is stored in local state and projection manifests so a schema change forces a rebuild instead of reusing an incompatible delta baseline.
-
-This keeps Tokscale totals unchanged while making large Codex sessions substantially smaller; it is not a full-fidelity conversation copy.
-
-### Gemini CLI
-
-Gemini projection keeps chat JSON files under `chats/`.
-
-The current goal is to preserve the files Tokscale-relevant workflows actually need, not to mirror every transient file under the Gemini state tree.
-
-### OpenClaw
-
-OpenClaw projection keeps usage-relevant structure while stripping large message bodies.
-
-It also normalizes non-standard `.jsonl` suffix variants into standard `.jsonl` paths when needed, because Tokscale only recognizes part of the raw OpenClaw file naming surface.
-
-## Raw And Canonical Tokscale Views
-
-### Raw
-
-Raw mode points Tokscale at:
-
-- an empty `projection_home`, preventing direct live-HOME discovery
-- the current-machine projection under `import_root/local-home/.raw/*`
-- imported machine `.raw` trees
-- managed local extras
-
-This is the default submission policy. Every usage input first lands in the mirrorable analytics layer; live client roots are not exposed directly to Tokscale.
-
-### Canonical
-
-Canonical mode points Tokscale at:
-
-- `shadow_home`
-- canonicalized imported machine trees
-- canonicalized local project extras
-
-Use it when you want a stricter internal accounting view and are willing to apply explicit replay dedupe.
-
-## What This Architecture Does Not Do
-
-- it does not claim billing truth for provider pricing
-- it does not rewrite Tokscale upstream
-- it does not rewrite upstream client source trees destructively
-- it does not hardcode cloud vendors into the core logic
-
-## Durability And Migration Boundary
-
-Four states must remain distinct:
-
-- `synced`: a remote projection was applied to local hot imports
-- `submitted`: Tokscale returned a confirmed server response
-- `analytics mirrored`: imports, managed extras, and control-plane config passed stable source coverage readback
-- `full-fidelity migration ready`: the explicit optional analytics-plus-live-session profile passed migration readback
-
-The default product contract is Tokscale analytics continuity. Once the local projection, remote projections, managed extras, and control-plane config pass stable readback, they can be restored on another computer for continued recomputation and submission. `full_fidelity_restore_ready=false` does not block that default goal.
-
-Live roots such as `~/.codex/sessions` and `~/.codex/archived_sessions` enter the optional migration profile only when complete conversation text, search, or session resumption is required. Stop client writers before explicitly running `storage mirror-stable --include-live-sessions`.
-
-Credentials are excluded from the stable mirror. Reauthenticate on the new machine, restore session data, and rebuild canonical/cache state.
+- Maintaining machine inventory, routes, or artifact transport
+- Offering multiple selectable Tokscale views
+- Patching Tokscale or client upstreams
+- Treating provider billing as a Vault calculation
+- Restoring directly into a live Codex home
+- Keeping compatibility commands for retired workflows

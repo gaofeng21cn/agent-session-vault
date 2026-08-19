@@ -97,20 +97,6 @@ def fleet_local_bundle_dir(config: VaultConfig, node_id: str, snapshot_id: str) 
     return config.config_path.parent / "fleet-bundles" / "projection" / node_id / snapshot_id
 
 
-def fleet_import_name(config: VaultConfig, node_id: str) -> str:
-    exact = config.machines.get(node_id)
-    if exact is not None:
-        return exact.import_name
-    matches = [
-        machine.import_name
-        for machine in config.machines.values()
-        if machine.ssh_target == node_id
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    return node_id
-
-
 def _base_snapshot_id(config: VaultConfig, import_name: str) -> str | None:
     state_path = config.paths.import_root / import_name / ".projection-state.json"
     if not state_path.is_file():
@@ -132,11 +118,10 @@ def sync_fleet_node(
     timeout_seconds: float,
 ) -> FleetSyncResult:
     snapshot_id = _snapshot_id(node_id)
-    import_name = fleet_import_name(config, node_id)
+    import_name = node_id
     script, artifact_path = fleet_projection_request(
         node_id,
         snapshot_id=snapshot_id,
-        import_name=import_name,
         base_snapshot_id=_base_snapshot_id(config, import_name),
     )
     local_bundle_dir = fleet_local_bundle_dir(config, node_id, snapshot_id)
@@ -177,7 +162,6 @@ def sync_fleet_node(
         config,
         node_id,
         local_bundle_dir,
-        canonicalize_command=None,
         import_name=import_name,
     )
     for sibling in local_bundle_dir.parent.iterdir():
@@ -227,7 +211,7 @@ def sync_fleet(
                 except Exception as exc:  # noqa: BLE001 - preserve per-node Fleet fan-out results
                     results_by_node[node_id] = FleetSyncResult(
                         node_id=node_id,
-                        import_name=fleet_import_name(config, node_id),
+                        import_name=node_id,
                         status="sync_failed",
                         payload={"error": f"{type(exc).__name__}: {exc}"},
                         bundle=None,
@@ -235,7 +219,7 @@ def sync_fleet(
     results = tuple(
         FleetSyncResult(
             node_id=node.node_id,
-            import_name=fleet_import_name(config, node.node_id),
+            import_name=node.node_id,
             status="local_projection" if node.local else results_by_node[node.node_id].status,
             payload={} if node.local else results_by_node[node.node_id].payload,
             bundle=None if node.local else results_by_node[node.node_id].bundle,

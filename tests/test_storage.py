@@ -4,93 +4,58 @@ from agent_session_vault.config import load_config
 from agent_session_vault.storage import summarize_storage
 
 
-def test_summarize_storage_collects_existing_paths(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    workspace = tmp_path / "workspace"
-    imports = tmp_path / "imports"
-    shadow_home = tmp_path / "shadow-home"
-    extras = tmp_path / "extras"
-    archive = tmp_path / "archive"
-
-    target = home / ".codex" / "sessions"
-    target.mkdir(parents=True)
-    (target / "a.jsonl").write_text("x" * 16, encoding="utf-8")
-    (imports / "machine-a" / ".raw" / "codex").mkdir(parents=True)
-    (imports / "machine-a" / ".raw" / "codex" / "b.jsonl").write_text("y" * 8, encoding="utf-8")
-    shadow_home.mkdir(parents=True)
-
+def _config(tmp_path: Path) -> Path:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f"""
 [paths]
-home = "{home}"
-workspace_root = "{workspace}"
-import_root = "{imports}"
-shadow_home = "{shadow_home}"
-local_workspace_extras = "{extras}"
-archive_root = "{archive}"
+home = "{tmp_path / 'home'}"
+workspace_root = "{tmp_path / 'workspace'}"
+import_root = "{tmp_path / 'imports'}"
+projection_home = "{tmp_path / 'projection-home'}"
+local_workspace_extras = "{tmp_path / 'extras'}"
+stable_root = "{tmp_path / 'stable'}"
 
-[machines.machine-a]
-import_name = "machine-a"
-ssh_target = "session-sync-a"
-clients = ["codex"]
+[archive]
+root = "{tmp_path / 'archive'}"
 """.strip()
         + "\n",
         encoding="utf-8",
     )
+    return config_path
 
-    config = load_config(config_path)
-    summary = summarize_storage(config)
 
+def test_summarize_storage_reports_current_domains(tmp_path: Path) -> None:
+    (tmp_path / "home" / ".codex" / "sessions").mkdir(parents=True)
+    (tmp_path / "home" / ".codex" / "sessions" / "a.jsonl").write_text("x" * 16, encoding="utf-8")
+    (tmp_path / "imports" / "node-a" / ".raw" / "codex").mkdir(parents=True)
+    (tmp_path / "imports" / "node-a" / ".raw" / "codex" / "b.jsonl").write_text("y" * 8, encoding="utf-8")
+    (tmp_path / "extras" / "managed" / "codex").mkdir(parents=True)
+    (tmp_path / "stable").mkdir()
+    (tmp_path / "archive").mkdir()
+
+    summary = summarize_storage(load_config(_config(tmp_path)))
     keys = {item.label for item in summary.items}
+
     assert "live:codex" in keys
-    assert "imports_raw:machine-a:codex" in keys
-    assert "canonical:shadow_home" in keys
+    assert "projection:node-a:codex" in keys
+    assert "projection:managed_extras" in keys
+    assert "stable:analytics" in keys
+    assert "archive:full_fidelity" in keys
     assert summary.total_bytes >= 24
 
 
-def test_summarize_storage_collects_home_project_codex_roots(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    workspace = tmp_path / "workspace"
-    imports = tmp_path / "imports"
-    shadow_home = tmp_path / "shadow-home"
-    extras = tmp_path / "extras"
-    archive = tmp_path / "archive"
-
-    migrated_codex = home / ".codex" / "projects" / "proj-b" / "archive" / "20260411T000000Z" / "codex"
-    migrated_project = migrated_codex / "sessions"
-    migrated_project.mkdir(parents=True)
-    (migrated_project / "session.jsonl").write_text("z" * 12, encoding="utf-8")
-    runtime_file = home / ".codex" / "projects" / "proj-b" / "runtime-state" / "cache.bin"
+def test_summarize_storage_collects_home_project_codex_archives(tmp_path: Path) -> None:
+    migrated = tmp_path / "home" / ".codex" / "projects" / "proj-b" / "archive" / "20260411T000000Z" / "codex"
+    (migrated / "sessions").mkdir(parents=True)
+    (migrated / "sessions" / "session.jsonl").write_text("z" * 12, encoding="utf-8")
+    runtime_file = tmp_path / "home" / ".codex" / "projects" / "proj-b" / "runtime-state" / "cache.bin"
     runtime_file.parent.mkdir(parents=True)
     runtime_file.write_text("ignored", encoding="utf-8")
 
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        f"""
-[paths]
-home = "{home}"
-workspace_root = "{workspace}"
-import_root = "{imports}"
-shadow_home = "{shadow_home}"
-local_workspace_extras = "{extras}"
-archive_root = "{archive}"
+    summary = summarize_storage(load_config(_config(tmp_path)))
+    items = [item for item in summary.items if item.label.startswith("live:home_project_codex:")]
 
-[machines.machine-a]
-import_name = "machine-a"
-ssh_target = "session-sync-a"
-clients = ["codex"]
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-
-    config = load_config(config_path)
-    summary = summarize_storage(config)
-
-    keys = {item.label for item in summary.items}
-    assert "live:home_project_codex:proj-b:20260411T000000Z" in keys
-    assert summary.total_bytes >= 12
-    home_project_items = [item for item in summary.items if item.label.startswith("live:home_project_codex:")]
-    assert len(home_project_items) == 1
-    assert home_project_items[0].size_bytes == 12
+    assert len(items) == 1
+    assert items[0].label == "live:home_project_codex:proj-b:20260411T000000Z"
+    assert items[0].size_bytes == 12

@@ -115,7 +115,7 @@ def query_catalog(
     session_id: str | None = None,
     source_id: str | None = None,
 ) -> list[CatalogEntry]:
-    backend = FilesystemArchiveBackend(config.archive.primary_root)
+    backend = FilesystemArchiveBackend(config.archive.root)
     backend.ensure_ready()
     entries_by_key: dict[tuple[str, str, str, str], CatalogEntry] = {}
     for payload in _iter_segment_payloads(backend):

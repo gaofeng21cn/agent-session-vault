@@ -1,281 +1,79 @@
-# Configuration Guide
+# Configuration Reference
 
-## Default Config Path
+This file owns the configuration schema, defaults, constraints, and path
+effects. Operational sequences belong in [Operations](OPERATIONS.md).
 
-By default the CLI reads:
+The default file is:
 
 ```text
 ~/.config/agent-session-vault/config.toml
 ```
 
-Start from:
+Pass `--config <path>` before the top-level command to load another file. A
+missing file is valid and uses defaults. Unknown tables, unknown fields, wrong
+types, and incomplete source entries are rejected so retired configuration
+cannot silently change runtime behavior. Only the fields below are current.
 
-[`config/agent-session-vault.example.toml`](../../config/agent-session-vault.example.toml)
+## `[paths]`
 
-## Public Repository Boundary
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `home` | current process home | Authoritative local user home used to discover live client roots and local Tokscale credentials |
+| `workspace_root` | `<home>/workspace` | Immediate child projects inspected for project-scoped `.codex` roots |
+| `import_root` | `<home>/.config/tokscale/imports` | Append-only local and Fleet projection imports |
+| `projection_home` | `<home>/.config/tokscale/projection-home` | Isolated HOME passed to Tokscale; live client roots are forbidden here |
+| `local_workspace_extras` | `<home>/.config/tokscale/local-workspace-extras` | Explicit local Codex ingests; only namespaces with `sync-state.json` enter the Tokscale view |
+| `stable_root` | `<home>/agent-session-vault/stable` | Packed, verified stable analytics copy and manifest |
 
-The example config is safe to commit; the populated config is not. Keep real
-machine names, SSH targets, home paths, storage paths, and retention choices in
-`~/.config/agent-session-vault/config.toml`, which is excluded by the repository's
-`.gitignore`. Session trees, projection bundles, archives, Tokscale receipts, and
-run logs are local data and must remain outside the repository.
+All values are paths. `~` is expanded when loaded. Relative archive source
+paths are resolved below `home`; other path fields should be absolute or
+home-relative.
 
-`storage mirror-stable --json` writes the current config to the stable root's
-`config/config.toml` as a disaster-recovery control-plane copy. That file is not
-Git source and is not a runtime read path. After config changes, rerun the command
-and confirm `status=verified` with a verified `config` item.
+## `[archive]`
 
-## Config Structure
+| Field | Default | Constraint and meaning |
+| --- | --- | --- |
+| `root` | `<home>/agent-session-vault/archive` | Filesystem or mounted NAS root for immutable objects, snapshots, catalog, state, and receipts |
+| `cadence_days` | `14` | Positive integer controlling `archive-cycle --due-only` |
+| `cold_age_days` | `30` | Non-negative integer used to admit local archived sessions for prune plans |
+| `staging_root` | `<home>/.cache/agent-session-vault/archive-staging` | Local snapshot construction area |
+| `machine_id_path` | `<home>/.config/agent-session-vault/machine-id` | Stable locally generated archive identity |
+| `source_paths` | automatic | Explicit Codex source roots; see below |
+| `require_quiescent_for_prune` | `true` | Reject prune planning when a source changes during the scan |
 
-Fleet mode needs only local paths, sync, and retention settings. `[machines.<name>]` is no longer the multi-machine source of truth; it remains for legacy `sync auto` and for mapping existing import directories to Fleet node IDs during migration.
+When `source_paths` is absent or empty, archive discovery uses `<home>/.codex`
+and each existing immediate `<workspace_root>/<project>/.codex`. Each source
+contributes only regular, non-symlink `sessions/**/*.jsonl`,
+`archived_sessions/**/*.jsonl`, their `.gz` variants, and
+`session_index.jsonl`.
 
-The config is intentionally small and explicit.
+The compact string form assigns the default `kind = "codex_home"`:
 
-It has four top-level areas:
-
-- `[paths]`
-- `[sync]`
-- `[machines.<name>]`
-- `[[retention.rules]]`
-
-## `paths`
-
-These paths define where local derived state lives.
-
-- `home`
-  - source home for local live clients; Tokscale does not read it directly
-- `workspace_root`
-  - local workspace root used by stable-layer sync to discover ingest sources
-- `import_root`
-  - local and remote analytics projections live here
-- `projection_home`
-  - empty HOME used by raw Tokscale to prevent live-root auto-discovery
-- `shadow_home`
-  - canonical Tokscale home for stricter views
-- `local_workspace_extras`
-  - canonicalized local project-level Codex extras live here
-- `archive_root`
-  - colder bundle storage
-- `relay_root`
-  - local relay directory for projection or raw bundles
-
-## Stable Layer
-
-The Tokscale stable layer has two parts:
-
-```text
-<import_root>
-<local_workspace_extras>
+```toml
+[archive]
+source_paths = ["~/.codex", "~/workspace/project/.codex"]
 ```
 
-`import_root` stores stable local caches imported from remote machines, for example:
+The table form supports an explicit `kind` and optional human label:
 
-```text
-<import_root>/local-home/.raw/codex
-<import_root>/machine-a/.raw/codex
-<import_root>/machine-b/.raw/gemini
+```toml
+[archive]
+source_paths = [
+  { path = "~/.codex", kind = "codex_home", label = "home" },
+  { path = "~/workspace/project/.codex", kind = "project_root", label = "project" },
+]
 ```
 
-`local_workspace_extras` stores stable local caches absorbed from scattered and cleanup-prone workspace sources, including:
+`path` is required for every table entry. Empty or invalid entries are not a
+compatibility mechanism: an entry without `path` is rejected.
 
-```text
-<quest-root>/.ds/codex_homes
-<quest-root>/.ds/cold_archive/codex_sessions
-<workspace-project>/.codex
-<home>/.codex/projects/<project>/archive/<timestamp>/codex
-```
+## Effective Readback
 
-Scattered directories are ingest sources. The default stable mirror is the `analytics` profile for Tokscale continuity; it can rebuild imported views, but it does not prove that the local clients' full history is portable. A recurring task can update the local hot stable layer first, then mirror it to a colder OneDrive/NAS copy:
-
-```bash
-agent-session-vault storage mirror-stable --json
-```
-
-Packed shards are built in a local temporary directory before publication to the
-stable root. A disposable local index cache under
-`~/.config/agent-session-vault/stable-pack-index-cache/` preserves incremental
-assignments when a cloud file provider temporarily leaves `index.json` dataless;
-the stable root remains the restore authority.
-
-The default destination is `stable/` next to `archive_root`. If `archive_root` is:
-
-```text
-/path/to/agent-session-vault/archive
-```
-
-the default stable copy is:
-
-```text
-/path/to/agent-session-vault/stable
-```
-
-The command does not expose the scattered source files directly to the cloud-sync client. It writes persistent shard indexes and zstd-compressed archives:
-
-```text
-stable/packs/imports/index.json
-stable/packs/imports/pack-<shard>-<digest>.tar.zst
-stable/packs/local-workspace-extras/index.json
-stable/packs/local-workspace-extras/pack-<shard>-<digest>.tar.zst
-stable/config/config.toml
-stable/config/tokscale/custom-pricing.json
-```
-
-When present, Tokscale's `custom-pricing.json` is read from the projection home's effective config directory and mirrored as control-plane data. This keeps exact local model pricing recoverable without making the cold mirror a runtime read path.
-
-The default shard target is 256 MiB of uncompressed data. File-to-shard assignments are persistent: new files append to the active shard, a changed file rebuilds only its assigned shard, and unchanged content-addressed archives retain the same name and bytes. Every attempt writes `stable-layer-attempt.json`; `stable-layer-manifest.json` advances only after the shard index, archive presence, and source coverage readback pass.
-
-For the first conversion from a legacy unpacked stable layer, build and verify every archive before explicitly pruning the old trees:
-
-```bash
-agent-session-vault storage mirror-stable --prune-unpacked --json
-```
-
-Restore to a new staging directory. The restore command verifies every archive's SHA-256, extracts it, and checks the restored file set and sizes:
-
-```bash
-agent-session-vault storage restore-stable --dest-root /path/to/restore-staging --json
-```
-
-The default analytics stable layer is sufficient to continue Tokscale recomputation and submission on a new computer. Only when complete conversation text, search, or session resumption is required should you inspect the optional full-fidelity migration:
-
-```bash
-agent-session-vault storage migration-plan --json
-agent-session-vault storage mirror-stable --include-live-sessions --dry-run --json
-```
-
-If this optional capability is selected, stop Codex, Gemini CLI, and OpenClaw writers before removing `--dry-run`. `full_fidelity_restore_ready=false` reports only that optional profile; it does not block default Tokscale continuity.
-
-Tokscale submit still runs from the local hot layer. The packed cloud stable layer is a restore copy, not a routine read path.
-
-## `sync`
-
-`sync` controls transport choice.
-
-- `default_strategy`
-  - legacy raw sync strategy selection
-- `direct_max_delta_files`
-  - raw direct sync threshold by file count
-- `direct_max_delta_bytes`
-  - raw direct sync threshold by bytes
-- `projection_transport`
-  - default transport for projection bundles: `auto`, `ssh`, or `relay`
-- `projection_direct_max_bundle_bytes`
-  - bundle size threshold for deciding `ssh` versus `relay` when projection transport is `auto`
-
-## Local Volatile Codex Homes
-
-The standard current HOME is incrementally projected by the default workflow and can also be refreshed directly:
-
-```bash
-agent-session-vault sync local-home-projection --json
-```
-
-Output lands under `<import_root>/local-home/.raw/<client>`. Both raw `tokscale exec` and the daily runner refresh it first, while Tokscale's `HOME` points to the empty `projection_home`.
-
-Some local runtimes create short-lived Codex homes such as:
-
-```text
-<quest-root>/.ds/codex_homes/run-*/sessions/
-```
-
-Do not point Tokscale directly at those volatile directories. First sync them into the append-only local extras tree:
-
-```bash
-agent-session-vault sync local-codex --source <quest-root> --json
-```
-
-Use `sync local-codex` only for a newly selected ingest source. The current MAS/Codex daily path does not scan legacy workspace `.ds/codex_homes`, `.ds/cold_archive/codex_sessions`, old runtimes, or cold archives. Historical data already absorbed into managed extras remains durable without depending on those old paths.
-
-The stable Tokscale root is:
-
-```text
-<local_workspace_extras>/volatile-codex-homes/codex
-```
-
-The `raw` Tokscale view includes managed local sync extras that have `sync-state.json`; it no longer points directly at workspace `.codex` or home project archive source paths.
-The `canonical` view includes all `local_workspace_extras/*/codex` directories.
-
-## `machines.<name>`
-
-Routine `sync fleet` and `ops daily-tokscale` runs do not require per-node stanzas. Node addresses, SSH routes, online/offline state, and approval live only in OPL Fleet. Existing stanzas are reused when `ssh_target` matches the Fleet node ID so historical imports are not duplicated; new Fleet nodes need no stanza.
-
-Each machine entry should use a stable logical hostname, not a changing IP address.
-
-Good examples:
-
-- `machine-a`
-- `wsl2-main`
-- `lab-linux`
-
-Avoid naming a machine by a temporary Tailscale or LAN IP.
-
-Important fields:
-
-- `import_name`
-  - local directory name under `import_root`
-- `ssh_target`
-  - SSH alias from your local SSH config
-- `source_home`
-  - absolute home path on the remote machine
-- `remote_relay_root`
-  - remote directory used as relay staging
-- `remote_state_root`
-  - remote state directory for raw relay tracking and projection compute cache; projection state lives under `<machine>/projection/`
-- `clients`
-  - enabled client families for that machine
-
-## Root Discovery
-
-There are two explicit rule types:
-
-### `[[machines.<name>.roots]]`
-
-Use this for fixed roots, for example:
-
-- `~/.codex`
-- `~/.gemini`
-- `~/.openclaw`
-
-### `[[machines.<name>.root_globs]]`
-
-Use this for project-scoped roots, for example:
-
-- `~/workspace/*/.codex`
-- `~/projects/*/.codex`
-- any other explicit directory family you actually use
-
-The point is to make root discovery auditable. The tool does not guess arbitrary project layouts for you.
-
-## Retention Rules
-
-Retention rules are explicit archive policies.
-
-They do not scan and delete live roots automatically.
-
-Use them when you want to identify colder imported or canonicalized trees and move them into bundles under `archive_root`.
-
-## Example Workflow
-
-1. Define a machine with hostname-based naming.
-2. Add fixed roots for home-level clients.
-3. Add glob rules for project-level Codex roots.
-4. Run:
+Use the CLI to see the resolved configuration consumed by the process:
 
 ```bash
 agent-session-vault config --json
-agent-session-vault sync auto machine-a --json
 ```
 
-5. If Tokscale is the goal, run:
-
-```bash
-agent-session-vault tokscale exec --mode raw -- submit -c codex,gemini,openclaw --dry-run
-```
-
-6. To mirror the local stable layer into a OneDrive/NAS copy, run:
-
-```bash
-agent-session-vault storage mirror-stable --json
-```
-
-This creates analytics continuity only; use `--include-live-sessions` for full-fidelity migration.
+This readback includes only current `[paths]` and `[archive]` fields. Fleet
+nodes, routes, admission, and transport do not belong in this configuration.

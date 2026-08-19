@@ -68,10 +68,6 @@ class StableMirrorResult:
     status: str
     mirrored_at: str
     items: list[StableMirrorItemResult]
-    pruned_unpacked_files: int = 0
-    pruned_unpacked_bytes: int = 0
-    pruned_unpacked_paths: tuple[Path, ...] = ()
-    prune_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,7 +85,7 @@ class _TreeSnapshot:
 
 
 def default_stable_root(config: VaultConfig) -> Path:
-    return config.paths.archive_root.expanduser().parent / "stable"
+    return config.paths.stable_root.expanduser()
 
 
 def _stable_pack_index_cache_path(config: VaultConfig, destination: Path) -> Path:
@@ -353,7 +349,6 @@ def mirror_stable_layer(
     stable_root: Path | None = None,
     dry_run: bool = False,
     include_live_sessions: bool = False,
-    prune_unpacked: bool = False,
     shard_target_bytes: int = DEFAULT_SHARD_TARGET_BYTES,
 ) -> StableMirrorResult:
     root = (stable_root or default_stable_root(config)).expanduser()
@@ -647,26 +642,6 @@ def mirror_stable_layer(
 
     if not dry_run and not failed and replacement_root.exists():
         shutil.rmtree(replacement_root, ignore_errors=True)
-    pruned_unpacked_files = 0
-    pruned_unpacked_bytes = 0
-    pruned_unpacked_paths: list[Path] = []
-    prune_error: str | None = None
-    if prune_unpacked and not dry_run and not failed:
-        try:
-            for item in mirror_items:
-                if item.kind != "directory":
-                    continue
-                unpacked_path = root / item.restore_relative_path
-                if not unpacked_path.exists():
-                    continue
-                snapshot = _tree_snapshot(unpacked_path)
-                pruned_unpacked_files += snapshot.total_files
-                pruned_unpacked_bytes += snapshot.total_bytes
-                shutil.rmtree(unpacked_path)
-                pruned_unpacked_paths.append(unpacked_path)
-        except OSError as exc:
-            failed = True
-            prune_error = f"unpacked stable cleanup failed: {type(exc).__name__}: {exc}"
 
     status = "planned" if dry_run else "failed" if failed else "verified"
     manifest_path = None if dry_run or failed else root / "stable-layer-manifest.json"
@@ -680,10 +655,6 @@ def mirror_stable_layer(
         status=status,
         mirrored_at=mirrored_at,
         items=results,
-        pruned_unpacked_files=pruned_unpacked_files,
-        pruned_unpacked_bytes=pruned_unpacked_bytes,
-        pruned_unpacked_paths=tuple(pruned_unpacked_paths),
-        prune_error=prune_error,
     )
     if attempt_path is not None:
         _write_json_atomic(attempt_path, stable_mirror_payload(result))
@@ -694,7 +665,7 @@ def mirror_stable_layer(
 
 def stable_mirror_payload(result: StableMirrorResult) -> dict[str, object]:
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "stable_root": str(result.stable_root),
         "manifest_path": str(result.manifest_path) if result.manifest_path else None,
         "attempt_path": str(result.attempt_path) if result.attempt_path else None,
@@ -703,10 +674,6 @@ def stable_mirror_payload(result: StableMirrorResult) -> dict[str, object]:
         "status": result.status,
         "mirror_semantics": "packed-source-covered",
         "mirrored_at": result.mirrored_at,
-        "pruned_unpacked_files": result.pruned_unpacked_files,
-        "pruned_unpacked_bytes": result.pruned_unpacked_bytes,
-        "pruned_unpacked_paths": [str(path) for path in result.pruned_unpacked_paths],
-        "prune_error": result.prune_error,
         "items": [
             {
                 "label": item.label,
@@ -968,9 +935,7 @@ def migration_plan_payload(config: VaultConfig, *, stable_root: Path | None = No
         },
         "rebuildable_or_discardable": [
             {"label": "projection_home", "path": str(config.paths.projection_home)},
-            {"label": "canonical_shadow_home", "path": str(config.paths.shadow_home)},
             {"label": "tokscale_cache", "path": str(home / ".config" / "tokscale" / "cache")},
-            {"label": "relay_transport", "path": str(config.paths.relay_root)},
         ],
         "excluded_sensitive": [
             {

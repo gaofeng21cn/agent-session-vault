@@ -1,48 +1,27 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, UTC
 import json
 from pathlib import Path
 import subprocess
 import sys
 
-from .adapters import build_canonicalize_machine_command, build_direct_sync_command
-from .archive import inventory_bundles, offload_tree, pack_tree, restore_bundle
+from .archive_catalog import query_catalog, rebuild_catalog
 from .archive_ops import (
+    archive_backend,
     archive_cycle,
     build_snapshot,
     init_backend,
-    primary_backend,
     publish_snapshot,
     verify_snapshot,
 )
 from .archive_prune import apply_prune_plan, build_prune_plan, load_prune_plan, prune_plan_payload, write_prune_plan
-from .archive_catalog import query_catalog, rebuild_catalog
 from .archive_restore import build_restore_plan, load_restore_plan, restore_plan, write_restore_plan
 from .config import load_config
 from .daily_ops import DEFAULT_CLIENTS, run_daily_tokscale
 from .fleet import sync_fleet
 from .local_codex import sync_local_codex_sources
-from .projection import (
-    expected_local_projection_bundle_dir,
-    export_machine_projection,
-    export_machine_projection_ssh,
-    fetch_projection_bundle_ssh,
-    import_machine_projection,
-    local_home_projection_payload,
-    pending_projection_bundle_dirs,
-    refresh_local_home_projection,
-)
-from .relay import (
-    export_machine_delta,
-    export_machine_delta_ssh,
-    import_machine_delta,
-    inspect_machine_delta_ssh,
-    pending_relay_bundle_dirs,
-)
-from .retention import apply_archive_plan, build_archive_plan
-from .storage import summarize_storage
+from .projection import local_home_projection_payload, refresh_local_home_projection
 from .stable import (
     default_stable_root,
     migration_plan_payload,
@@ -51,9 +30,9 @@ from .stable import (
     stable_mirror_payload,
 )
 from .stable_pack import DEFAULT_SHARD_TARGET_BYTES
-from .syncing import choose_projection_transport, choose_sync_strategy, expected_local_bundle_dir
+from .storage import summarize_storage
 from .tokscale import build_tokscale_invocation
-from .views import build_view
+from .views import build_tokscale_view
 
 
 def _json_dump(payload: object) -> None:
@@ -68,229 +47,97 @@ def _run_subprocess(command: list[str], env: dict[str, str] | None = None, dry_r
     return completed.returncode
 
 
-def _load_projection_base_snapshot_id(machine_root: Path) -> str | None:
-    state_path = machine_root / ".projection-state.json"
-    if not state_path.is_file():
-        return None
-    payload = json.loads(state_path.read_text(encoding="utf-8"))
-    snapshot_id = payload.get("current_snapshot_id") if isinstance(payload, dict) else None
-    return snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-session-vault")
     parser.add_argument("--config", type=Path, default=None)
-
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     config_parser = subparsers.add_parser("config", help="Inspect loaded configuration")
     config_parser.add_argument("--json", action="store_true")
 
-    storage_parser = subparsers.add_parser("storage", help="Storage utilities")
+    storage_parser = subparsers.add_parser("storage", help="Inspect and restore analytics storage")
     storage_sub = storage_parser.add_subparsers(dest="storage_command", required=True)
     storage_summary = storage_sub.add_parser("summary", help="Show storage summary")
     storage_summary.add_argument("--json", action="store_true")
-    storage_mirror_stable = storage_sub.add_parser("mirror-stable", help="Mirror the default Tokscale analytics layer")
-    storage_mirror_stable.add_argument("--dest-root", type=Path, default=None)
-    storage_mirror_stable.add_argument(
-        "--include-live-sessions",
-        action="store_true",
-        help="Also mirror optional full-fidelity client sessions",
-    )
-    storage_mirror_stable.add_argument("--dry-run", action="store_true")
-    storage_mirror_stable.add_argument(
+    storage_mirror = storage_sub.add_parser("mirror-stable", help="Mirror the Tokscale analytics layer")
+    storage_mirror.add_argument("--dest-root", type=Path, default=None)
+    storage_mirror.add_argument("--include-live-sessions", action="store_true")
+    storage_mirror.add_argument("--dry-run", action="store_true")
+    storage_mirror.add_argument(
         "--shard-target-mib",
         type=int,
         default=DEFAULT_SHARD_TARGET_BYTES // (1024 * 1024),
-        help="Approximate uncompressed target size for each packed shard",
     )
-    storage_mirror_stable.add_argument(
-        "--prune-unpacked",
-        action="store_true",
-        help="Remove legacy unpacked stable trees after packed verification succeeds",
-    )
-    storage_mirror_stable.add_argument("--json", action="store_true")
-    storage_restore_stable = storage_sub.add_parser("restore-stable", help="Restore a verified packed stable layer")
-    storage_restore_stable.add_argument("--stable-root", type=Path, default=None)
-    storage_restore_stable.add_argument("--dest-root", type=Path, required=True)
-    storage_restore_stable.add_argument("--label", action="append", dest="labels", default=[])
-    storage_restore_stable.add_argument("--json", action="store_true")
-    storage_migration_plan = storage_sub.add_parser("migration-plan", help="Inspect backup and migration coverage")
-    storage_migration_plan.add_argument("--stable-root", type=Path, default=None)
-    storage_migration_plan.add_argument("--json", action="store_true")
+    storage_mirror.add_argument("--json", action="store_true")
+    storage_restore = storage_sub.add_parser("restore-stable", help="Restore a verified stable layer")
+    storage_restore.add_argument("--stable-root", type=Path, default=None)
+    storage_restore.add_argument("--dest-root", type=Path, required=True)
+    storage_restore.add_argument("--label", action="append", dest="labels", default=[])
+    storage_restore.add_argument("--json", action="store_true")
+    storage_plan = storage_sub.add_parser("migration-plan", help="Inspect analytics and optional live-session coverage")
+    storage_plan.add_argument("--stable-root", type=Path, default=None)
+    storage_plan.add_argument("--json", action="store_true")
 
-    tokscale_parser = subparsers.add_parser("tokscale", help="Tokscale exporter")
+    tokscale_parser = subparsers.add_parser("tokscale", help="Run Tokscale against the managed projection")
     tokscale_sub = tokscale_parser.add_subparsers(dest="tokscale_command", required=True)
-    tokscale_env = tokscale_sub.add_parser("env", help="Show computed Tokscale environment")
-    tokscale_env.add_argument("--mode", choices=["raw", "canonical"], default="raw")
-    tokscale_env.add_argument("--omx-replay-dedupe", choices=["off", "strict"], default="off")
+    tokscale_env = tokscale_sub.add_parser("env", help="Show the computed Tokscale environment")
     tokscale_env.add_argument("--json", action="store_true")
-
-    tokscale_exec = tokscale_sub.add_parser("exec", help="Run official Tokscale with computed environment")
-    tokscale_exec.add_argument("--mode", choices=["raw", "canonical"], default="raw")
-    tokscale_exec.add_argument("--omx-replay-dedupe", choices=["off", "strict"], default="off")
-    tokscale_exec.add_argument("--dry-run", action="store_true")
+    tokscale_exec = tokscale_sub.add_parser("exec", help="Run official Tokscale with the managed projection")
+    tokscale_exec.add_argument("--dry-run", action="store_true", help="Print the command without running it")
     tokscale_exec.add_argument("tokscale_args", nargs=argparse.REMAINDER)
 
-    ops_parser = subparsers.add_parser("ops", help="Operational workflows")
+    ops_parser = subparsers.add_parser("ops", help="Run complete operational workflows")
     ops_sub = ops_parser.add_subparsers(dest="ops_command", required=True)
-    ops_daily_tokscale = ops_sub.add_parser(
-        "daily-tokscale",
-        help="Run the deterministic projection sync and Tokscale submit workflow",
-    )
-    ops_daily_tokscale.add_argument("--machine", action="append", dest="machines", default=[])
-    ops_daily_tokscale.add_argument(
-        "--fleet",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Discover and sync every approved OPL Fleet node",
-    )
-    ops_daily_tokscale.add_argument("--fleet-command", default="opl-fleet")
-    ops_daily_tokscale.add_argument("--fleet-instance", type=Path, default=None)
-    ops_daily_tokscale.add_argument("--clients", default=",".join(DEFAULT_CLIENTS))
-    ops_daily_tokscale.add_argument("--run-root", type=Path, default=None)
-    ops_daily_tokscale.add_argument("--canonicalize-command", default=None)
-    ops_daily_tokscale.add_argument("--probe-timeout-seconds", type=float, default=8)
-    ops_daily_tokscale.add_argument("--sync-timeout-seconds", type=float, default=1800)
-    ops_daily_tokscale.add_argument("--submit-timeout-seconds", type=float, default=3600)
-    ops_daily_tokscale.add_argument("--force-contract-check", action="store_true")
-    ops_daily_tokscale.add_argument("--mirror-stable", action="store_true")
-    ops_daily_tokscale.add_argument("--stable-root", type=Path, default=None)
-    ops_daily_tokscale.add_argument("--json", action="store_true")
-    ops_archive_cycle = ops_sub.add_parser(
+    daily = ops_sub.add_parser("daily-tokscale", help="Sync Fleet projections and submit Tokscale once")
+    daily.add_argument("--fleet-command", default="opl-fleet")
+    daily.add_argument("--fleet-instance", type=Path, default=None)
+    daily.add_argument("--clients", default=",".join(DEFAULT_CLIENTS))
+    daily.add_argument("--run-root", type=Path, default=None)
+    daily.add_argument("--sync-timeout-seconds", type=float, default=1800)
+    daily.add_argument("--submit-timeout-seconds", type=float, default=3600)
+    daily.add_argument("--force-contract-check", action="store_true")
+    daily.add_argument("--mirror-stable", action="store_true")
+    daily.add_argument("--stable-root", type=Path, default=None)
+    daily.add_argument("--json", action="store_true")
+    archive_cycle_parser = ops_sub.add_parser(
         "archive-cycle",
-        help="Run one due-only full-fidelity archive cycle without pruning local sources",
+        help="Run one due full-fidelity archive cycle without pruning local sources",
     )
-    ops_archive_cycle.add_argument("--machine-id", default=None)
-    ops_archive_cycle.add_argument("--due-only", action=argparse.BooleanOptionalAction, default=True)
-    ops_archive_cycle.add_argument("--deep", action=argparse.BooleanOptionalAction, default=True)
-    ops_archive_cycle.add_argument("--json", action="store_true")
+    archive_cycle_parser.add_argument("--machine-id", default=None)
+    archive_cycle_parser.add_argument("--due-only", action=argparse.BooleanOptionalAction, default=True)
+    archive_cycle_parser.add_argument("--deep", action=argparse.BooleanOptionalAction, default=True)
+    archive_cycle_parser.add_argument("--json", action="store_true")
 
-    sync_parser = subparsers.add_parser("sync", help="Sync helpers")
+    sync_parser = subparsers.add_parser("sync", help="Refresh managed projections")
     sync_sub = sync_parser.add_subparsers(dest="sync_command", required=True)
-    sync_direct = sync_sub.add_parser("direct", help="Run configured direct sync adapter")
-    sync_direct.add_argument("machine")
-    sync_direct.add_argument("--dry-run", action="store_true")
-    sync_canonicalize = sync_sub.add_parser("canonicalize-machine", help="Rebuild canonical tree for one machine")
-    sync_canonicalize.add_argument("machine")
-    sync_canonicalize.add_argument("--dry-run", action="store_true")
-    sync_relay_export = sync_sub.add_parser("relay-export", help="Export one machine delta bundle into a relay directory")
-    sync_relay_export.add_argument("machine")
-    sync_relay_export.add_argument("--source-home", type=Path, required=True)
-    sync_relay_export.add_argument("--relay-root", type=Path, default=None)
-    sync_relay_export.add_argument("--json", action="store_true")
-    sync_relay_export_ssh = sync_sub.add_parser(
-        "relay-export-ssh",
-        help="Export one machine delta bundle on the remote machine via SSH",
-    )
-    sync_relay_export_ssh.add_argument("machine")
-    sync_relay_export_ssh.add_argument("--json", action="store_true")
-    sync_inspect = sync_sub.add_parser("inspect", help="Inspect remote delta stats for one machine")
-    sync_inspect.add_argument("machine")
-    sync_inspect.add_argument("--json", action="store_true")
-    sync_relay_import = sync_sub.add_parser("relay-import", help="Import one relay delta bundle into local imports")
-    sync_relay_import.add_argument("machine")
-    sync_relay_import.add_argument("--bundle-dir", type=Path, required=True)
-    sync_relay_import.add_argument("--canonicalize-command", default="tokscale-canonicalize-import-machine")
-    sync_relay_import.add_argument("--json", action="store_true")
-    sync_projection_export = sync_sub.add_parser("projection-export", help="Export one full projection bundle locally")
-    sync_projection_export.add_argument("machine")
-    sync_projection_export.add_argument("--source-home", type=Path, required=True)
-    sync_projection_export.add_argument("--relay-root", type=Path, default=None)
-    sync_projection_export.add_argument("--json", action="store_true")
-    sync_projection_export_ssh = sync_sub.add_parser(
-        "projection-export-ssh",
-        help="Export one full projection bundle on the remote machine via SSH",
-    )
-    sync_projection_export_ssh.add_argument("machine")
-    sync_projection_export_ssh.add_argument("--json", action="store_true")
-    sync_projection_fetch_ssh = sync_sub.add_parser(
-        "projection-fetch-ssh",
-        help="Fetch one remote projection bundle via SSH",
-    )
-    sync_projection_fetch_ssh.add_argument("machine")
-    sync_projection_fetch_ssh.add_argument("--remote-bundle-dir", type=Path, required=True)
-    sync_projection_fetch_ssh.add_argument("--bundle-dir", type=Path, default=None)
-    sync_projection_fetch_ssh.add_argument("--json", action="store_true")
-    sync_projection_import = sync_sub.add_parser("projection-import", help="Import one projection bundle into local imports")
-    sync_projection_import.add_argument("machine")
-    sync_projection_import.add_argument("--bundle-dir", type=Path, required=True)
-    sync_projection_import.add_argument("--canonicalize-command", default="tokscale-canonicalize-import-machine")
-    sync_projection_import.add_argument("--json", action="store_true")
-    sync_auto = sync_sub.add_parser("auto", help="Run projection-first sync with ssh/relay transport selection")
-    sync_auto.add_argument("machine")
-    sync_auto.add_argument("--canonicalize-command", default="tokscale-canonicalize-import-machine")
-    sync_auto.add_argument("--transport", choices=["auto", "ssh", "relay"], default=None)
-    sync_auto.add_argument("--dry-run", action="store_true")
-    sync_auto.add_argument("--json", action="store_true")
-    sync_local_codex = sync_sub.add_parser(
-        "local-codex",
-        help="Sync volatile local Codex homes into append-only Tokscale extras",
-    )
-    sync_local_codex.add_argument("--source", action="append", type=Path, default=[])
-    sync_local_codex.add_argument("--source-glob", action="append", default=[])
-    sync_local_codex.add_argument("--namespace", default="volatile-codex-homes")
-    sync_local_codex.add_argument("--dry-run", action="store_true")
-    sync_local_codex.add_argument("--json", action="store_true")
-    sync_local_home = sync_sub.add_parser(
-        "local-home-projection",
-        help="Refresh the current HOME analytics projection without copying full conversations",
-    )
-    sync_local_home.add_argument("--dry-run", action="store_true")
-    sync_local_home.add_argument("--json", action="store_true")
-    sync_fleet_parser = sync_sub.add_parser(
-        "fleet",
-        help="Sync projections from every approved OPL Fleet node without submitting Tokscale",
-    )
-    sync_fleet_parser.add_argument("--fleet-command", default="opl-fleet")
-    sync_fleet_parser.add_argument("--fleet-instance", type=Path, default=None)
-    sync_fleet_parser.add_argument("--timeout-seconds", type=float, default=1800)
-    sync_fleet_parser.add_argument("--json", action="store_true")
+    local_codex = sync_sub.add_parser("local-codex", help="Import an explicit volatile Codex source")
+    local_codex.add_argument("--source", action="append", type=Path, default=[])
+    local_codex.add_argument("--source-glob", action="append", default=[])
+    local_codex.add_argument("--namespace", default="volatile-codex-homes")
+    local_codex.add_argument("--dry-run", action="store_true")
+    local_codex.add_argument("--json", action="store_true")
+    local_home = sync_sub.add_parser("local-home-projection", help="Refresh the current HOME projection")
+    local_home.add_argument("--dry-run", action="store_true")
+    local_home.add_argument("--json", action="store_true")
+    fleet = sync_sub.add_parser("fleet", help="Refresh projections from every approved Fleet node")
+    fleet.add_argument("--fleet-command", default="opl-fleet")
+    fleet.add_argument("--fleet-instance", type=Path, default=None)
+    fleet.add_argument("--timeout-seconds", type=float, default=1800)
+    fleet.add_argument("--json", action="store_true")
 
-    archive_parser = subparsers.add_parser("archive", help="Archive helpers")
+    archive_parser = subparsers.add_parser("archive", help="Manage full-fidelity Codex archives")
     archive_sub = archive_parser.add_subparsers(dest="archive_command", required=True)
-    archive_pack = archive_sub.add_parser("pack-tree", help="Pack one directory tree into a tar.zst bundle")
-    archive_pack.add_argument("--source", required=True, type=Path)
-    archive_pack.add_argument("--output-dir", required=True, type=Path)
-    archive_pack.add_argument("--bundle-name", required=True)
-    archive_pack.add_argument("--json", action="store_true")
-    archive_offload = archive_sub.add_parser("offload-tree", help="Pack a tree into archive root and optionally remove local source")
-    archive_offload.add_argument("--source", required=True, type=Path)
-    archive_offload.add_argument("--bundle-name", required=True)
-    archive_offload.add_argument("--archive-root", type=Path, default=None)
-    archive_offload.add_argument("--remove-source", action="store_true")
-    archive_offload.add_argument("--json", action="store_true")
-    archive_restore = archive_sub.add_parser("restore", help="Restore one bundle into a directory")
-    restore_target = archive_restore.add_mutually_exclusive_group(required=True)
-    restore_target.add_argument("--bundle", type=Path)
-    restore_target.add_argument("--plan", type=Path)
-    archive_restore.add_argument("--dest", type=Path)
-    archive_restore.add_argument("--json", action="store_true")
-    archive_plan = archive_sub.add_parser("plan", help="Plan which trees should be offloaded to archive")
-    archive_plan.add_argument("--rule", action="append", default=[])
-    archive_plan.add_argument("--json", action="store_true")
-    archive_apply = archive_sub.add_parser("apply", help="Apply archive offload rules")
-    archive_apply.add_argument("--rule", action="append", default=[])
-    archive_apply.add_argument("--dry-run", action="store_true")
-    archive_apply.add_argument("--json", action="store_true")
-    archive_inventory = archive_sub.add_parser("inventory", help="List archived bundles")
-    archive_inventory.add_argument("--archive-root", type=Path, default=None)
-    archive_inventory.add_argument("--json", action="store_true")
-    archive_init = archive_sub.add_parser("init", help="Initialize the explicit full-fidelity archive backend")
+    archive_init = archive_sub.add_parser("init", help="Initialize the archive root")
     archive_init.add_argument("--json", action="store_true")
-    archive_snapshot = archive_sub.add_parser("snapshot", help="Scan Codex roots into an archive staging snapshot")
+    archive_snapshot = archive_sub.add_parser("snapshot", help="Build a local staging snapshot")
     archive_snapshot.add_argument("--machine-id", default=None)
     archive_snapshot.add_argument("--staging-root", type=Path, default=None)
     archive_snapshot.add_argument("--json", action="store_true")
-    archive_publish = archive_sub.add_parser("publish", help="Publish one staged full-fidelity snapshot to the backend")
+    archive_publish = archive_sub.add_parser("publish", help="Publish a staged snapshot")
     archive_publish.add_argument("--staging-root", type=Path, required=True)
-    archive_publish.add_argument(
-        "--verify-staged",
-        action="store_true",
-        help="Stream-verify staged bundle members before publishing (normally verify after commit)",
-    )
+    archive_publish.add_argument("--verify-staged", action="store_true")
     archive_publish.add_argument("--json", action="store_true")
-    archive_verify = archive_sub.add_parser("verify", help="Verify a committed full-fidelity snapshot")
+    archive_verify = archive_sub.add_parser("verify", help="Verify a committed snapshot")
     archive_verify.add_argument("--snapshot", required=True)
     archive_verify.add_argument("--deep", action="store_true")
     archive_verify.add_argument("--json", action="store_true")
@@ -302,12 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
     archive_list.add_argument("--session-id", default=None)
     archive_list.add_argument("--source-id", default=None)
     archive_list.add_argument("--json", action="store_true")
-    archive_catalog = archive_sub.add_parser("catalog-rebuild", help="Rebuild derived catalog segments from committed snapshots")
+    archive_catalog = archive_sub.add_parser("catalog-rebuild", help="Rebuild catalog segments")
     archive_catalog.add_argument("--machine-id", default=None)
     archive_catalog.add_argument("--json", action="store_true")
-    archive_plan_restore = archive_sub.add_parser("plan-restore", help="Create a staging restore plan from catalog filters")
+    archive_plan_restore = archive_sub.add_parser("plan-restore", help="Create a staging restore plan")
     archive_plan_restore.add_argument("--destination", required=True, type=Path)
-    archive_plan_restore.add_argument("--mode", choices=["staging", "codex-live"], default="staging")
     archive_plan_restore.add_argument("--from", dest="from_at", default=None)
     archive_plan_restore.add_argument("--to", dest="to_at", default=None)
     archive_plan_restore.add_argument("--machine-id", default=None)
@@ -317,19 +163,15 @@ def build_parser() -> argparse.ArgumentParser:
     archive_plan_restore.add_argument("--collision-policy", choices=["error", "overwrite"], default="error")
     archive_plan_restore.add_argument("--plan-path", type=Path, default=None)
     archive_plan_restore.add_argument("--json", action="store_true")
-    archive_prune_plan = archive_sub.add_parser(
-        "prune-plan",
-        help="Build a verified full-fidelity prune plan without deleting local sessions",
-    )
+    archive_restore = archive_sub.add_parser("restore", help="Apply a staging restore plan")
+    archive_restore.add_argument("--plan", type=Path, required=True)
+    archive_restore.add_argument("--json", action="store_true")
+    archive_prune_plan = archive_sub.add_parser("prune-plan", help="Build a verified local prune plan")
     archive_prune_plan.add_argument("--plan-path", required=True, type=Path)
     archive_prune_plan.add_argument("--json", action="store_true")
-    archive_prune_apply = archive_sub.add_parser(
-        "prune-apply",
-        help="Apply one verified full-fidelity prune plan",
-    )
+    archive_prune_apply = archive_sub.add_parser("prune-apply", help="Apply a verified local prune plan")
     archive_prune_apply.add_argument("--plan", required=True, type=Path)
     archive_prune_apply.add_argument("--json", action="store_true")
-
     return parser
 
 
@@ -346,28 +188,14 @@ def main(argv: list[str] | None = None) -> int:
                 "workspace_root": str(config.paths.workspace_root),
                 "import_root": str(config.paths.import_root),
                 "projection_home": str(config.paths.projection_home),
-                "shadow_home": str(config.paths.shadow_home),
                 "local_workspace_extras": str(config.paths.local_workspace_extras),
-                "archive_root": str(config.paths.archive_root),
-                "relay_root": str(config.paths.relay_root),
-            },
-            "sync": {
-                "default_strategy": config.sync.default_strategy,
-                "direct_max_delta_files": config.sync.direct_max_delta_files,
-                "direct_max_delta_bytes": config.sync.direct_max_delta_bytes,
-                "projection_transport": config.sync.projection_transport,
-                "projection_direct_max_bundle_bytes": config.sync.projection_direct_max_bundle_bytes,
+                "stable_root": str(config.paths.stable_root),
             },
             "archive": {
-                "primary_backend": config.archive.primary_backend,
-                "primary_root": str(config.archive.primary_root),
-                "secondary_backend": config.archive.secondary_backend,
-                "secondary_root": str(config.archive.secondary_root) if config.archive.secondary_root else None,
+                "root": str(config.archive.root),
                 "cadence_days": config.archive.cadence_days,
                 "cold_age_days": config.archive.cold_age_days,
-                "shard_target_bytes": config.archive.shard_target_bytes,
                 "staging_root": str(config.archive.staging_root),
-                "restore_staging_root": str(config.archive.restore_staging_root),
                 "machine_id_path": str(config.archive.machine_id_path),
                 "source_paths": [
                     {"path": item.path, "kind": item.kind, "label": item.label}
@@ -375,59 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 "require_quiescent_for_prune": config.archive.require_quiescent_for_prune,
             },
-            "machines": {
-                name: {
-                    "import_name": machine.import_name,
-                    "ssh_target": machine.ssh_target,
-                    "source_home": str(machine.source_home) if machine.source_home else None,
-                    "remote_relay_root": str(machine.remote_relay_root) if machine.remote_relay_root else None,
-                    "remote_state_root": str(machine.remote_state_root) if machine.remote_state_root else None,
-                    "sync_strategy": machine.sync_strategy,
-                    "direct_max_delta_files": machine.direct_max_delta_files,
-                    "direct_max_delta_bytes": machine.direct_max_delta_bytes,
-                    "clients": list(machine.clients),
-                    "roots": [
-                        {
-                            "client": rule.client,
-                            "path": rule.path,
-                            "glob": rule.glob,
-                            "label": rule.label,
-                            "kind": rule.kind,
-                        }
-                        for rule in machine.roots
-                    ],
-                    "root_globs": [
-                        {
-                            "client": rule.client,
-                            "path": rule.path,
-                            "glob": rule.glob,
-                            "label": rule.label,
-                            "kind": rule.kind,
-                        }
-                        for rule in machine.root_globs
-                    ],
-                }
-                for name, machine in config.machines.items()
-            },
-            "retention_rules": [
-                {
-                    "name": rule.name,
-                    "layer": rule.layer,
-                    "machine": rule.machine,
-                    "client": rule.client,
-                    "workspace": rule.workspace,
-                    "max_age_days": rule.max_age_days,
-                    "min_size_bytes": rule.min_size_bytes,
-                    "archive_subdir": rule.archive_subdir,
-                    "remove_source": rule.remove_source,
-                }
-                for rule in config.retention_rules
-            ],
         }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "storage" and args.storage_command == "summary":
@@ -453,21 +230,10 @@ def main(argv: list[str] | None = None) -> int:
             stable_root=args.dest_root,
             dry_run=args.dry_run,
             include_live_sessions=args.include_live_sessions,
-            prune_unpacked=args.prune_unpacked,
             shard_target_bytes=args.shard_target_mib * 1024 * 1024,
         )
         payload = stable_mirror_payload(result)
-        if args.json:
-            _json_dump(payload)
-        else:
-            for item in payload["items"]:
-                print(
-                    f'{item["label"]}\t{item["status"]}\t{item["source_bytes"]}\t'
-                    f'{item["source"]}\t{item["destination"]}'
-                )
-            print(f'stable_root\t{payload["stable_root"]}')
-            if payload["manifest_path"]:
-                print(f'manifest_path\t{payload["manifest_path"]}')
+        _json_dump(payload) if args.json else print(payload)
         return 0 if result.status in {"planned", "verified"} else 1
 
     if args.command == "storage" and args.storage_command == "restore-stable":
@@ -476,38 +242,20 @@ def main(argv: list[str] | None = None) -> int:
             args.dest_root,
             labels=set(args.labels) if args.labels else None,
         )
-        if args.json:
-            _json_dump(payload)
-        else:
-            for item in payload["items"]:
-                print(
-                    f'{item["label"]}\t{item["status"]}\t{item["restored_files"]}\t'
-                    f'{item["destination"]}'
-                )
-            print(f'destination_root\t{payload["destination_root"]}')
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "storage" and args.storage_command == "migration-plan":
         payload = migration_plan_payload(config, stable_root=args.stable_root)
-        if args.json:
-            _json_dump(payload)
-        else:
-            readiness = payload["readiness"]
-            print(f'analytics_restore_ready\t{readiness["analytics_restore_ready"]}')
-            print(f'full_fidelity_restore_ready\t{readiness["full_fidelity_restore_ready"]}')
-            print(f'blockers\t{",".join(readiness["blockers"])}')
-            print(f'optional_migration_blockers\t{",".join(readiness["optional_migration_blockers"])}')
-            print(f'stable_root\t{payload["stable_root"]}')
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "tokscale" and args.tokscale_command == "env":
-        view = build_view(config, mode=args.mode, omx_replay_dedupe=args.omx_replay_dedupe)
+        view = build_tokscale_view(config)
         payload = {
-            "mode": view.mode,
-            "input_policy": "projection-only" if view.mode == "raw" else "canonical",
+            "input_policy": "projection-only",
             "home": str(view.home),
             "source_home_excluded": view.home != config.paths.home,
-            "omx_replay_dedupe": view.omx_replay_dedupe,
             "extra_dirs": [{"client": client, "path": str(path)} for client, path in view.extra_dirs],
             "env": {
                 "HOME": str(view.home),
@@ -515,303 +263,40 @@ def main(argv: list[str] | None = None) -> int:
                 "NPM_CONFIG_CACHE": str(config.paths.home / ".npm"),
             },
         }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "tokscale" and args.tokscale_command == "exec":
         tokscale_args = list(args.tokscale_args)
         if tokscale_args and tokscale_args[0] == "--":
             tokscale_args = tokscale_args[1:]
-        if args.mode == "raw" and not args.dry_run:
+        if not args.dry_run:
             refresh_local_home_projection(config)
-        invocation = build_tokscale_invocation(
-            config,
-            mode=args.mode,
-            omx_replay_dedupe=args.omx_replay_dedupe,
-            args=tokscale_args,
-        )
+        invocation = build_tokscale_invocation(config, args=tokscale_args)
         return _run_subprocess(invocation.command, env=invocation.env, dry_run=args.dry_run)
 
     if args.command == "ops" and args.ops_command == "daily-tokscale":
         clients = tuple(client.strip() for client in args.clients.split(",") if client.strip())
         result = run_daily_tokscale(
             config,
-            machine_names=list(args.machines) or None,
             clients=clients,
             run_root=args.run_root,
-            canonicalize_command=args.canonicalize_command or None,
-            probe_timeout_seconds=args.probe_timeout_seconds,
             sync_timeout_seconds=args.sync_timeout_seconds,
             submit_timeout_seconds=args.submit_timeout_seconds,
             force_contract_check=args.force_contract_check,
             mirror_stable=args.mirror_stable,
             stable_root=args.stable_root,
-            use_fleet=args.fleet if args.fleet is not None else not bool(args.machines),
             fleet_command=args.fleet_command,
             fleet_instance=args.fleet_instance,
         )
-        if args.json:
-            _json_dump(result.payload)
-        else:
-            print(result.payload)
+        _json_dump(result.payload) if args.json else print(result.payload)
         return result.exit_code
 
     if args.command == "ops" and args.ops_command == "archive-cycle":
-        result = archive_cycle(
-            config,
-            machine_id=args.machine_id,
-            due_only=args.due_only,
-            deep=args.deep,
-        )
-        if args.json:
-            _json_dump(result.payload())
-        else:
-            print(result.payload())
+        result = archive_cycle(config, machine_id=args.machine_id, due_only=args.due_only, deep=args.deep)
+        payload = result.payload()
+        _json_dump(payload) if args.json else print(payload)
         return 0 if result.status in {"verified", "not_due"} else 2
-
-    if args.command == "sync" and args.sync_command == "direct":
-        command = build_direct_sync_command(config, args.machine)
-        return _run_subprocess(command, dry_run=args.dry_run)
-
-    if args.command == "sync" and args.sync_command == "canonicalize-machine":
-        command = build_canonicalize_machine_command(config, args.machine)
-        return _run_subprocess(command, dry_run=args.dry_run)
-
-    if args.command == "sync" and args.sync_command == "relay-export":
-        relay_root = (args.relay_root or config.paths.relay_root).expanduser()
-        state_root = config.paths.home / ".config" / "agent-session-vault" / "relay-state"
-        bundle = export_machine_delta(
-            machine_name=args.machine,
-            source_home=args.source_home,
-            relay_root=relay_root,
-            state_root=state_root,
-        )
-        payload = {
-            "machine": bundle.machine_name,
-            "snapshot_id": bundle.snapshot_id,
-            "previous_snapshot_id": bundle.previous_snapshot_id,
-            "bundle_dir": str(bundle.bundle_dir),
-            "manifest_path": str(bundle.manifest_path),
-            "bundle_path": str(bundle.bundle_path),
-        }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "relay-export-ssh":
-        machine = config.machines[args.machine]
-        if not machine.ssh_target or not machine.source_home or not machine.remote_relay_root or not machine.remote_state_root:
-            raise ValueError(f"machine '{args.machine}' is missing ssh relay configuration")
-        bundle = export_machine_delta_ssh(
-            machine_name=args.machine,
-            source_home=machine.source_home,
-            relay_root=machine.remote_relay_root,
-            state_root=machine.remote_state_root,
-            ssh_target=machine.ssh_target,
-        )
-        local_bundle_dir = expected_local_bundle_dir(config, args.machine, bundle.snapshot_id)
-        payload = {
-            "machine": bundle.machine_name,
-            "snapshot_id": bundle.snapshot_id,
-            "previous_snapshot_id": bundle.previous_snapshot_id,
-            "remote_bundle_dir": str(bundle.bundle_dir),
-            "remote_manifest_path": str(bundle.manifest_path),
-            "remote_bundle_path": str(bundle.bundle_path),
-            "expected_local_bundle_dir": str(local_bundle_dir),
-        }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "inspect":
-        machine = config.machines[args.machine]
-        if not machine.ssh_target or not machine.source_home or not machine.remote_relay_root or not machine.remote_state_root:
-            raise ValueError(f"machine '{args.machine}' is missing ssh relay configuration")
-        pending_bundle_dirs = pending_relay_bundle_dirs(config, args.machine)
-        stats = inspect_machine_delta_ssh(
-            machine_name=args.machine,
-            source_home=machine.source_home,
-            relay_root=machine.remote_relay_root,
-            state_root=machine.remote_state_root,
-            ssh_target=machine.ssh_target,
-        )
-        decision = choose_sync_strategy(config, args.machine, stats)
-        payload = {
-            "machine": stats.machine_name,
-            "changed_files": stats.changed_files,
-            "changed_bytes": stats.changed_bytes,
-            "total_files": stats.total_files,
-            "total_bytes": stats.total_bytes,
-            "previous_snapshot_id": stats.previous_snapshot_id,
-            "next_snapshot_id": stats.next_snapshot_id,
-            "pending_local_bundle_dirs": [str(path) for path in pending_bundle_dirs],
-            "decision": {
-                "strategy": decision.strategy,
-                "reason": decision.reason,
-                "direct_max_delta_files": decision.direct_max_delta_files,
-                "direct_max_delta_bytes": decision.direct_max_delta_bytes,
-            },
-        }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "relay-import":
-        bundle = import_machine_delta(
-            config=config,
-            machine_name=args.machine,
-            bundle_dir=args.bundle_dir,
-            canonicalize_command=args.canonicalize_command,
-        )
-        payload = {
-            "machine": bundle.machine_name,
-            "snapshot_id": bundle.snapshot_id,
-            "previous_snapshot_id": bundle.previous_snapshot_id,
-            "bundle_dir": str(bundle.bundle_dir),
-        }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "projection-export":
-        relay_root = (args.relay_root or config.paths.relay_root).expanduser()
-        machine = config.machines[args.machine]
-        bundle = export_machine_projection(
-            machine=machine,
-            source_home=args.source_home,
-            relay_root=relay_root,
-            machine_root=config.paths.import_root / machine.import_name,
-        )
-        payload = {
-            "machine": bundle.machine_name,
-            "snapshot_id": bundle.snapshot_id,
-            "bundle_dir": str(bundle.bundle_dir),
-            "manifest_path": str(bundle.manifest_path),
-            "bundle_path": str(bundle.bundle_path),
-            "roots_manifest_path": str(bundle.roots_manifest_path),
-            "inventory_path": str(bundle.inventory_path) if bundle.inventory_path else None,
-            "bundle_bytes": bundle.bundle_bytes,
-            "mode": bundle.mode,
-            "base_snapshot_id": bundle.base_snapshot_id,
-            "fallback_reason": bundle.fallback_reason,
-        }
-        if bundle.state_status is not None:
-            payload["projection_state"] = {
-                "status": bundle.state_status,
-                "files_seen": bundle.files_seen,
-                "files_projected": bundle.files_projected,
-                "files_reused": bundle.files_reused,
-            }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "projection-export-ssh":
-        machine = config.machines[args.machine]
-        if not machine.ssh_target or not machine.source_home or not machine.remote_relay_root:
-            raise ValueError(f"machine '{args.machine}' is missing ssh projection configuration")
-        machine_root = config.paths.import_root / machine.import_name
-        bundle = export_machine_projection_ssh(
-            machine=machine,
-            source_home=machine.source_home,
-            relay_root=machine.remote_relay_root,
-            ssh_target=machine.ssh_target,
-            base_snapshot_id=_load_projection_base_snapshot_id(machine_root),
-        )
-        local_bundle_dir = expected_local_projection_bundle_dir(config, args.machine, bundle.snapshot_id)
-        payload = {
-            "machine": bundle.machine_name,
-            "snapshot_id": bundle.snapshot_id,
-            "remote_bundle_dir": str(bundle.bundle_dir),
-            "remote_manifest_path": str(bundle.manifest_path),
-            "remote_bundle_path": str(bundle.bundle_path),
-            "expected_local_bundle_dir": str(local_bundle_dir),
-            "bundle_bytes": bundle.bundle_bytes,
-            "mode": bundle.mode,
-            "base_snapshot_id": bundle.base_snapshot_id,
-            "fallback_reason": bundle.fallback_reason,
-        }
-        if bundle.state_status is not None:
-            payload["projection_state"] = {
-                "status": bundle.state_status,
-                "files_seen": bundle.files_seen,
-                "files_projected": bundle.files_projected,
-                "files_reused": bundle.files_reused,
-            }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "projection-fetch-ssh":
-        machine = config.machines[args.machine]
-        if not machine.ssh_target:
-            raise ValueError(f"machine '{args.machine}' is missing ssh projection configuration")
-        local_bundle_dir = args.bundle_dir or expected_local_projection_bundle_dir(
-            config,
-            args.machine,
-            args.remote_bundle_dir.name,
-        )
-        fetched_dir = fetch_projection_bundle_ssh(
-            ssh_target=machine.ssh_target,
-            remote_bundle_dir=args.remote_bundle_dir,
-            local_bundle_dir=local_bundle_dir,
-        )
-        payload = {
-            "machine": args.machine,
-            "remote_bundle_dir": str(args.remote_bundle_dir),
-            "bundle_dir": str(fetched_dir),
-        }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "projection-import":
-        bundle = import_machine_projection(
-            config=config,
-            machine_name=args.machine,
-            bundle_dir=args.bundle_dir,
-            canonicalize_command=args.canonicalize_command,
-        )
-        payload = {
-            "machine": bundle.machine_name,
-            "snapshot_id": bundle.snapshot_id,
-            "bundle_dir": str(bundle.bundle_dir),
-            "roots_manifest_path": str(bundle.roots_manifest_path),
-            "inventory_path": str(bundle.inventory_path) if bundle.inventory_path else None,
-            "bundle_bytes": bundle.bundle_bytes,
-            "mode": bundle.mode,
-            "base_snapshot_id": bundle.base_snapshot_id,
-            "fallback_reason": bundle.fallback_reason,
-        }
-        if bundle.state_status is not None:
-            payload["projection_state"] = {
-                "status": bundle.state_status,
-                "files_seen": bundle.files_seen,
-                "files_projected": bundle.files_projected,
-                "files_reused": bundle.files_reused,
-            }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
 
     if args.command == "sync" and args.sync_command == "local-codex":
         result = sync_local_codex_sources(
@@ -834,19 +319,13 @@ def main(argv: list[str] | None = None) -> int:
             "missing_sources": [str(path) for path in result.missing_sources],
             "dry_run": args.dry_run,
         }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "sync" and args.sync_command == "local-home-projection":
         result = refresh_local_home_projection(config, dry_run=args.dry_run)
         payload = {**local_home_projection_payload(result), "dry_run": args.dry_run}
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "sync" and args.sync_command == "fleet":
@@ -860,10 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "status": "completed",
             "local_projection": local_home_projection_payload(local),
-            "nodes": [
-                {"node_id": node.node_id, "local": node.local}
-                for node in result.nodes
-            ],
+            "nodes": [{"node_id": node.node_id, "local": node.local} for node in result.nodes],
             "results": [
                 {
                     "node_id": item.node_id,
@@ -883,249 +359,25 @@ def main(argv: list[str] | None = None) -> int:
                 for item in result.results
             ],
         }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "sync" and args.sync_command == "auto":
-        machine = config.machines[args.machine]
-        machine_root = config.paths.import_root / machine.import_name
-        if not machine.ssh_target or not machine.source_home or not machine.remote_relay_root:
-            raise ValueError(f"machine '{args.machine}' is missing ssh projection configuration")
-        pending_bundle_dirs = pending_projection_bundle_dirs(config, args.machine)
-        if pending_bundle_dirs:
-            payload: dict[str, object] = {
-                "machine": args.machine,
-                "status": "pending_local_projection_import",
-                "pending_local_bundle_dirs": [str(path) for path in pending_bundle_dirs],
-            }
-            if not args.dry_run:
-                imported_dirs: list[str] = []
-                for bundle_dir in pending_bundle_dirs:
-                    imported = import_machine_projection(
-                        config=config,
-                        machine_name=args.machine,
-                        bundle_dir=bundle_dir,
-                        canonicalize_command=args.canonicalize_command,
-                    )
-                    imported_dirs.append(str(imported.bundle_dir))
-                payload["status"] = "projection_imported_pending"
-                payload["imported_bundle_dirs"] = imported_dirs
-            if args.json:
-                _json_dump(payload)
-            else:
-                print(payload)
-            return 0
-
-        bundle = export_machine_projection_ssh(
-            machine=machine,
-            source_home=machine.source_home,
-            relay_root=machine.remote_relay_root,
-            ssh_target=machine.ssh_target,
-            base_snapshot_id=_load_projection_base_snapshot_id(machine_root),
-        )
-        transport = choose_projection_transport(
-            config,
-            args.machine,
-            bundle_bytes=bundle.bundle_bytes,
-            requested_transport=args.transport,
-        )
-        payload: dict[str, object] = {
-            "machine": args.machine,
-            "snapshot_id": bundle.snapshot_id,
-            "bundle": {
-                "remote_bundle_dir": str(bundle.bundle_dir),
-                "remote_manifest_path": str(bundle.manifest_path),
-                "remote_bundle_path": str(bundle.bundle_path),
-                "bytes": bundle.bundle_bytes,
-                "mode": bundle.mode,
-                "base_snapshot_id": bundle.base_snapshot_id,
-                "fallback_reason": bundle.fallback_reason,
-            },
-            "decision": {
-                "transport": transport.transport,
-                "reason": transport.reason,
-                "direct_max_bundle_bytes": transport.direct_max_bundle_bytes,
-            },
-        }
-        if bundle.state_status is not None:
-            payload["bundle"]["projection_state"] = {
-                "status": bundle.state_status,
-                "files_seen": bundle.files_seen,
-                "files_projected": bundle.files_projected,
-                "files_reused": bundle.files_reused,
-            }
-
-        local_bundle_dir = expected_local_projection_bundle_dir(config, args.machine, bundle.snapshot_id)
-        payload["expected_local_bundle_dir"] = str(local_bundle_dir)
-
-        if args.dry_run:
-            payload["status"] = "projection_exported"
-            if args.json:
-                _json_dump(payload)
-            else:
-                print(payload)
-            return 0
-
-        if transport.transport == "ssh":
-            fetched_dir = fetch_projection_bundle_ssh(
-                ssh_target=machine.ssh_target,
-                remote_bundle_dir=bundle.bundle_dir,
-                local_bundle_dir=local_bundle_dir,
-            )
-            imported = import_machine_projection(
-                config=config,
-                machine_name=args.machine,
-                bundle_dir=fetched_dir,
-                canonicalize_command=args.canonicalize_command,
-            )
-            payload["status"] = "projection_imported"
-            payload["imported_bundle_dir"] = str(imported.bundle_dir)
-            payload["roots_manifest_path"] = str(imported.roots_manifest_path)
-        else:
-            payload["status"] = "projection_exported_waiting_for_delivery"
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "archive" and args.archive_command == "pack-tree":
-        bundle = pack_tree(args.source, args.output_dir, args.bundle_name)
-        payload = {"bundle_path": str(bundle.bundle_path), "manifest_path": str(bundle.manifest_path)}
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "archive" and args.archive_command == "offload-tree":
-        archive_root = (args.archive_root or config.paths.archive_root).expanduser()
-        bundle = offload_tree(args.source, archive_root, args.bundle_name, remove_source=args.remove_source)
-        payload = {"bundle_path": str(bundle.bundle_path), "manifest_path": str(bundle.manifest_path)}
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "archive" and args.archive_command == "restore":
-        if args.bundle is not None:
-            if args.dest is None:
-                raise ValueError("--dest is required with --bundle")
-            restore_bundle(args.bundle, args.dest)
-            print(str(args.dest))
-            return 0
-        plan = load_restore_plan(args.plan)
-        payload = restore_plan(config, plan)
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "archive" and args.archive_command == "plan":
-        rule_names = set(args.rule) if args.rule else None
-        plan = build_archive_plan(config, now=datetime.now(UTC), rule_names=rule_names)
-        payload = [
-            {
-                "rule_name": candidate.rule_name,
-                "layer": candidate.layer,
-                "source": str(candidate.source),
-                "archive_dir": str(candidate.archive_dir),
-                "bundle_name": candidate.bundle_name,
-                "size_bytes": candidate.size_bytes,
-                "file_count": candidate.file_count,
-                "age_days": candidate.age_days,
-                "remove_source": candidate.remove_source,
-            }
-            for candidate in plan
-        ]
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
-        return 0
-
-    if args.command == "archive" and args.archive_command == "apply":
-        rule_names = set(args.rule) if args.rule else None
-        plan = build_archive_plan(config, now=datetime.now(UTC), rule_names=rule_names)
-        payload = [
-            {
-                "rule_name": candidate.rule_name,
-                "source": str(candidate.source),
-                "archive_dir": str(candidate.archive_dir),
-                "bundle_name": candidate.bundle_name,
-                "size_bytes": candidate.size_bytes,
-                "remove_source": candidate.remove_source,
-            }
-            for candidate in plan
-        ]
-        if args.dry_run:
-            if args.json:
-                _json_dump(payload)
-            else:
-                print(payload)
-            return 0
-        bundles = apply_archive_plan(config, plan)
-        result_payload = [
-            {
-                "bundle_path": str(bundle.bundle_path),
-                "manifest_path": str(bundle.manifest_path),
-            }
-            for bundle in bundles
-        ]
-        if args.json:
-            _json_dump({"plan": payload, "results": result_payload})
-        else:
-            print({"plan": payload, "results": result_payload})
-        return 0
-
-    if args.command == "archive" and args.archive_command == "inventory":
-        archive_root = (args.archive_root or config.paths.archive_root).expanduser()
-        items = inventory_bundles(archive_root)
-        payload = [
-            {
-                "bundle_path": str(item.bundle_path),
-                "manifest_path": str(item.manifest_path),
-                "payload": item.payload,
-            }
-            for item in items
-        ]
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "init":
         payload = init_backend(config)
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "snapshot":
         result = build_snapshot(config, machine_id=args.machine_id, staging_root=args.staging_root)
         payload = result.payload()
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0 if all(snapshot.status == "staged" for snapshot in result.snapshots) else 2
 
     if args.command == "archive" and args.archive_command == "publish":
-        published = publish_snapshot(
-            config,
-            args.staging_root.expanduser(),
-            verify_staged=args.verify_staged,
-        )
+        published = publish_snapshot(config, args.staging_root.expanduser(), verify_staged=args.verify_staged)
         payload = {
             "status": "published",
-            "backend_root": str(primary_backend(config).root),
+            "backend_root": str(archive_backend(config).root),
             "snapshots": [
                 {
                     "snapshot_id": item.snapshot.snapshot_id,
@@ -1136,18 +388,12 @@ def main(argv: list[str] | None = None) -> int:
                 for item in published
             ],
         }
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "verify":
         payload = verify_snapshot(config, args.snapshot, deep=args.deep)
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0 if payload["status"] == "verified" else 2
 
     if args.command == "archive" and args.archive_command == "list":
@@ -1161,27 +407,23 @@ def main(argv: list[str] | None = None) -> int:
             source_id=args.source_id,
         )
         payload = [entry.to_payload() for entry in entries]
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "catalog-rebuild":
-        backend = primary_backend(config)
-        count = rebuild_catalog(backend, machine_id=args.machine_id)
-        payload = {"status": "rebuilt", "segments": count, "backend_root": str(backend.root)}
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        backend = archive_backend(config)
+        payload = {
+            "status": "rebuilt",
+            "segments": rebuild_catalog(backend, machine_id=args.machine_id),
+            "backend_root": str(backend.root),
+        }
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "plan-restore":
         plan = build_restore_plan(
             config,
             destination=args.destination,
-            mode=args.mode,
             from_at=args.from_at,
             to_at=args.to_at,
             machine_id=args.machine_id,
@@ -1192,28 +434,24 @@ def main(argv: list[str] | None = None) -> int:
         )
         plan_path = write_restore_plan(plan, args.plan_path) if args.plan_path else None
         payload = {**plan.to_payload(), "plan_path": str(plan_path) if plan_path else None}
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "restore":
+        payload = restore_plan(config, load_restore_plan(args.plan))
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "prune-plan":
         plan = build_prune_plan(config)
         plan_path = write_prune_plan(plan, args.plan_path)
         payload = prune_plan_payload(plan, plan_path=plan_path)
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "prune-apply":
         payload = apply_prune_plan(config, load_prune_plan(args.plan))
-        if args.json:
-            _json_dump(payload)
-        else:
-            print(payload)
+        _json_dump(payload) if args.json else print(payload)
         return 0
 
     parser.print_help()

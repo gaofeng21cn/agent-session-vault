@@ -1,28 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
-import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import hashlib
 import tempfile
 import posixpath
-
-
-@dataclass(frozen=True)
-class PackedBundle:
-    bundle_path: Path
-    manifest_path: Path
-
-
-@dataclass(frozen=True)
-class BundleInventoryItem:
-    bundle_path: Path
-    manifest_path: Path
-    payload: dict
 
 
 def _run(command: list[str]) -> None:
@@ -77,33 +60,6 @@ def pack_paths(source: Path, relative_paths: list[str], bundle_path: Path) -> No
     finally:
         if list_path is not None:
             list_path.unlink(missing_ok=True)
-
-
-def pack_tree(source: Path, output_dir: Path, bundle_name: str) -> PackedBundle:
-    if not source.is_dir():
-        raise FileNotFoundError(f"source tree not found: {source}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    bundle_path = output_dir / f"{bundle_name}.tar.zst"
-    manifest_path = output_dir / f"{bundle_name}.manifest.json"
-
-    if bundle_path.exists():
-        bundle_path.unlink()
-    if manifest_path.exists():
-        manifest_path.unlink()
-
-    _pack_to_bundle_path(source, bundle_path)
-
-    file_count = sum(1 for path in source.rglob("*") if path.is_file())
-    payload = {
-        "bundle_name": bundle_name,
-        "source": str(source),
-        "bundle_path": str(bundle_path),
-        "created_at": datetime.now(UTC).isoformat(),
-        "file_count": file_count,
-    }
-    manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return PackedBundle(bundle_path=bundle_path, manifest_path=manifest_path)
 
 
 def restore_bundle(bundle_path: Path, destination: Path) -> None:
@@ -325,27 +281,3 @@ def verify_bundle_members(
         if actual_item != expected_item:
             failures.append(f"file_hash_mismatch:{name}")
     return checked, failures
-
-
-def offload_tree(source: Path, archive_root: Path, bundle_name: str, remove_source: bool = False) -> PackedBundle:
-    archive_root.mkdir(parents=True, exist_ok=True)
-    bundle = pack_tree(source=source, output_dir=archive_root, bundle_name=bundle_name)
-    if remove_source:
-        shutil.rmtree(source)
-    return bundle
-
-
-def inventory_bundles(archive_root: Path) -> list[BundleInventoryItem]:
-    if not archive_root.exists():
-        return []
-    items: list[BundleInventoryItem] = []
-    for manifest_path in sorted(archive_root.rglob("*.manifest.json")):
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        bundle_path = manifest_path.with_suffix("").with_suffix(".tar.zst")
-        if bundle_path.exists():
-            payload.setdefault("sha256", sha256_file(bundle_path))
-            items.append(BundleInventoryItem(bundle_path=bundle_path, manifest_path=manifest_path, payload=payload))
-    return items

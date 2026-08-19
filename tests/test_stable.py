@@ -21,7 +21,7 @@ def _write_config(tmp_path: Path) -> Path:
     home = tmp_path / "home"
     imports = tmp_path / "imports"
     extras = tmp_path / "local-workspace-extras"
-    archive = tmp_path / "OneDrive" / "agent-session-vault" / "archive"
+    stable = tmp_path / "OneDrive" / "agent-session-vault" / "stable"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f"""
@@ -29,14 +29,9 @@ def _write_config(tmp_path: Path) -> Path:
 home = "{home}"
 workspace_root = "{tmp_path / 'workspace'}"
 import_root = "{imports}"
-shadow_home = "{tmp_path / 'shadow-home'}"
+projection_home = "{home / '.config' / 'tokscale' / 'projection-home'}"
 local_workspace_extras = "{extras}"
-archive_root = "{archive}"
-
-[machines.machine-a]
-import_name = "machine-a"
-ssh_target = "session-sync-a"
-clients = ["codex"]
+stable_root = "{stable}"
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -51,7 +46,7 @@ clients = ["codex"]
     return config_path
 
 
-def test_default_stable_root_uses_archive_parent(tmp_path: Path) -> None:
+def test_default_stable_root_uses_configured_path(tmp_path: Path) -> None:
     config = load_config(_write_config(tmp_path))
 
     assert default_stable_root(config) == tmp_path / "OneDrive" / "agent-session-vault" / "stable"
@@ -282,27 +277,6 @@ def test_stable_mirror_rewrites_only_the_changed_shard(tmp_path: Path) -> None:
     assert unchanged_archives.issubset(first_archives & second_archives)
     assert len(first_archives - second_archives) == 1
     assert len(second_archives - first_archives) == 1
-
-
-def test_prune_unpacked_removes_only_legacy_stable_trees_after_verification(tmp_path: Path) -> None:
-    config = load_config(_write_config(tmp_path))
-    stable_root = default_stable_root(config)
-    legacy_imports = stable_root / "tokscale" / "imports"
-    legacy_extras = stable_root / "tokscale" / "local-workspace-extras"
-    legacy_imports.mkdir(parents=True)
-    legacy_extras.mkdir(parents=True)
-    (legacy_imports / "old.jsonl").write_text("old import", encoding="utf-8")
-    (legacy_extras / "old.jsonl").write_text("old extra", encoding="utf-8")
-
-    result = mirror_stable_layer(config, prune_unpacked=True)
-    payload = stable_mirror_payload(result)
-
-    assert result.status == "verified"
-    assert not legacy_imports.exists()
-    assert not legacy_extras.exists()
-    assert payload["pruned_unpacked_files"] == 2
-    assert len(payload["pruned_unpacked_paths"]) == 2
-    assert list((stable_root / "packs" / "imports").glob("pack-*.tar.zst"))
 
 
 def test_restore_stable_layer_round_trip_all_analytics_items(tmp_path: Path) -> None:

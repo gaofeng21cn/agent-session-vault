@@ -1,195 +1,100 @@
 # 架构说明
 
-## 设计目标
+本文档只负责系统职责、数据流、存储域和不变量，不定义配置字段或操作步骤。
 
-`agent-session-vault` 不是多机平台，也不是云同步平台。OPL Fleet 是多机协同基座；本仓是 Fleet 投放的一类 session projection / Tokscale 聚合任务。
+## 所有权
 
-它当前更具体、更务实的职责是：
+| 组件 | 负责 | 不负责 |
+| --- | --- | --- |
+| OPL Fleet | 已批准节点清单、控制节点身份、路由、准入、任务投放和产物回传 | 投影语义、Tokscale 提交、归档内容 |
+| Agent Session Vault | 投影格式和状态、导入的统计历史、受管 Tokscale 环境、stable 恢复副本、Codex 归档生命周期 | Fleet inventory、实时客户端状态、provider 账单真相 |
+| Tokscale | 用量计算、官方 preview 和外部提交 | 跨机发现、来源收集、归档生命周期 |
+| Codex、Gemini CLI、OpenClaw | 各自权威的实时会话目录 | 统计投影和 Vault 归档状态 |
 
-- 发现 session roots
-- 在机器之间搬运或投影这些 roots
-- 为 Tokscale 等下游工具准备可读取的视图
-- 让冷数据可以归档，而不是让热层无限膨胀
+每项职责只有一个负责人。Session Vault 只消费 Fleet 和客户端接口，不复制它们的控制状态。
 
-## 当前四层模型
-
-最容易理解当前实现的方法，是把它看成四层。
-
-### 1. Live Roots
-
-这些是上游客户端自己维护的目录，例如：
-
-- `~/.codex`
-- `~/.gemini`
-- `~/.openclaw`
-- 项目级 `.codex`
-
-本仓库不把自己当成这些目录的所有者。
-
-### 2. Imported Raw Projection Layer
-
-本机和导入机器的 analytics projection 都落到：
+## 运行数据流
 
 ```text
-import_root/local-home/.raw/<client>
-import_root/<machine>/.raw/<client>
+控制节点的实时客户端 root
+             |
+             v
+          本机投影 --------+
+                           |
+已批准 Fleet 节点          |         受管 projection HOME
+       |                    |                 +
+       v                    v                 |
+Fleet 投影任务 -------> 导入投影 + 受管本机 extras
+                                           |
+                                           v
+                                  控制节点的一次 Tokscale 运行
 ```
 
-在默认链路下，这一层通常来自 projection bundle，而不是逐字节 raw mirror。
+`sync fleet` 是唯一跨机路径。Fleet 选择已批准候选节点、执行 fresh admission、投放自包含的
+投影任务并回传产物。Session Vault 校验产物后，按稳定 Fleet node identity 导入到 `import_root`。
 
-对于 Tokscale 工作流，这一层按 append-only 方式累积本地已导入历史。
+控制节点本机投影和 Fleet 导入投影都保存在逐机 `.raw/<client>` tree 中。`.raw` 只是存储布局，
+不是可选视图；产品只暴露一个受管 Tokscale projection。
 
-远端后续删除 session 文件或整个 root 时，projection manifest / inventory 仍会反映这个变化，但本地 `.raw` 不会因此回收历史数据。
+## 投影合同
 
-### 3. Canonical Layer
+- 支持 Codex、Gemini CLI 和 OpenClaw。
+- Tokscale 使用 `projection_home` 作为 `HOME`，永远不会收到真实用户 HOME 或 `CODEX_HOME`。
+- `TOKSCALE_EXTRA_DIRS` 包含本机投影、Fleet 导入投影，以及带 `sync-state.json` 的显式本机
+  Codex namespace。
+- Workspace `.codex` root 和客户端实时 root 不会直接进入 Tokscale。
+- 投影导入保留历史；source 删除不会删除已经导入的用量记录。
+- Fleet 投影状态支持首次 full 初始化和后续 validated delta；base snapshot 不匹配时拒绝导入，
+  不做猜测。
+- 只有控制节点执行一次聚合提交；远端节点只构建并回传投影，不执行提交。
 
-canonical 视图是更严格的本地 session 布局，供 Tokscale 或内部分析使用。
+投影数据是可从仍存在来源重建的派生数据，不是完整会话备份。
 
-典型位置包括：
+## 存储域
 
-- `shadow_home`
-- `import_root/<machine>/<client>`
-- `local_workspace_extras/*/codex`
+| 域 | 作用 | 日常 Tokscale 输入 | 破坏性权限 |
+| --- | --- | --- | --- |
+| 实时客户端 root | 客户端权威状态 | 永不 | 仅客户端 owner |
+| 投影 imports | 精简、保留历史的统计输入 | 是 | 可重建；自身不能授权删除实时来源 |
+| 受管本机 extras | 显式、只增不减的 Codex 导入 | 是 | 仅限 Vault 管理的 namespace |
+| Stable analytics | analytics 与控制文件的 packed、verified 恢复副本 | 否 | 只恢复到独立目标 |
+| 可选 stable migration profile | 用于换机的显式实时会话副本 | 否 | 需要客户端静止；不合并到 live root |
+| 完整 Codex archive | immutable object、snapshot、catalog、verification 和 receipt | 否 | 只有全部证据成立时才能授权 plan-driven prune |
 
-当前实现中，选择 canonical 模式时必须显式使用 `--omx-replay-dedupe strict`。
+云同步目录或 NAS 可以承载 stable 或 archive 数据，但存储位置不会因此成为客户端实时 root。
 
-### 4. Archive Layer
+## Stable Analytics
 
-冷数据可以被打成 `tar.zst` bundle，并下沉到 `archive_root`。
+stable 层把投影 imports 和受管 extras 打包成有索引的 zstd shard，并复制 Vault 配置和 Tokscale
+custom pricing。每次成功 mirror 都生成 verified manifest；restore 会拒绝缺失或未验证的 manifest，
+并且只写到独立目标。
 
-后端设计上是目录原生的，所以 bundle 可以放在：
+该层保护统计连续性。可选 live-session profile 只是显式迁移副本，仍与日常 Tokscale 输入和
+可检索 Codex archive 分离。
 
-- 本地磁盘目录
-- NAS 挂载目录
-- OneDrive 同步目录
-- iCloud 同步目录
+## 完整归档
 
-### 5. Full-Fidelity Archive Domain
+archive 只扫描已配置的 Codex source 和允许的 session/index 文件。它用稳定 machine identity
+与 source root 标识来源，保存 immutable content-addressed object，发布 snapshot manifest，
+并构建用于查询和恢复的 catalog segment。
 
-完整会话归档已经与 Tokscale projection 分开建模。当前第一阶段实现的 owner 是：
+恢复计划带 digest，并且始终使用 staging mode。本机裁剪是另一份带 digest 的计划；生成和执行
+时都必须同时满足：
 
-- `archive_sources.py`：发现并扫描 Codex `sessions`、`archived_sessions` 和 `session_index.jsonl`
-- `archive_model.py`：定义 source、snapshot、manifest、bundle、catalog entry 和 restore plan
-- `archive_backend.py`：以显式 root marker、不可变 object、snapshot `COMMITTED` 标记实现 filesystem/NAS backend
-- `archive_ops.py`：构建 staging snapshot、复用未变化 bundle、发布和校验
-- `archive_catalog.py` / `archive_restore.py`：派生查询索引和 staging restore
-- `archive_prune.py`：持有 cold-session plan、NAS/stable/projection/Tokscale 准入和单一删除路径
+- 当前 source identity、metadata 和 checksum 一致；
+- 引用的 archive snapshot 已通过 deep verification；
+- 每个候选文件都有当前 projection coverage；
+- verified stable mirror 覆盖 projection imports；
+- 不与 live session 或外部 hard link 共享；
+- 删除前后的 Tokscale 官方 preview 保持一致。
 
-NAS 归档库不是 Codex live root，也不是 Tokscale 的读取路径。发布链路为：
+任何单独的 snapshot、stable mirror、projection 或成功测试都不能授权删除。
 
-```text
-Codex source -> local staging -> NAS objects/snapshot/manifest -> catalog -> staging restore
-```
+## 非目标
 
-当前已支持：
-
-- 稳定 `machine_id`、`source_id`、`snapshot_id` 和 `cycle_id`
-- 每个文件的 SHA-256、session id、时间范围和 parse status
-- 不可变 content-addressed `tar.zst` object
-- snapshot 的 `COMMITTED` 发布标记和深度逐文件恢复校验
-- 按 session、machine、source、时间范围的 catalog 查询
-- 默认 staging restore；`codex-live` 仍被明确拒绝，直到 Codex index merge 经过独立验证
-- 显式 `prune-plan` / `prune-apply`：只删除已深度验证快照覆盖、无其他硬链接、仍在 local projection 中且
-  stable analytics 已覆盖的冷 `archived_sessions`；删除前后强制同一 pinned Tokscale dry-run parity
-
-当前不允许：
-
-- 把 `~/.codex` 符号链接到 NAS
-- 由 snapshot/cycle 隐式删除本机源目录；裁剪只能走带 digest 的显式 plan/apply
-- 把归档正文写入 Tokscale projection
-- 把 OneDrive 或 Cordis projection 当作归档真相
-
-## Fleet-Dispatched Projection Sync
-
-`sync fleet` 是默认跨机路径。Fleet 拥有节点、标准运行时、私有 route、fresh data-admission、并发投放和产物回收；Session Vault 拥有 projection schema、增量 snapshot、导入与 Tokscale 规则。Session Vault 是标准 Fleet 数据任务，不是节点声明的 capability：所有 approved 节点都会进入候选集，再由 fresh task admission 决定执行或带原因跳过。`sync auto <machine>` 保留为显式兼容/诊断入口。
-
-本机路径由 `sync local-home-projection` 增量刷新。它只读取当前标准 HOME roots，不扫描旧 workspace runtime 或 cold archive；日常 runner 会在远端同步前自动完成这一步。
-
-高层流程是：
-
-1. 按配置发现某台机器的 roots
-2. 在 `remote_state_root` 刷新持久化 projection state，只重投影新增或变化文件
-3. 按本地 base snapshot 生成 full 或 delta bundle
-4. 根据 bundle 大小阈值决定走 `ssh` 还是 `relay`
-5. 在本地把 bundle 导入到 `import_root/<machine>/.raw/*`
-6. 按需要继续 canonicalize
-
-这就是为什么面向 Tokscale 的主路径不再要求先做完整 raw mirror。
-
-这里的重点是“计算增量”“传输增量”与“提交视图”分离：
-
-- 远端 state 按 source path、size、mtime 和 projector version 复用未变化的 projection blob
-- bundle 按 snapshot/base snapshot 做真增量；state 缺失或 schema 不兼容时才重新计算完整 projection
-- 本地 `.raw` / canonical 视图保持 Tokscale 所需的累计历史，不把远端清理直接传播成本地丢数
-
-## 各客户端的 Projection 行为
-
-### Codex
-
-Tokscale 的 Codex 统计 parser 带有状态机，因此 Codex projection 会保持所有可解析 JSON 记录的原始顺序，只在每条记录内保留 parser 所需字段，包括：
-
-- 每一条 `session_meta` 的身份、fork/source、provider、agent 和 workspace 字段
-- 每一条 `turn_context` 的 model 与 turn identifier
-- `task_started`、区分 human/injected 的 `user_message`、`token_count` 与 terminal event 结构
-- headless 记录顶层的 model、timestamp 与 usage
-
-聊天正文和无关 payload 字段会被删除；human prompt 收缩为 `user` 哨兵，已知的 injected-context 前缀则保留分类信息。projector 版本会写入本机 state 和 projection manifest，schema 变化时强制重建，不会错误复用不兼容的 delta baseline。
-
-这样既保持 Tokscale 数值不变，也能显著压缩大体积 Codex session；它不是完整会话正文副本。
-
-### Gemini CLI
-
-Gemini projection 当前保留 `chats/` 下的 chat JSON 文件。
-
-目标不是镜像整个 Gemini 状态树，而是保留 Tokscale 相关工作流真正需要的部分。
-
-### OpenClaw
-
-OpenClaw projection 会保留 usage 相关结构，同时裁掉大正文内容。
-
-另外，它还会在必要时把非标准 `.jsonl` 后缀变体规范化成标准 `.jsonl` 路径，因为 Tokscale 只识别 OpenClaw 原始命名面的一部分。
-
-## Raw 与 Canonical 两种 Tokscale 视图
-
-### Raw
-
-raw 模式会让 Tokscale 看到：
-
-- 空的 `projection_home`，用于阻止 Tokscale 直接扫描 live HOME
-- `import_root/local-home/.raw/*` 下的本机 projection
-- 导入机器的 `.raw` 树
-- 已受管的本机 extras
-
-这是默认提交口径。所有用量输入都先进入可镜像的 analytics 层，live client roots 不直接暴露给 Tokscale。
-
-### Canonical
-
-canonical 模式会让 Tokscale 看到：
-
-- `shadow_home`
-- canonical 化后的导入机器树
-- canonical 化后的本机项目级 extras
-
-适合需要更严格内部统计口径，并愿意显式启用 replay dedupe 的场景。
-
-## 当前不解决什么
-
-- 不宣称 provider 定价映射就是账单真相
-- 不改 Tokscale 上游
-- 不 destructive 改写上游客户端源目录
-- 不把云厂商 SDK 写死到核心逻辑里
-
-## 持久性与换机边界
-
-四个状态不能混为一谈：
-
-- `synced`：远端 projection 已应用到本机 hot imports
-- `submitted`：Tokscale 服务端返回 confirmed
-- `analytics mirrored`：imports、managed extras 与控制面配置已通过 stable source coverage readback
-- `full-fidelity migration ready`：显式可选的 analytics profile 加本机 client-owned live sessions 都已通过 migration profile readback
-
-默认产品只承诺 Tokscale analytics continuity：本机 projection、远端 projections、managed extras 和控制面配置通过 stable readback 后即可换机恢复并继续重算/提交。`full_fidelity_restore_ready=false` 不阻塞这个默认目标。
-
-本机 `~/.codex/sessions`、`~/.codex/archived_sessions` 以及其他客户端 live roots 仅在需要完整正文、搜索或继续会话时才进入可选 migration profile。此时必须停止客户端写入，再显式执行 `storage mirror-stable --include-live-sessions`。
-
-凭据不进入 stable mirror。新机器需要重新认证，然后从稳定副本恢复 session 数据并重建 canonical/cache。
+- 维护机器 inventory、route 或 artifact transport
+- 提供多个可选 Tokscale 视图
+- 修改 Tokscale 或客户端上游
+- 把 provider 账单作为 Vault 计算结果
+- 直接恢复到实时 Codex home
+- 为已退役流程保留兼容命令

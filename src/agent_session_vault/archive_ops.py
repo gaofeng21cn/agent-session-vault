@@ -76,8 +76,8 @@ class ArchiveCycleResult:
         }
 
 
-def primary_backend(config: VaultConfig) -> FilesystemArchiveBackend:
-    return FilesystemArchiveBackend(config.archive.primary_root)
+def archive_backend(config: VaultConfig) -> FilesystemArchiveBackend:
+    return FilesystemArchiveBackend(config.archive.root)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -123,7 +123,6 @@ def _stage_changed_files(
     previous_by_path = {record.path: record for record in previous.files} if previous else {}
     previous_bundles = {bundle.bundle_id: bundle for bundle in previous.bundles} if previous else {}
     changed = [item for item in scanned.files if previous_by_path.get(item.record.path, None) is None or previous_by_path[item.record.path].sha256 != item.record.sha256]
-    deleted_paths = sorted(set(previous_by_path) - {item.record.path for item in scanned.files})
     member_paths: list[str] = []
     records: dict[str, ArchiveFileRecord] = {}
     for item in changed:
@@ -215,7 +214,7 @@ def build_snapshot(
     cycle_id: str | None = None,
     staging_root: Path | None = None,
 ) -> SnapshotBuildResult:
-    backend = primary_backend(config)
+    backend = archive_backend(config)
     backend.ensure_ready()
     scan = scan_codex_sources(config, machine_id=machine_id)
     cycle = cycle_id or _cycle_id()
@@ -294,7 +293,7 @@ def publish_snapshot(
     *,
     verify_staged: bool = False,
 ) -> list[PublishedSnapshot]:
-    backend = primary_backend(config)
+    backend = archive_backend(config)
     backend.ensure_ready()
     result: list[PublishedSnapshot] = []
     for source_dir in sorted(path for path in staging_root.iterdir() if path.is_dir()):
@@ -335,7 +334,7 @@ def _verify_staged_manifest(
 
 
 def verify_snapshot(config: VaultConfig, snapshot_id: str, *, deep: bool = False) -> dict[str, object]:
-    backend = primary_backend(config)
+    backend = archive_backend(config)
     for snapshot_dir in backend.iter_snapshot_dirs():
         if snapshot_dir.name == snapshot_id:
             return backend.verify_snapshot(snapshot_dir, deep=deep)
@@ -343,7 +342,7 @@ def verify_snapshot(config: VaultConfig, snapshot_id: str, *, deep: bool = False
 
 
 def init_backend(config: VaultConfig) -> dict[str, object]:
-    return primary_backend(config).initialize()
+    return archive_backend(config).initialize()
 
 
 def receipt(config: VaultConfig, operation: str, status: str, *, machine_id: str, source_id: str | None = None, snapshot_id: str | None = None, details: dict[str, object] | None = None) -> ArchiveReceipt:
@@ -359,7 +358,7 @@ def receipt(config: VaultConfig, operation: str, status: str, *, machine_id: str
         snapshot_id=snapshot_id,
         details=details or {},
     )
-    root = primary_backend(config).root / "receipts" / machine_id
+    root = archive_backend(config).root / "receipts" / machine_id
     _write_json(root / f"{item.operation_id}.json", item.to_payload())
     return item
 

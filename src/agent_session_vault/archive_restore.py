@@ -23,7 +23,6 @@ def build_restore_plan(
     config: VaultConfig,
     *,
     destination: Path,
-    mode: str = "staging",
     from_at: str | None = None,
     to_at: str | None = None,
     machine_id: str | None = None,
@@ -32,8 +31,6 @@ def build_restore_plan(
     source_id: str | None = None,
     collision_policy: str = "error",
 ) -> RestorePlan:
-    if mode not in {"staging", "codex-live"}:
-        raise ValueError(f"unsupported restore mode: {mode}")
     if collision_policy not in {"error", "overwrite"}:
         raise ValueError(f"unsupported collision policy: {collision_policy}")
     entries = tuple(
@@ -50,7 +47,7 @@ def build_restore_plan(
     plan = RestorePlan(
         plan_id=_plan_id(),
         created_at=datetime.now(UTC).isoformat(),
-        mode=mode,
+        mode="staging",
         as_of_snapshot_id=None,
         from_at=from_at,
         to_at=to_at,
@@ -89,6 +86,8 @@ def load_restore_plan(path: Path) -> RestorePlan:
         entries=entries,
         plan_digest=str(payload["plan_digest"]),
     )
+    if plan.mode != "staging":
+        raise ValueError("restore plan mode must be staging")
     expected = payload_sha256({key: value for key, value in plan.to_payload().items() if key != "plan_digest"})
     if expected != plan.plan_digest:
         raise ValueError(f"restore plan digest mismatch: {path}")
@@ -96,10 +95,8 @@ def load_restore_plan(path: Path) -> RestorePlan:
 
 
 def restore_plan(config: VaultConfig, plan: RestorePlan) -> dict[str, object]:
-    if plan.mode == "codex-live":
-        raise ValueError("codex-live restore is not enabled until the Codex adapter is verified")
     destination = Path(plan.destination).expanduser()
-    backend = FilesystemArchiveBackend(config.archive.primary_root)
+    backend = FilesystemArchiveBackend(config.archive.root)
     backend.ensure_ready()
     snapshots = {path.name: backend.load_snapshot(path) for path in backend.iter_snapshot_dirs()}
     records_by_entry: dict[tuple[str, str], tuple[CatalogEntry, ArchiveFileRecord, ArchiveBundle]] = {}

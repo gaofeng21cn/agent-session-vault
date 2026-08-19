@@ -29,14 +29,11 @@ home = "{home}"
 workspace_root = "{tmp_path / 'workspace'}"
 import_root = "{tmp_path / 'imports'}"
 projection_home = "{tmp_path / 'projection-home'}"
-shadow_home = "{tmp_path / 'shadow-home'}"
 local_workspace_extras = "{tmp_path / 'extras'}"
-archive_root = "{tmp_path / 'legacy-archive'}"
-relay_root = "{tmp_path / 'relay'}"
+stable_root = "{tmp_path / 'stable'}"
 
 [archive]
-primary_backend = "nas"
-primary_root = "{backend}"
+root = "{backend}"
 staging_root = "{staging}"
 machine_id_path = "{tmp_path / 'machine-id'}"
 source_paths = ["{source}"]

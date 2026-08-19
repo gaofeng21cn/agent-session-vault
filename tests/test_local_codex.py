@@ -27,10 +27,9 @@ def _config(tmp_path: Path) -> Path:
 home = "{tmp_path / 'home'}"
 workspace_root = "{tmp_path / 'workspace'}"
 import_root = "{tmp_path / 'imports'}"
-shadow_home = "{tmp_path / 'shadow-home'}"
+projection_home = "{tmp_path / 'projection-home'}"
 local_workspace_extras = "{tmp_path / 'extras'}"
-archive_root = "{tmp_path / 'archive'}"
-relay_root = "{tmp_path / 'relay'}"
+stable_root = "{tmp_path / 'stable'}"
 """.strip()
         + "\n",
         encoding="utf-8",

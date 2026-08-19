@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import os
 
 from .config import VaultConfig
-from .views import build_view
+from .views import build_tokscale_view
 
 
 DEFAULT_TOKSCALE_PACKAGE = "tokscale@3.0.0"
@@ -19,12 +19,10 @@ class TokscaleInvocation:
 
 def build_tokscale_invocation(
     config: VaultConfig,
-    mode: str,
     args: list[str],
-    omx_replay_dedupe: str = "off",
     package_override: str | None = None,
 ) -> TokscaleInvocation:
-    view = build_view(config, mode=mode, omx_replay_dedupe=omx_replay_dedupe)
+    view = build_tokscale_view(config)
     env = dict(os.environ)
     env.pop("CODEX_HOME", None)
     env["HOME"] = str(view.home)

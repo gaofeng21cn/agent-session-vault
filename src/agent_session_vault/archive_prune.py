@@ -13,8 +13,8 @@ import uuid
 from .archive import sha256_file
 from .archive_backend import FilesystemArchiveBackend
 from .archive_model import ArchiveManifest, ArchiveSnapshot, payload_sha256
-from .archive_ops import primary_backend, receipt
-from .archive_sources import ArchiveScanResult, scan_codex_sources
+from .archive_ops import archive_backend, receipt
+from .archive_sources import scan_codex_sources
 from .config import VaultConfig
 from .daily_ops import _parse_tokscale_stats
 from .stable import default_stable_root
@@ -201,7 +201,6 @@ def _tokscale_preview(config: VaultConfig) -> dict[str, object]:
     package = f"tokscale@{version}"
     invocation = build_tokscale_invocation(
         config,
-        mode="raw",
         args=["submit", *client_args, "--dry-run"],
         package_override=package,
     )
@@ -297,7 +296,7 @@ def build_prune_plan(
     preview_runner: Callable[[VaultConfig], dict[str, object]] = _tokscale_preview,
 ) -> PrunePlan:
     now = (now or _utc_now()).astimezone(UTC)
-    backend = primary_backend(config)
+    backend = archive_backend(config)
     backend.ensure_ready()
     stable_root, imports_fingerprint = _stable_imports_fingerprint(config)
     projection_files = _load_projection_files(config)
@@ -432,7 +431,7 @@ def _verify_entry(entry: PruneEntry) -> None:
 
 
 def _verify_plan_snapshots(config: VaultConfig, plan: PrunePlan) -> None:
-    backend = primary_backend(config)
+    backend = archive_backend(config)
     snapshot_dirs = {path.name: path for path in backend.iter_snapshot_dirs()}
     for snapshot_id in sorted({entry.snapshot_id for entry in plan.entries}):
         snapshot_dir = snapshot_dirs.get(snapshot_id)
@@ -506,5 +505,5 @@ def apply_prune_plan(
         "deleted_bytes": deleted_bytes,
         "deleted_gib": round(deleted_bytes / 1024 / 1024 / 1024, 3),
         "tokscale_preview": after_preview,
-        "receipt_path": str(primary_backend(config).root / "receipts" / plan.machine_id / f"{item.operation_id}.json"),
+        "receipt_path": str(archive_backend(config).root / "receipts" / plan.machine_id / f"{item.operation_id}.json"),
     }

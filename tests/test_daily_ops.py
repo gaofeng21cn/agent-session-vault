@@ -32,42 +32,23 @@ Data to submit:
 """
 
 
-def _write_config(tmp_path: Path, *, create_raw_roots: bool = True) -> Path:
+def _write_config(tmp_path: Path) -> Path:
     home = tmp_path / "home"
-    imports = tmp_path / "imports"
-    extras = tmp_path / "extras"
-    relay = tmp_path / "relay"
-    home.mkdir()
-    if create_raw_roots:
-        (imports / "machine-a" / ".raw" / "codex").mkdir(parents=True)
-        (imports / "machine-b" / ".raw" / "codex").mkdir(parents=True)
-        (extras / "managed" / "codex").mkdir(parents=True)
-        (extras / "managed" / "sync-state.json").write_text("{}\n", encoding="utf-8")
+    session = home / ".codex" / "sessions" / "local.jsonl"
+    session.parent.mkdir(parents=True)
+    session.write_text('{"type":"event_msg","payload":{"type":"token_count","total":1}}\n', encoding="utf-8")
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f"""
 [paths]
 home = "{home}"
-workspace_root = "{tmp_path / 'workspace'}"
-import_root = "{imports}"
-shadow_home = "{tmp_path / 'shadow-home'}"
-local_workspace_extras = "{extras}"
-archive_root = "{tmp_path / 'archive'}"
-relay_root = "{relay}"
+import_root = "{tmp_path / 'imports'}"
+projection_home = "{tmp_path / 'projection-home'}"
+local_workspace_extras = "{tmp_path / 'extras'}"
+stable_root = "{tmp_path / 'stable'}"
 
-[machines.machine-a]
-import_name = "machine-a"
-ssh_target = "session-sync-a"
-source_home = "/remote/home"
-remote_relay_root = "/remote/relay"
-clients = ["codex"]
-
-[machines.machine-b]
-import_name = "machine-b"
-ssh_target = "session-sync-b"
-source_home = "/remote/home"
-remote_relay_root = "/remote/relay"
-clients = ["codex"]
+[archive]
+root = "{tmp_path / 'archive'}"
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -75,10 +56,11 @@ clients = ["codex"]
     return config_path
 
 
-def _bundle(machine_name: str, snapshot_id: str, bundle_dir: Path) -> ProjectionBundle:
+def _bundle(tmp_path: Path) -> ProjectionBundle:
+    bundle_dir = tmp_path / "bundle"
     return ProjectionBundle(
-        machine_name=machine_name,
-        snapshot_id=snapshot_id,
+        machine_name="node-a",
+        snapshot_id="node-a-snapshot",
         bundle_dir=bundle_dir,
         manifest_path=bundle_dir / "manifest.json",
         bundle_path=bundle_dir / "payload.tar.zst",
@@ -86,7 +68,7 @@ def _bundle(machine_name: str, snapshot_id: str, bundle_dir: Path) -> Projection
         inventory_path=bundle_dir / "inventory.json",
         bundle_bytes=1234,
         mode="projection_delta",
-        base_snapshot_id=f"{machine_name}-previous",
+        base_snapshot_id="node-a-previous",
         state_status="incremental",
         files_seen=12,
         files_projected=2,
@@ -94,36 +76,32 @@ def _bundle(machine_name: str, snapshot_id: str, bundle_dir: Path) -> Projection
     )
 
 
-def _install_sync_fakes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    exported: dict[str, ProjectionBundle] = {}
+def _install_fleet_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, create_remote_root: bool = True) -> None:
+    if create_remote_root:
+        (tmp_path / "imports" / "node-a" / ".raw" / "codex").mkdir(parents=True)
+    summary = FleetSyncSummary(
+        nodes=(FleetNode(node_id="controller", local=True), FleetNode(node_id="node-a", local=False)),
+        results=(
+            FleetSyncResult(
+                node_id="controller",
+                import_name="controller",
+                status="local_projection",
+                payload={},
+                bundle=None,
+            ),
+            FleetSyncResult(
+                node_id="node-a",
+                import_name="node-a",
+                status="synced",
+                payload={"status": "completed"},
+                bundle=_bundle(tmp_path),
+            ),
+        ),
+    )
+    monkeypatch.setattr("agent_session_vault.daily_ops.sync_fleet", lambda *args, **kwargs: summary)
 
-    def fake_probe(machine, timeout_seconds: float) -> dict[str, object]:
-        return {"status": "available", "duration_seconds": 0.01, "exit_code": 0, "reason": None}
 
-    def fake_export(*, machine, **kwargs) -> ProjectionBundle:
-        snapshot_id = f"{machine.name}-20260714T000000000000Z"
-        bundle = _bundle(machine.name, snapshot_id, Path("/remote/relay") / machine.name / snapshot_id)
-        exported[machine.name] = bundle
-        return bundle
-
-    def fake_fetch(*, local_bundle_dir: Path, **kwargs) -> Path:
-        local_bundle_dir.mkdir(parents=True, exist_ok=True)
-        return local_bundle_dir
-
-    def fake_import(*, machine_name: str, bundle_dir: Path, **kwargs) -> ProjectionBundle:
-        source = exported[machine_name]
-        return _bundle(machine_name, source.snapshot_id, bundle_dir)
-
-    monkeypatch.setattr("agent_session_vault.daily_ops._probe_machine", fake_probe)
-    monkeypatch.setattr("agent_session_vault.daily_ops.export_machine_projection_ssh", fake_export)
-    monkeypatch.setattr("agent_session_vault.daily_ops.fetch_projection_bundle_ssh", fake_fetch)
-    monkeypatch.setattr("agent_session_vault.daily_ops.import_machine_projection", fake_import)
-
-
-def _install_command_fake(
-    monkeypatch: pytest.MonkeyPatch,
-    calls: list[list[str]],
-) -> None:
+def _install_command_fake(monkeypatch: pytest.MonkeyPatch, calls: list[list[str]]) -> None:
     def fake_run(
         command: list[str],
         *,
@@ -167,21 +145,21 @@ def _write_cached_contract(run_root: Path) -> None:
     )
 
 
-def test_daily_tokscale_cached_contract_runs_one_real_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_daily_tokscale_cached_contract_runs_one_submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = load_config(_write_config(tmp_path))
     run_root = tmp_path / "ops"
     calls: list[list[str]] = []
     _write_cached_contract(run_root)
-    _install_sync_fakes(monkeypatch, tmp_path)
+    _install_fleet_fake(monkeypatch, tmp_path)
     _install_command_fake(monkeypatch, calls)
 
-    result = run_daily_tokscale(config, run_root=run_root, canonicalize_command=None)
+    result = run_daily_tokscale(config, run_root=run_root)
 
     assert result.exit_code == 0
     assert result.payload["status"] == "confirmed"
+    assert result.payload["machine_source"] == "fleet"
+    assert result.payload["projection_env"]["status"] == "valid"
     assert result.payload["tokscale"]["contract_checked"] is False
-    assert result.payload["tokscale"]["preview_ran"] is False
-    assert result.payload["tokscale"]["statistics"]["total_tokens"] == 225_000_000_001
     submit_calls = [command for command in calls if "submit" in command]
     assert len(submit_calls) == 1
     assert "--dry-run" not in submit_calls[0]
@@ -190,24 +168,20 @@ def test_daily_tokscale_cached_contract_runs_one_real_scan(tmp_path: Path, monke
 
 def test_daily_tokscale_new_version_checks_help_and_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = load_config(_write_config(tmp_path))
-    run_root = tmp_path / "ops"
     calls: list[list[str]] = []
-    _install_sync_fakes(monkeypatch, tmp_path)
+    _install_fleet_fake(monkeypatch, tmp_path)
     _install_command_fake(monkeypatch, calls)
 
-    result = run_daily_tokscale(config, run_root=run_root, canonicalize_command=None)
+    result = run_daily_tokscale(config, run_root=tmp_path / "ops")
 
     assert result.exit_code == 0
     assert result.payload["tokscale"]["contract_checked"] is True
     assert result.payload["tokscale"]["preview_ran"] is True
-    assert result.payload["tokscale"]["numeric_source"] == "submit"
     assert any("--help" in command for command in calls)
     assert any("--dry-run" in command for command in calls)
-    contract = json.loads((run_root / "submit-contract.json").read_text(encoding="utf-8"))
-    assert contract["tokscale_version"] == "4.5.2"
 
 
-def test_daily_tokscale_can_mirror_analytics_state_after_confirmed_submit(
+def test_daily_tokscale_preserves_submit_when_stable_mirror_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -215,30 +189,11 @@ def test_daily_tokscale_can_mirror_analytics_state_after_confirmed_submit(
     run_root = tmp_path / "ops"
     calls: list[list[str]] = []
     _write_cached_contract(run_root)
-    _install_sync_fakes(monkeypatch, tmp_path)
-    _install_command_fake(monkeypatch, calls)
-
-    result = run_daily_tokscale(config, run_root=run_root, mirror_stable=True)
-
-    assert result.exit_code == 0
-    assert result.payload["status"] == "confirmed"
-    assert result.payload["stable_mirror"]["status"] == "verified"
-    assert result.payload["stable_mirror"]["profile"] == "analytics"
-
-
-def test_daily_tokscale_preserves_confirmed_submit_when_stable_mirror_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = load_config(_write_config(tmp_path))
-    run_root = tmp_path / "ops"
-    calls: list[list[str]] = []
-    _write_cached_contract(run_root)
-    _install_sync_fakes(monkeypatch, tmp_path)
+    _install_fleet_fake(monkeypatch, tmp_path)
     _install_command_fake(monkeypatch, calls)
     monkeypatch.setattr(
         "agent_session_vault.daily_ops.mirror_stable_layer",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("cloud unavailable")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stable root unavailable")),
     )
 
     result = run_daily_tokscale(config, run_root=run_root, mirror_stable=True)
@@ -249,61 +204,20 @@ def test_daily_tokscale_preserves_confirmed_submit_when_stable_mirror_fails(
     assert result.payload["warnings"] == ["stable_mirror_failed"]
 
 
-def test_daily_tokscale_skips_unavailable_remote_without_blocking_submit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_daily_tokscale_rejects_missing_synced_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = load_config(_write_config(tmp_path))
-    run_root = tmp_path / "ops"
     calls: list[list[str]] = []
-    _write_cached_contract(run_root)
-    _install_sync_fakes(monkeypatch, tmp_path)
+    _install_fleet_fake(monkeypatch, tmp_path, create_remote_root=False)
     _install_command_fake(monkeypatch, calls)
 
-    def fake_probe(machine, timeout_seconds: float) -> dict[str, object]:
-        status = "skipped_unavailable" if machine.name == "machine-b" else "available"
-        return {"status": status, "duration_seconds": 0.01, "reason": None}
-
-    monkeypatch.setattr("agent_session_vault.daily_ops._probe_machine", fake_probe)
-
-    result = run_daily_tokscale(config, run_root=run_root, canonicalize_command=None)
-
-    assert result.exit_code == 0
-    remotes = {item["machine"]: item for item in result.payload["remotes"]}
-    assert remotes["machine-a"]["status"] == "synced"
-    assert remotes["machine-a"]["bundle"]["projection_state"] == {
-        "status": "incremental",
-        "files_seen": 12,
-        "files_projected": 2,
-        "files_reused": 10,
-    }
-    assert remotes["machine-b"]["status"] == "skipped_unavailable"
-    assert result.payload["tokscale"]["submit_status"] == "confirmed"
-
-
-def test_daily_tokscale_invalid_raw_view_blocks_submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = load_config(_write_config(tmp_path, create_raw_roots=False))
-    calls: list[list[str]] = []
-
-    monkeypatch.setattr(
-        "agent_session_vault.daily_ops._probe_machine",
-        lambda machine, timeout_seconds: {
-            "status": "skipped_unavailable",
-            "duration_seconds": 0.01,
-            "reason": "offline",
-        },
-    )
-    _install_command_fake(monkeypatch, calls)
-
-    result = run_daily_tokscale(config, run_root=tmp_path / "ops", canonicalize_command=None)
+    result = run_daily_tokscale(config, run_root=tmp_path / "ops")
 
     assert result.exit_code == 1
-    assert result.payload["status"] == "failed"
-    assert result.payload["error"]["phase"] == "raw_env"
+    assert result.payload["error"]["phase"] == "projection_env"
     assert calls == []
 
 
-def test_cli_daily_tokscale_emits_runner_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+def test_cli_daily_tokscale_passes_fleet_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     config_path = _write_config(tmp_path)
     captured: dict[str, object] = {}
 
@@ -312,114 +226,23 @@ def test_cli_daily_tokscale_emits_runner_json(tmp_path: Path, monkeypatch: pytes
         return DailyTokscaleResult(payload={"status": "confirmed"}, exit_code=0)
 
     monkeypatch.setattr("agent_session_vault.cli.run_daily_tokscale", fake_daily)
-
     exit_code = main(
         [
             "--config",
             str(config_path),
             "ops",
             "daily-tokscale",
-            "--machine",
-            "machine-a",
+            "--fleet-command",
+            "opl-fleet-test",
             "--mirror-stable",
             "--json",
         ]
     )
 
     assert exit_code == 0
-    assert captured["machine_names"] == ["machine-a"]
-    assert captured["use_fleet"] is False
-    assert captured["canonicalize_command"] is None
+    assert captured["fleet_command"] == "opl-fleet-test"
     assert captured["mirror_stable"] is True
-    assert json.loads(capsys.readouterr().out) == {"status": "confirmed"}
-
-
-def test_cli_daily_tokscale_defaults_to_fleet_without_machine(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys,
-) -> None:
-    config_path = _write_config(tmp_path)
-    captured: dict[str, object] = {}
-
-    def fake_daily(config, **kwargs) -> DailyTokscaleResult:
-        captured.update(kwargs)
-        return DailyTokscaleResult(payload={"status": "confirmed"}, exit_code=0)
-
-    monkeypatch.setattr("agent_session_vault.cli.run_daily_tokscale", fake_daily)
-    exit_code = main(
-        [
-            "--config",
-            str(config_path),
-            "ops",
-            "daily-tokscale",
-            "--json",
-        ]
-    )
-    assert exit_code == 0
-    assert captured["machine_names"] is None
-    assert captured["use_fleet"] is True
-    assert json.loads(capsys.readouterr().out) == {"status": "confirmed"}
-
-
-def test_daily_tokscale_fleet_validates_reused_import_name(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = load_config(_write_config(tmp_path))
-    run_root = tmp_path / "ops"
-    calls: list[list[str]] = []
-    _write_cached_contract(run_root)
-    _install_command_fake(monkeypatch, calls)
-    monkeypatch.setattr(
-        "agent_session_vault.daily_ops.sync_fleet",
-        lambda *args, **kwargs: FleetSyncSummary(
-            nodes=(FleetNode(node_id="controller", local=True), FleetNode(node_id="fleet-node-a", local=False)),
-            results=(
-                FleetSyncResult(
-                    node_id="controller",
-                    import_name="controller",
-                    status="local_projection",
-                    payload={},
-                    bundle=None,
-                ),
-                FleetSyncResult(
-                    node_id="fleet-node-a",
-                    import_name="machine-a",
-                    status="synced",
-                    payload={"status": "completed"},
-                    bundle=_bundle("fleet-node-a", "fleet-node-a-snapshot", tmp_path / "bundle"),
-                ),
-            ),
-        ),
-    )
-
-    result = run_daily_tokscale(
-        config,
-        run_root=run_root,
-        canonicalize_command=None,
-        use_fleet=True,
-    )
-
-    assert result.exit_code == 0
-    assert result.payload["status"] == "confirmed"
-    assert result.payload["machine_source"] == "fleet"
-    assert result.payload["fleet"]["nodes"] == [
-        {"node_id": "controller", "local": True},
-        {"node_id": "fleet-node-a", "local": False},
-    ]
-    assert result.payload["remotes"][1]["machine"] == "fleet-node-a"
-    assert result.payload["remotes"][1]["import_name"] == "machine-a"
-    assert result.payload["raw_env"]["validation"]["remote_raw_root_counts"]["machine-a"] > 0
-    submit_calls = [command for command in calls if "submit" in command]
-    assert len(submit_calls) == 1
-    assert "--dry-run" not in submit_calls[0]
-
-
-def test_npm_latest_parser_ignores_non_version_log_lines() -> None:
-    from agent_session_vault.daily_ops import _parse_latest_version
-
-    assert _parse_latest_version("npm notice before\n4.5.2\nnpm notice after\n") == "4.5.2"
+    assert json.loads(capsys.readouterr().out)["status"] == "confirmed"
 
 
 def test_daily_tokscale_rejects_concurrent_run(tmp_path: Path) -> None:
@@ -429,8 +252,7 @@ def test_daily_tokscale_rejects_concurrent_run(tmp_path: Path) -> None:
 
     with (run_root / "run.lock").open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = run_daily_tokscale(config, run_root=run_root, canonicalize_command=None)
+        result = run_daily_tokscale(config, run_root=run_root)
 
     assert result.exit_code == 2
     assert result.payload["status"] == "already_running"
-    assert result.payload["error"]["type"] == "ConcurrentRun"

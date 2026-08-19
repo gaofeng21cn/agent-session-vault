@@ -71,55 +71,34 @@ def summarize_storage(config: VaultConfig) -> StorageSummary:
             )
         )
 
-    import_names = {machine.import_name for machine in config.machines.values()}
     if config.paths.import_root.is_dir():
-        import_names.update(
-            path.name
-            for path in config.paths.import_root.iterdir()
-            if path.is_dir() and path.name != "local-home"
-        )
-    for import_name in sorted(import_names):
-        machine = next(
-            (item for item in config.machines.values() if item.import_name == import_name),
-            None,
-        )
-        clients = machine.clients if machine else ("codex", "gemini", "openclaw")
-        for client in clients:
-            raw_root = config.paths.import_root / import_name / ".raw" / client
-            if raw_root.exists():
+        for machine_root in sorted(path for path in config.paths.import_root.iterdir() if path.is_dir()):
+            raw_root = machine_root / ".raw"
+            if not raw_root.is_dir():
+                continue
+            for client_root in sorted(path for path in raw_root.iterdir() if path.is_dir()):
                 items.append(
                     StorageItem(
-                        label=f"imports_raw:{import_name}:{client}",
-                        path=raw_root,
-                        size_bytes=_directory_size(raw_root),
-                    )
-                )
-            canonical_root = config.paths.import_root / import_name / client
-            if canonical_root.exists():
-                items.append(
-                    StorageItem(
-                        label=f"canonical:{import_name}:{client}",
-                        path=canonical_root,
-                        size_bytes=_directory_size(canonical_root),
+                        label=f"projection:{machine_root.name}:{client_root.name}",
+                        path=client_root,
+                        size_bytes=_directory_size(client_root),
                     )
                 )
 
-    if config.paths.shadow_home.exists():
-        items.append(
-            StorageItem(
-                label="canonical:shadow_home",
-                path=config.paths.shadow_home,
-                size_bytes=_directory_size(config.paths.shadow_home),
-            )
-        )
     if config.paths.local_workspace_extras.exists():
         items.append(
             StorageItem(
-                label="canonical:local_workspace_extras",
+                label="projection:managed_extras",
                 path=config.paths.local_workspace_extras,
                 size_bytes=_directory_size(config.paths.local_workspace_extras),
             )
         )
+    for label, path in (
+        ("stable:analytics", config.paths.stable_root),
+        ("archive:full_fidelity", config.archive.root),
+    ):
+        if path.exists():
+            items.append(StorageItem(label=label, path=path, size_bytes=_directory_size(path)))
 
     total = sum(item.size_bytes for item in items)
     return StorageSummary(items=items, total_bytes=total)

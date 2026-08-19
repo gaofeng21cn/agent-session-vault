@@ -12,7 +12,6 @@ from agent_session_vault.fleet import (
     FleetNode,
     FleetSyncResult,
     discover_fleet_nodes,
-    fleet_import_name,
     fleet_local_bundle_dir,
     sync_fleet,
 )
@@ -30,7 +29,7 @@ home = "{home}"
 import_root = "{tmp_path / 'imports'}"
 projection_home = "{tmp_path / 'projection-home'}"
 local_workspace_extras = "{tmp_path / 'extras'}"
-relay_root = "{tmp_path / 'relay'}"
+stable_root = "{tmp_path / 'stable'}"
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -55,7 +54,6 @@ def test_fleet_projection_request_is_self_contained_and_predictable() -> None:
     script, artifact_path = fleet_projection_request(
         "node-a",
         snapshot_id="node-a-snapshot",
-        import_name="legacy-node-a",
         base_snapshot_id="node-a-previous",
     )
     compile(script, "<fleet-projection>", "exec")
@@ -66,26 +64,10 @@ def test_fleet_projection_request_is_self_contained_and_predictable() -> None:
     )
 
 
-def test_fleet_import_name_reuses_existing_ssh_target_alias(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
-[machines.imac]
-import_name = "imac"
-ssh_target = "gaofeng-imac"
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-    config = load_config(config_path)
-    assert fleet_import_name(config, "gaofeng-imac") == "imac"
-    assert fleet_import_name(config, "gaofeng-new") == "gaofeng-new"
-    assert fleet_local_bundle_dir(config, "gaofeng-new", "snapshot") == (
-        config.config_path.parent
-        / "fleet-bundles"
-        / "projection"
-        / "gaofeng-new"
-        / "snapshot"
+def test_fleet_bundle_path_uses_node_identity(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert fleet_local_bundle_dir(config, "node-a", "snapshot") == (
+        config.config_path.parent / "fleet-bundles" / "projection" / "node-a" / "snapshot"
     )
 
 

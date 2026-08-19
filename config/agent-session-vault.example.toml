@@ -3,82 +3,20 @@ home = "~"
 workspace_root = "~/workspace"
 import_root = "~/.config/tokscale/imports"
 projection_home = "~/.config/tokscale/projection-home"
-shadow_home = "~/.config/tokscale/shadow-home"
 local_workspace_extras = "~/.config/tokscale/local-workspace-extras"
-archive_root = "~/agent-session-vault/archive"
-relay_root = "~/agent-session-vault/relay"
+stable_root = "~/agent-session-vault/stable"
 
-[sync]
-default_strategy = "auto"
-direct_max_delta_files = 128
-direct_max_delta_bytes = 268435456
-projection_transport = "auto"
-projection_direct_max_bundle_bytes = 1073741824
-
-# Full-fidelity Codex archive is a separate domain from Tokscale projection.
-# Keep the primary root on a mounted NAS only after creating its root marker with
-# `agent-session-vault archive init`. Do not symlink ~/.codex to this directory.
+# Full-fidelity Codex archives are separate from the Tokscale projection.
+# The root may be a local directory or a mounted NAS directory. Initialize it
+# with agent-session-vault archive init before the first snapshot.
 [archive]
-primary_backend = "nas"
-primary_root = "/Volumes/YourNAS/agent-session-vault"
-secondary_backend = "none"
-secondary_root = ""
+root = "/Volumes/YourNAS/agent-session-vault"
 cadence_days = 14
 cold_age_days = 30
-shard_target_bytes = 268435456
 staging_root = "~/.cache/agent-session-vault/archive-staging"
-restore_staging_root = "~/.cache/agent-session-vault/restore"
 machine_id_path = "~/.config/agent-session-vault/machine-id"
 require_quiescent_for_prune = true
 
-# Optional project Codex roots. ~/.codex is included automatically when this
-# list is empty; adding entries makes the source set explicit.
-# source_paths = ["~/workspace/project/.codex"]
-
-# OPL Fleet is the default machine/network/dispatch source of truth. New Fleet
-# nodes do not need a stanza here. Keep entries only for legacy `sync auto` or
-# to reuse an existing import_name while migrating.
-[machines.machine-a]
-import_name = "machine-a"
-ssh_target = "session-sync-a"
-source_home = "/Users/your-user"
-remote_relay_root = "/Users/your-user/agent-session-vault/relay"
-remote_state_root = "/Users/your-user/.config/agent-session-vault/relay-state"
-clients = ["codex", "gemini", "openclaw"]
-
-# Fixed home-level roots.
-[[machines.machine-a.roots]]
-client = "codex"
-path = "~/.codex"
-kind = "home_root"
-
-[[machines.machine-a.roots]]
-client = "gemini"
-path = "~/.gemini"
-kind = "home_root"
-
-[[machines.machine-a.roots]]
-client = "openclaw"
-path = "~/.openclaw"
-kind = "home_root"
-
-# Add as many explicit project globs as you actually use.
-[[machines.machine-a.root_globs]]
-client = "codex"
-glob = "~/workspace/*/.codex"
-kind = "project_root"
-
-[[machines.machine-a.root_globs]]
-client = "codex"
-glob = "~/projects/*/.codex"
-kind = "project_root"
-
-[[retention.rules]]
-name = "machine-a-codex-raw-cold"
-layer = "imports_raw"
-machine = "machine-a"
-client = "codex"
-max_age_days = 30
-min_size_bytes = 104857600
-archive_subdir = "imports-raw"
-remove_source = false
+# Leave empty to use ~/.codex plus discovered workspace .codex roots.
+# Add entries only when the archive source set must be explicit.
+# source_paths = ["~/.codex", "~/workspace/project/.codex"]

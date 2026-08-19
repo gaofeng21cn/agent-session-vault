@@ -21,7 +21,12 @@ def _public_files() -> list[Path]:
         check=True,
         capture_output=True,
     )
-    return [REPO_ROOT / item.decode() for item in completed.stdout.split(b"\0") if item]
+    return [
+        path
+        for item in completed.stdout.split(b"\0")
+        if item
+        and (path := REPO_ROOT / item.decode()).is_file()
+    ]
 
 
 def _public_text() -> list[tuple[Path, str]]:
@@ -69,7 +74,6 @@ def test_sensitive_local_artifacts_are_ignored() -> None:
         "runs/example/receipt.json",
         "sessions/example.jsonl",
         "archived_sessions/example.jsonl",
-        "relay/bundle.tar.zst",
         "archive/bundle.tar.zst",
         "stable/imports/example.jsonl",
         "private-key.pem",

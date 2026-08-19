@@ -8,11 +8,9 @@ from .projection import LOCAL_HOME_CLIENTS, local_home_projection_root
 
 
 @dataclass(frozen=True)
-class View:
-    mode: str
+class TokscaleView:
     home: Path
     extra_dirs: list[tuple[str, Path]]
-    omx_replay_dedupe: str
 
     def tokscale_extra_dirs(self) -> str:
         return ",".join(f"{client}:{path}" for client, path in self.extra_dirs)
@@ -69,52 +67,18 @@ def _append_unique_root(extra_dirs: list[tuple[str, Path]], seen: set[tuple[str,
     extra_dirs.append((client, root))
 
 
-def build_view(config: VaultConfig, mode: str, omx_replay_dedupe: str = "off") -> View:
-    if mode not in {"raw", "canonical"}:
-        raise ValueError(f"unsupported mode: {mode}")
-    if omx_replay_dedupe not in {"off", "strict"}:
-        raise ValueError(f"unsupported omx replay dedupe mode: {omx_replay_dedupe}")
-    if mode == "canonical" and omx_replay_dedupe != "strict":
-        raise ValueError("canonical mode requires --omx-replay-dedupe strict")
-
+def build_tokscale_view(config: VaultConfig) -> TokscaleView:
     extra_dirs: list[tuple[str, Path]] = []
     seen: set[tuple[str, Path]] = set()
     local_machine_root = local_home_projection_root(config)
-    if mode == "raw":
-        home = config.paths.projection_home
-        for client in LOCAL_HOME_CLIENTS:
-            _append_unique_root(extra_dirs, seen, client, local_machine_root / ".raw" / client)
-        configured_imports: set[str] = set()
-        for machine in config.machines.values():
-            configured_imports.add(machine.import_name)
-            for client in machine.clients:
-                root = config.paths.import_root / machine.import_name / ".raw" / client
-                _append_unique_root(extra_dirs, seen, client, root)
-        if config.paths.import_root.is_dir():
-            for machine_root in sorted(config.paths.import_root.iterdir()):
-                if not machine_root.is_dir() or machine_root.name in configured_imports | {"local-home"}:
-                    continue
-                for client in LOCAL_HOME_CLIENTS:
-                    _append_unique_root(extra_dirs, seen, client, machine_root / ".raw" / client)
-        for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras, managed_only=True):
-            _append_unique_root(extra_dirs, seen, "codex", root)
-        return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)
-
-    home = config.paths.shadow_home
     for client in LOCAL_HOME_CLIENTS:
-        _append_unique_root(extra_dirs, seen, client, local_machine_root / client)
-    configured_imports = set()
-    for machine in config.machines.values():
-        configured_imports.add(machine.import_name)
-        for client in machine.clients:
-            root = config.paths.import_root / machine.import_name / client
-            _append_unique_root(extra_dirs, seen, client, root)
+        _append_unique_root(extra_dirs, seen, client, local_machine_root / ".raw" / client)
     if config.paths.import_root.is_dir():
         for machine_root in sorted(config.paths.import_root.iterdir()):
-            if not machine_root.is_dir() or machine_root.name in configured_imports | {"local-home"}:
+            if not machine_root.is_dir() or machine_root.name == "local-home":
                 continue
             for client in LOCAL_HOME_CLIENTS:
-                _append_unique_root(extra_dirs, seen, client, machine_root / client)
-    for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras):
+                _append_unique_root(extra_dirs, seen, client, machine_root / ".raw" / client)
+    for root in discover_local_workspace_extra_codex_roots(config.paths.local_workspace_extras, managed_only=True):
         _append_unique_root(extra_dirs, seen, "codex", root)
-    return View(mode=mode, home=home, extra_dirs=extra_dirs, omx_replay_dedupe=omx_replay_dedupe)
+    return TokscaleView(home=config.paths.projection_home, extra_dirs=extra_dirs)

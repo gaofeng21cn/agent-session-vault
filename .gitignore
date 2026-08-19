@@ -8,8 +8,6 @@ build/
 dist/
 tmp/
 *.egg-info/
-docs/superpowers/
-
 # Local tooling state
 .codegraph/
 
@@ -30,7 +28,6 @@ sessions/
 archived_sessions/
 imports/
 local-workspace-extras/
-relay/
 archive/
 stable/
 ops/

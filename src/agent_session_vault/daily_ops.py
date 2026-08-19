@@ -12,46 +12,22 @@ import subprocess
 import time
 from typing import Callable
 
-from .config import MachineConfig, VaultConfig
+from .config import VaultConfig
 from .fleet import sync_fleet
 from .projection import (
     LOCAL_HOME_CLIENTS,
     LOCAL_HOME_STATE_NAME,
     ProjectionBundle,
-    expected_local_projection_bundle_dir,
-    export_machine_projection_ssh,
-    fetch_projection_bundle_ssh,
-    import_machine_projection,
     local_home_projection_payload,
     local_home_projection_root,
     refresh_local_home_projection,
 )
 from .stable import mirror_stable_layer, stable_mirror_payload
 from .tokscale import build_tokscale_invocation
-from .views import build_view
+from .views import build_tokscale_view
 
 
 DEFAULT_CLIENTS = ("codex", "gemini", "openclaw")
-SSH_OPTIONS = (
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ConnectTimeout=8",
-    "-o",
-    "ConnectionAttempts=1",
-    "-o",
-    "ServerAliveInterval=2",
-    "-o",
-    "ServerAliveCountMax=1",
-    "-o",
-    "ControlMaster=auto",
-    "-o",
-    "ControlPersist=45",
-    "-o",
-    "ControlPath=/tmp/agent-session-vault-ssh-%i-%C",
-)
-
-
 @dataclass(frozen=True)
 class CommandResult:
     returncode: int
@@ -150,60 +126,15 @@ def _run_logged_command(
     )
 
 
-def _probe_machine(machine: MachineConfig, timeout_seconds: float) -> dict[str, object]:
-    started = time.monotonic()
-    if not machine.ssh_target:
-        return {
-            "status": "skipped_unavailable",
-            "duration_seconds": 0.0,
-            "reason": "missing_ssh_target",
-        }
-    command = ["ssh", *SSH_OPTIONS, machine.ssh_target, "printf ready"]
-    try:
-        completed = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
-        available = completed.returncode == 0 and completed.stdout.strip() == "ready"
-        reason = None if available else (completed.stderr.strip() or completed.stdout.strip() or "probe_failed")
-        return {
-            "status": "available" if available else "skipped_unavailable",
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "exit_code": completed.returncode,
-            "reason": reason,
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "skipped_unavailable",
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "reason": "probe_timeout",
-        }
-    except OSError as exc:
-        return {
-            "status": "skipped_unavailable",
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "reason": f"{type(exc).__name__}: {exc}",
-        }
-
-
-def _load_base_snapshot_id(machine_root: Path) -> str | None:
-    payload = _read_json(machine_root / ".projection-state.json")
-    snapshot_id = payload.get("current_snapshot_id") if payload else None
-    return snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
-
-
-def _raw_env_payload(
+def _projection_env_payload(
     config: VaultConfig,
     machine_names: list[str],
 ) -> dict[str, object]:
     started = time.monotonic()
-    view = build_view(config, mode="raw")
+    view = build_tokscale_view(config)
     machine_root_counts: dict[str, int] = {}
     for machine_name in machine_names:
-        machine = config.machines.get(machine_name)
-        expected_root = config.paths.import_root / (machine.import_name if machine else machine_name) / ".raw"
+        expected_root = config.paths.import_root / machine_name / ".raw"
         machine_root_counts[machine_name] = sum(
             1 for _, path in view.extra_dirs if path == expected_root or expected_root in path.parents
         )
@@ -340,29 +271,16 @@ def _bundle_payload(bundle: ProjectionBundle) -> dict[str, object]:
 def run_daily_tokscale(
     config: VaultConfig,
     *,
-    machine_names: list[str] | None = None,
     clients: tuple[str, ...] = DEFAULT_CLIENTS,
     run_root: Path | None = None,
-    canonicalize_command: str | None = None,
-    probe_timeout_seconds: float = 8,
     sync_timeout_seconds: float = 1800,
     submit_timeout_seconds: float = 3600,
     force_contract_check: bool = False,
     mirror_stable: bool = False,
     stable_root: Path | None = None,
-    use_fleet: bool = False,
     fleet_command: str = "opl-fleet",
     fleet_instance: Path | None = None,
 ) -> DailyTokscaleResult:
-    if use_fleet and machine_names:
-        raise ValueError("--machine cannot be combined with Fleet mode")
-    if use_fleet:
-        selected_machines: list[str] = []
-    else:
-        selected_machines = list(config.machines if machine_names is None else machine_names)
-    unknown_machines = [name for name in selected_machines if name not in config.machines]
-    if unknown_machines:
-        raise ValueError(f"unknown machines: {', '.join(unknown_machines)}")
     if not clients:
         raise ValueError("at least one Tokscale client is required")
 
@@ -391,7 +309,7 @@ def run_daily_tokscale(
         "current_status_path": str(current_path),
         "receipt_path": str(receipt_path),
         "remotes": [],
-        "machine_source": "fleet" if use_fleet else "config",
+        "machine_source": "fleet",
     }
 
     try:
@@ -449,150 +367,50 @@ def run_daily_tokscale(
         local_payload = local_home_projection_payload(local_projection)
         local_payload["duration_seconds"] = round(time.monotonic() - local_started, 3)
         payload["local_projection"] = local_payload
-        if canonicalize_command:
-            canonicalize = run_command(
-                [canonicalize_command, "--machine-root", str(local_projection.machine_root)],
-                env=None,
-                log_name="local-home-canonicalize.log",
-                phase="canonicalize:local-home",
-                timeout_seconds=sync_timeout_seconds,
-            )
-            if canonicalize.returncode != 0:
-                raise DailyTokscaleError(
-                    "local_projection",
-                    f"local canonicalize failed with exit {canonicalize.returncode}; "
-                    f"see {run_dir / 'local-home-canonicalize.log'}",
-                )
 
         remote_results: list[dict[str, object]] = []
-        if use_fleet:
-            update_status("fleet_discovery")
-            fleet_sync = sync_fleet(
-                config,
-                fleet_command=fleet_command,
-                instance=fleet_instance,
-                timeout_seconds=sync_timeout_seconds,
-            )
-            nodes = list(fleet_sync.nodes)
-            selected_machines = [node.node_id for node in nodes if not node.local]
-            payload["fleet"] = {
-                "status": "discovered",
-                "command": fleet_command,
-                "instance": str(fleet_instance) if fleet_instance else None,
-                "nodes": [
-                    {"node_id": node.node_id, "local": node.local}
-                    for node in nodes
-                ],
-            }
-            for result in fleet_sync.results:
-                remote: dict[str, object] = {
-                    "machine": result.node_id,
-                    "import_name": result.import_name,
-                    "status": result.status,
-                    "fleet": result.payload,
-                }
-                if result.bundle is not None:
-                    remote["bundle"] = _bundle_payload(result.bundle)
-                remote_results.append(remote)
-            payload["remotes"] = remote_results
-            update_status("fleet_sync_complete")
-
-        for machine_name in [] if use_fleet else selected_machines:
-            machine_started = time.monotonic()
-            machine = config.machines[machine_name]
-            update_status(f"probe:{machine_name}")
-            probe = _probe_machine(machine, probe_timeout_seconds)
-            remote: dict[str, object] = {"machine": machine_name, "probe": probe}
-            if probe["status"] != "available":
-                remote["status"] = "skipped_unavailable"
-                remote["duration_seconds"] = round(time.monotonic() - machine_started, 3)
-                remote_results.append(remote)
-                payload["remotes"] = remote_results
-                update_status(f"remote_complete:{machine_name}")
-                continue
-            if not machine.source_home or not machine.remote_relay_root or not machine.ssh_target:
-                remote["status"] = "sync_failed"
-                remote["error"] = "machine projection configuration is incomplete"
-                remote["duration_seconds"] = round(time.monotonic() - machine_started, 3)
-                remote_results.append(remote)
-                payload["remotes"] = remote_results
-                continue
-            try:
-                export_started = time.monotonic()
-                update_status(f"projection_export:{machine_name}")
-                machine_root = config.paths.import_root / machine.import_name
-                exported = export_machine_projection_ssh(
-                    machine=machine,
-                    source_home=machine.source_home,
-                    relay_root=machine.remote_relay_root,
-                    ssh_target=machine.ssh_target,
-                    base_snapshot_id=_load_base_snapshot_id(machine_root),
-                    ssh_options=list(SSH_OPTIONS),
-                    timeout_seconds=sync_timeout_seconds,
-                )
-                remote["export_seconds"] = round(time.monotonic() - export_started, 3)
-
-                fetch_started = time.monotonic()
-                update_status(f"projection_fetch:{machine_name}")
-                local_bundle_dir = expected_local_projection_bundle_dir(config, machine_name, exported.snapshot_id)
-                fetched_dir = fetch_projection_bundle_ssh(
-                    ssh_target=machine.ssh_target,
-                    remote_bundle_dir=exported.bundle_dir,
-                    local_bundle_dir=local_bundle_dir,
-                    ssh_options=list(SSH_OPTIONS),
-                    timeout_seconds=sync_timeout_seconds,
-                    capture_output=True,
-                )
-                remote["fetch_seconds"] = round(time.monotonic() - fetch_started, 3)
-
-                import_started = time.monotonic()
-                update_status(f"projection_import:{machine_name}")
-                imported = import_machine_projection(
-                    config=config,
-                    machine_name=machine_name,
-                    bundle_dir=fetched_dir,
-                    canonicalize_command=None,
-                )
-                if canonicalize_command:
-                    canonicalize = run_command(
-                        [canonicalize_command, "--machine-root", str(machine_root)],
-                        env=None,
-                        log_name=f"{machine_name}-canonicalize.log",
-                        phase=f"canonicalize:{machine_name}",
-                        timeout_seconds=sync_timeout_seconds,
-                    )
-                    if canonicalize.returncode != 0:
-                        raise RuntimeError(
-                            f"canonicalize failed with exit {canonicalize.returncode}; "
-                            f"see {run_dir / f'{machine_name}-canonicalize.log'}"
-                        )
-                remote["import_seconds"] = round(time.monotonic() - import_started, 3)
-                remote["status"] = "synced"
-                remote["bundle"] = _bundle_payload(imported)
-            except Exception as exc:  # noqa: BLE001 - remote failures must not block submit
-                remote["status"] = "sync_failed"
-                remote["error"] = f"{type(exc).__name__}: {exc}"
-            remote["duration_seconds"] = round(time.monotonic() - machine_started, 3)
-            remote_results.append(remote)
-            payload["remotes"] = remote_results
-            update_status(f"remote_complete:{machine_name}")
-
-        update_status("raw_env")
-        expected_remote_roots = (
-            [
-                str(remote["import_name"])
-                for remote in remote_results
-                if remote.get("status") == "synced"
-            ]
-            if use_fleet
-            else selected_machines
+        update_status("fleet_discovery")
+        fleet_sync = sync_fleet(
+            config,
+            fleet_command=fleet_command,
+            instance=fleet_instance,
+            timeout_seconds=sync_timeout_seconds,
         )
-        raw_env = _raw_env_payload(config, expected_remote_roots)
-        payload["raw_env"] = raw_env
-        if raw_env["status"] != "valid":
+        nodes = list(fleet_sync.nodes)
+        payload["fleet"] = {
+            "status": "discovered",
+            "command": fleet_command,
+            "instance": str(fleet_instance) if fleet_instance else None,
+            "nodes": [
+                {"node_id": node.node_id, "local": node.local}
+                for node in nodes
+            ],
+        }
+        for result in fleet_sync.results:
+            remote: dict[str, object] = {
+                "machine": result.node_id,
+                "import_name": result.import_name,
+                "status": result.status,
+                "fleet": result.payload,
+            }
+            if result.bundle is not None:
+                remote["bundle"] = _bundle_payload(result.bundle)
+            remote_results.append(remote)
+        payload["remotes"] = remote_results
+        update_status("fleet_sync_complete")
+
+        update_status("projection_env")
+        expected_remote_roots = [
+            str(remote["import_name"])
+            for remote in remote_results
+            if remote.get("status") == "synced"
+        ]
+        projection_env = _projection_env_payload(config, expected_remote_roots)
+        payload["projection_env"] = projection_env
+        if projection_env["status"] != "valid":
             raise DailyTokscaleError(
-                "raw_env",
-                "raw Tokscale view is missing the local projection HOME, local projection state, or configured remote roots",
+                "projection_env",
+                "Tokscale view is missing the local projection HOME, local projection state, or synced Fleet roots",
             )
 
         latest = run_command(
@@ -612,7 +430,6 @@ def run_daily_tokscale(
         if contract_checked:
             help_invocation = build_tokscale_invocation(
                 config,
-                mode="raw",
                 args=["submit", "--help"],
                 package_override=package,
             )
@@ -630,7 +447,6 @@ def run_daily_tokscale(
             client_args = list(contract["client_args"])
             preview_invocation = build_tokscale_invocation(
                 config,
-                mode="raw",
                 args=["submit", *client_args, "--dry-run"],
                 package_override=package,
             )
@@ -657,7 +473,6 @@ def run_daily_tokscale(
 
         submit_invocation = build_tokscale_invocation(
             config,
-            mode="raw",
             args=["submit", *client_args],
             package_override=package,
         )

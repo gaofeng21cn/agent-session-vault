@@ -6,6 +6,25 @@ import tomllib
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "agent-session-vault" / "config.toml"
+TOP_LEVEL_KEYS = {"paths", "archive"}
+PATH_KEYS = {
+    "home",
+    "workspace_root",
+    "import_root",
+    "projection_home",
+    "local_workspace_extras",
+    "stable_root",
+}
+ARCHIVE_KEYS = {
+    "root",
+    "cadence_days",
+    "cold_age_days",
+    "staging_root",
+    "machine_id_path",
+    "source_paths",
+    "require_quiescent_for_prune",
+}
+ARCHIVE_SOURCE_KEYS = {"path", "kind", "label"}
 
 
 @dataclass(frozen=True)
@@ -14,19 +33,8 @@ class PathsConfig:
     workspace_root: Path
     import_root: Path
     projection_home: Path
-    shadow_home: Path
     local_workspace_extras: Path
-    archive_root: Path
-    relay_root: Path
-
-
-@dataclass(frozen=True)
-class SyncConfig:
-    default_strategy: str
-    direct_max_delta_files: int
-    direct_max_delta_bytes: int
-    projection_transport: str
-    projection_direct_max_bundle_bytes: int
+    stable_root: Path
 
 
 @dataclass(frozen=True)
@@ -38,286 +46,156 @@ class ArchiveSourceConfig:
 
 @dataclass(frozen=True)
 class ArchiveConfig:
-    primary_backend: str
-    primary_root: Path
-    secondary_backend: str
-    secondary_root: Path | None
+    root: Path
     cadence_days: int
     cold_age_days: int
-    shard_target_bytes: int
     staging_root: Path
-    restore_staging_root: Path
     machine_id_path: Path
     source_paths: tuple[ArchiveSourceConfig, ...]
     require_quiescent_for_prune: bool
 
 
 @dataclass(frozen=True)
-class RootRuleConfig:
-    client: str
-    path: str | None
-    glob: str | None
-    label: str | None
-    kind: str | None
-
-
-@dataclass(frozen=True)
-class MachineConfig:
-    name: str
-    import_name: str
-    ssh_target: str | None
-    source_home: Path | None
-    remote_relay_root: Path | None
-    remote_state_root: Path | None
-    sync_strategy: str | None
-    direct_max_delta_files: int | None
-    direct_max_delta_bytes: int | None
-    clients: tuple[str, ...]
-    roots: tuple[RootRuleConfig, ...]
-    root_globs: tuple[RootRuleConfig, ...]
-
-
-@dataclass(frozen=True)
-class RetentionRuleConfig:
-    name: str
-    layer: str
-    machine: str | None
-    client: str | None
-    workspace: str | None
-    max_age_days: int
-    min_size_bytes: int
-    archive_subdir: str | None
-    remove_source: bool
-
-
-@dataclass(frozen=True)
 class VaultConfig:
     config_path: Path
     paths: PathsConfig
-    sync: SyncConfig
     archive: ArchiveConfig
-    machines: dict[str, MachineConfig]
-    retention_rules: tuple[RetentionRuleConfig, ...]
 
 
-def _path_value(raw: object, fallback: Path) -> Path:
-    if isinstance(raw, str) and raw:
-        return Path(raw).expanduser()
-    return fallback
+def _reject_unknown_keys(raw: dict[str, object], allowed: set[str], scope: str) -> None:
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(f"unsupported {scope} fields: {', '.join(unknown)}")
 
 
-def _optional_path_value(raw: object) -> Path | None:
-    if isinstance(raw, str) and raw:
-        return Path(raw).expanduser()
-    return None
+def _table_value(raw: dict[str, object], name: str) -> dict[str, object]:
+    value = raw.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a table")
+    return value
 
 
-def _str_value(raw: object, fallback: str | None = None) -> str | None:
-    if isinstance(raw, str) and raw:
-        return raw
-    return fallback
-
-
-def _int_value(raw: object, fallback: int | None = None) -> int | None:
-    if isinstance(raw, bool):
+def _path_value(raw: object, fallback: Path, field: str) -> Path:
+    if raw is None:
         return fallback
-    if isinstance(raw, int):
+    if isinstance(raw, str) and raw:
+        return Path(raw).expanduser()
+    raise ValueError(f"{field} must be a non-empty path string")
+
+
+def _str_value(raw: object, fallback: str | None, field: str) -> str | None:
+    if raw is None:
+        return fallback
+    if isinstance(raw, str) and raw:
         return raw
-    return fallback
+    raise ValueError(f"{field} must be a non-empty string")
 
 
-def _bool_value(raw: object, fallback: bool = False) -> bool:
+def _int_value(raw: object, fallback: int, field: str) -> int:
+    if raw is None:
+        return fallback
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    raise ValueError(f"{field} must be an integer")
+
+
+def _bool_value(raw: object, fallback: bool, field: str) -> bool:
+    if raw is None:
+        return fallback
     if isinstance(raw, bool):
         return raw
-    return fallback
+    raise ValueError(f"{field} must be a boolean")
 
 
 def load_config(config_path: Path | None = None) -> VaultConfig:
     path = (config_path or DEFAULT_CONFIG_PATH).expanduser()
-    raw = {}
+    raw: dict[str, object] = {}
     if path.exists():
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    _reject_unknown_keys(raw, TOP_LEVEL_KEYS, "top-level")
 
-    home = _path_value(raw.get("paths", {}).get("home") if isinstance(raw.get("paths"), dict) else None, Path.home())
-    workspace_root = _path_value(
-        raw.get("paths", {}).get("workspace_root") if isinstance(raw.get("paths"), dict) else None,
-        home / "workspace",
-    )
+    paths_raw = _table_value(raw, "paths")
+    _reject_unknown_keys(paths_raw, PATH_KEYS, "paths")
+    home = _path_value(paths_raw.get("home"), Path.home(), "paths.home")
+    workspace_root = _path_value(paths_raw.get("workspace_root"), home / "workspace", "paths.workspace_root")
     import_root = _path_value(
-        raw.get("paths", {}).get("import_root") if isinstance(raw.get("paths"), dict) else None,
+        paths_raw.get("import_root"),
         home / ".config" / "tokscale" / "imports",
+        "paths.import_root",
     )
     projection_home = _path_value(
-        raw.get("paths", {}).get("projection_home") if isinstance(raw.get("paths"), dict) else None,
+        paths_raw.get("projection_home"),
         home / ".config" / "tokscale" / "projection-home",
-    )
-    shadow_home = _path_value(
-        raw.get("paths", {}).get("shadow_home") if isinstance(raw.get("paths"), dict) else None,
-        home / ".config" / "tokscale" / "shadow-home",
+        "paths.projection_home",
     )
     local_workspace_extras = _path_value(
-        raw.get("paths", {}).get("local_workspace_extras") if isinstance(raw.get("paths"), dict) else None,
+        paths_raw.get("local_workspace_extras"),
         home / ".config" / "tokscale" / "local-workspace-extras",
+        "paths.local_workspace_extras",
     )
+    stable_root = _path_value(
+        paths_raw.get("stable_root"),
+        home / "agent-session-vault" / "stable",
+        "paths.stable_root",
+    )
+
+    archive_raw = _table_value(raw, "archive")
+    _reject_unknown_keys(archive_raw, ARCHIVE_KEYS, "archive")
     archive_root = _path_value(
-        raw.get("paths", {}).get("archive_root") if isinstance(raw.get("paths"), dict) else None,
-        home / "agent-session-vault-archive",
+        archive_raw.get("root"),
+        home / "agent-session-vault" / "archive",
+        "archive.root",
     )
-    relay_root = _path_value(
-        raw.get("paths", {}).get("relay_root") if isinstance(raw.get("paths"), dict) else None,
-        archive_root / "relay",
-    )
-
-    sync_raw = raw.get("sync") if isinstance(raw.get("sync"), dict) else {}
-    default_strategy = _str_value(sync_raw.get("default_strategy"), "auto")
-    if default_strategy not in {"auto", "direct", "relay"}:
-        raise ValueError(f"unsupported sync.default_strategy: {default_strategy}")
-    direct_max_delta_files = _int_value(sync_raw.get("direct_max_delta_files"), 128)
-    direct_max_delta_bytes = _int_value(sync_raw.get("direct_max_delta_bytes"), 256 * 1024 * 1024)
-    projection_transport = _str_value(sync_raw.get("projection_transport"), "auto")
-    projection_direct_max_bundle_bytes = _int_value(
-        sync_raw.get("projection_direct_max_bundle_bytes"),
-        1024 * 1024 * 1024,
-    )
-    if direct_max_delta_files is None or direct_max_delta_bytes is None:
-        raise ValueError("sync direct delta thresholds must be integers")
-    if projection_direct_max_bundle_bytes is None:
-        raise ValueError("sync projection bundle threshold must be an integer")
-    if projection_transport not in {"auto", "ssh", "relay"}:
-        raise ValueError(f"unsupported sync.projection_transport: {projection_transport}")
-
-    archive_raw = raw.get("archive") if isinstance(raw.get("archive"), dict) else {}
-    primary_backend = _str_value(archive_raw.get("primary_backend"), "local")
-    secondary_backend = _str_value(archive_raw.get("secondary_backend"), "none")
-    if primary_backend not in {"local", "nas", "onedrive"}:
-        raise ValueError(f"unsupported archive.primary_backend: {primary_backend}")
-    if secondary_backend not in {"none", "local", "nas", "onedrive"}:
-        raise ValueError(f"unsupported archive.secondary_backend: {secondary_backend}")
-    primary_root = _path_value(
-        archive_raw.get("primary_root"),
-        archive_root / "full-fidelity",
-    )
-    secondary_root = _optional_path_value(archive_raw.get("secondary_root"))
-    cadence_days = _int_value(archive_raw.get("cadence_days"), 14)
-    cold_age_days = _int_value(archive_raw.get("cold_age_days"), 30)
-    shard_target_bytes = _int_value(archive_raw.get("shard_target_bytes"), 256 * 1024 * 1024)
+    cadence_days = _int_value(archive_raw.get("cadence_days"), 14, "archive.cadence_days")
+    cold_age_days = _int_value(archive_raw.get("cold_age_days"), 30, "archive.cold_age_days")
     staging_root = _path_value(
         archive_raw.get("staging_root"),
-        primary_root / "staging",
-    )
-    restore_staging_root = _path_value(
-        archive_raw.get("restore_staging_root"),
-        home / ".cache" / "agent-session-vault" / "restore",
+        home / ".cache" / "agent-session-vault" / "archive-staging",
+        "archive.staging_root",
     )
     machine_id_path = _path_value(
         archive_raw.get("machine_id_path"),
         home / ".config" / "agent-session-vault" / "machine-id",
+        "archive.machine_id_path",
     )
-    source_paths_raw = archive_raw.get("source_paths") if isinstance(archive_raw.get("source_paths"), list) else []
+
+    source_paths_value = archive_raw.get("source_paths")
+    if source_paths_value is None:
+        source_paths_raw: list[object] = []
+    elif isinstance(source_paths_value, list):
+        source_paths_raw = source_paths_value
+    else:
+        raise ValueError("archive.source_paths must be an array")
     source_paths: list[ArchiveSourceConfig] = []
-    for item in source_paths_raw:
+    for index, item in enumerate(source_paths_raw):
         if isinstance(item, str) and item:
             source_paths.append(ArchiveSourceConfig(path=item))
             continue
         if not isinstance(item, dict):
-            continue
-        path_value = _str_value(item.get("path"))
-        if path_value is None:
-            raise ValueError("archive.source_paths entries require path")
+            raise ValueError(f"archive.source_paths[{index}] must be a non-empty string or table")
+        _reject_unknown_keys(item, ARCHIVE_SOURCE_KEYS, f"archive.source_paths[{index}]")
+        path_value = item.get("path")
+        if not isinstance(path_value, str) or not path_value:
+            raise ValueError(f"archive.source_paths[{index}].path must be a non-empty string")
         source_paths.append(
             ArchiveSourceConfig(
                 path=path_value,
-                kind=_str_value(item.get("kind"), "codex_home") or "codex_home",
-                label=_str_value(item.get("label")),
-            )
-        )
-    if cadence_days is None or cadence_days <= 0:
-        raise ValueError("archive.cadence_days must be a positive integer")
-    if cold_age_days is None or cold_age_days < 0:
-        raise ValueError("archive.cold_age_days must be a non-negative integer")
-    if shard_target_bytes is None or shard_target_bytes <= 0:
-        raise ValueError("archive.shard_target_bytes must be a positive integer")
-
-    machines_raw = raw.get("machines") if isinstance(raw.get("machines"), dict) else {}
-    machines: dict[str, MachineConfig] = {}
-    for name, machine_raw in machines_raw.items():
-        if not isinstance(machine_raw, dict):
-            continue
-        clients_raw = machine_raw.get("clients")
-        clients = tuple(client for client in clients_raw if isinstance(client, str)) if isinstance(clients_raw, list) else (
-            "codex",
-            "gemini",
-            "openclaw",
-        )
-        roots_raw = machine_raw.get("roots") if isinstance(machine_raw.get("roots"), list) else []
-        root_globs_raw = machine_raw.get("root_globs") if isinstance(machine_raw.get("root_globs"), list) else []
-
-        def _load_root_rules(items: list[object], *, allow_path: bool, allow_glob: bool) -> tuple[RootRuleConfig, ...]:
-            rules: list[RootRuleConfig] = []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                client = _str_value(item.get("client"))
-                if client is None:
-                    raise ValueError(f"machine {name} root rule requires client")
-                path_value = _str_value(item.get("path")) if allow_path else None
-                glob_value = _str_value(item.get("glob")) if allow_glob else None
-                if allow_path and path_value is None:
-                    raise ValueError(f"machine {name} explicit root requires path")
-                if allow_glob and glob_value is None:
-                    raise ValueError(f"machine {name} root glob requires glob")
-                rules.append(
-                    RootRuleConfig(
-                        client=client,
-                        path=path_value,
-                        glob=glob_value,
-                        label=_str_value(item.get("label")),
-                        kind=_str_value(item.get("kind")),
-                    )
+                kind=_str_value(
+                    item.get("kind"),
+                    "codex_home",
+                    f"archive.source_paths[{index}].kind",
                 )
-            return tuple(rules)
-
-        machines[name] = MachineConfig(
-            name=name,
-            import_name=str(machine_raw.get("import_name") or name),
-            ssh_target=_str_value(machine_raw.get("ssh_target")),
-            source_home=_optional_path_value(machine_raw.get("source_home")),
-            remote_relay_root=_optional_path_value(machine_raw.get("remote_relay_root")),
-            remote_state_root=_optional_path_value(machine_raw.get("remote_state_root")),
-            sync_strategy=_str_value(machine_raw.get("sync_strategy")),
-            direct_max_delta_files=_int_value(machine_raw.get("direct_max_delta_files")),
-            direct_max_delta_bytes=_int_value(machine_raw.get("direct_max_delta_bytes")),
-            clients=clients,
-            roots=_load_root_rules(roots_raw, allow_path=True, allow_glob=False),
-            root_globs=_load_root_rules(root_globs_raw, allow_path=False, allow_glob=True),
-        )
-        if machines[name].sync_strategy and machines[name].sync_strategy not in {"auto", "direct", "relay"}:
-            raise ValueError(f"unsupported machines.{name}.sync_strategy: {machines[name].sync_strategy}")
-
-    retention_raw = raw.get("retention") if isinstance(raw.get("retention"), dict) else {}
-    retention_rules_raw = retention_raw.get("rules") if isinstance(retention_raw.get("rules"), list) else []
-    retention_rules: list[RetentionRuleConfig] = []
-    for rule_raw in retention_rules_raw:
-        if not isinstance(rule_raw, dict):
-            continue
-        name = _str_value(rule_raw.get("name"))
-        layer = _str_value(rule_raw.get("layer"))
-        max_age_days = _int_value(rule_raw.get("max_age_days"))
-        if name is None or layer is None or max_age_days is None:
-            raise ValueError("retention rule requires name, layer, and max_age_days")
-        retention_rules.append(
-            RetentionRuleConfig(
-                name=name,
-                layer=layer,
-                machine=_str_value(rule_raw.get("machine")),
-                client=_str_value(rule_raw.get("client")),
-                workspace=_str_value(rule_raw.get("workspace")),
-                max_age_days=max_age_days,
-                min_size_bytes=_int_value(rule_raw.get("min_size_bytes"), 1) or 1,
-                archive_subdir=_str_value(rule_raw.get("archive_subdir")),
-                remove_source=_bool_value(rule_raw.get("remove_source"), False),
+                or "codex_home",
+                label=_str_value(item.get("label"), None, f"archive.source_paths[{index}].label"),
             )
         )
+
+    if cadence_days <= 0:
+        raise ValueError("archive.cadence_days must be a positive integer")
+    if cold_age_days < 0:
+        raise ValueError("archive.cold_age_days must be a non-negative integer")
 
     return VaultConfig(
         config_path=path,
@@ -326,35 +204,20 @@ def load_config(config_path: Path | None = None) -> VaultConfig:
             workspace_root=workspace_root,
             import_root=import_root,
             projection_home=projection_home,
-            shadow_home=shadow_home,
             local_workspace_extras=local_workspace_extras,
-            archive_root=archive_root,
-            relay_root=relay_root,
-        ),
-        sync=SyncConfig(
-            default_strategy=default_strategy,
-            direct_max_delta_files=direct_max_delta_files,
-            direct_max_delta_bytes=direct_max_delta_bytes,
-            projection_transport=projection_transport,
-            projection_direct_max_bundle_bytes=projection_direct_max_bundle_bytes,
+            stable_root=stable_root,
         ),
         archive=ArchiveConfig(
-            primary_backend=primary_backend,
-            primary_root=primary_root,
-            secondary_backend=secondary_backend,
-            secondary_root=secondary_root,
+            root=archive_root,
             cadence_days=cadence_days,
             cold_age_days=cold_age_days,
-            shard_target_bytes=shard_target_bytes,
             staging_root=staging_root,
-            restore_staging_root=restore_staging_root,
             machine_id_path=machine_id_path,
             source_paths=tuple(source_paths),
             require_quiescent_for_prune=_bool_value(
                 archive_raw.get("require_quiescent_for_prune"),
                 True,
+                "archive.require_quiescent_for_prune",
             ),
         ),
-        machines=machines,
-        retention_rules=tuple(retention_rules),
     )
