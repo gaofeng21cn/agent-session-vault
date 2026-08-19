@@ -33,7 +33,7 @@ and artifact-transport control plane.
   `agent-session-vault config --json`,
   `agent-session-vault sync fleet --json`,
   `agent-session-vault tokscale env --json`,
-  `agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run`,
+  `agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run`,
   `agent-session-vault ops daily-tokscale --json`, and
   `agent-session-vault ops archive-cycle --due-only --deep --json`.
 - Keep real paths, machine identities, sessions, projections, archives,

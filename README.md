@@ -19,7 +19,7 @@ conversation archives are a separate, explicit workflow.
 | OPL Fleet | Node inventory, network routes, admission, dispatch, and artifact transport |
 | Agent Session Vault | Projection semantics, imports, stable analytics copies, Tokscale execution, and Codex archives |
 | Tokscale | Downstream usage calculation and submission |
-| Codex, Gemini CLI, OpenClaw | Their own live session roots |
+| Codex, Gemini CLI, OpenClaw, Antigravity IDE, ZCode | Their own live session roots and APIs |
 
 There is one cross-machine path and one Tokscale view. Both are owned by this
 repository rather than duplicated in local machine configuration.
@@ -56,7 +56,7 @@ Inspect or run Tokscale against the managed projection:
 
 ```bash
 agent-session-vault tokscale env --json
-agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run
+agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run
 ```
 
 Run the complete daily sync and single-submit workflow:

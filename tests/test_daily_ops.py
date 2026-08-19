@@ -27,7 +27,7 @@ Data to submit:
   Active days: 159
   Total tokens: 225,000,000,001
   Total cost: $193600.25
-  Clients: codex, gemini, openclaw
+  Clients: codex, gemini, openclaw, antigravity, zcode
   Models: 14 models
 """
 
@@ -113,6 +113,8 @@ def _install_command_fake(monkeypatch: pytest.MonkeyPatch, calls: list[list[str]
         calls.append(command)
         if command[:3] == ["npm", "view", "tokscale"]:
             output = "4.5.2\n"
+        elif "antigravity" in command:
+            output = "Antigravity sync\ndetected connections: 0\ncached sessions after sync: 0\n"
         elif "--help" in command:
             output = HELP_OUTPUT
         elif "--dry-run" in command:
@@ -134,8 +136,8 @@ def _write_cached_contract(run_root: Path) -> None:
             {
                 "schema_version": 1,
                 "tokscale_version": "4.5.2",
-                "clients": ["codex", "gemini", "openclaw"],
-                "client_args": ["-c", "codex,gemini,openclaw"],
+                "clients": ["codex", "gemini", "openclaw", "antigravity", "zcode"],
+                "client_args": ["-c", "codex,gemini,openclaw,antigravity,zcode"],
                 "dry_run": True,
                 "verified_at": "2026-07-14T00:00:00+00:00",
             }
@@ -159,10 +161,13 @@ def test_daily_tokscale_cached_contract_runs_one_submit(tmp_path: Path, monkeypa
     assert result.payload["status"] == "confirmed"
     assert result.payload["machine_source"] == "fleet"
     assert result.payload["projection_env"]["status"] == "valid"
+    assert result.payload["source_sync"]["antigravity"]["status"] == "skipped_unavailable"
     assert result.payload["tokscale"]["contract_checked"] is False
     submit_calls = [command for command in calls if "submit" in command]
     assert len(submit_calls) == 1
     assert "--dry-run" not in submit_calls[0]
+    assert calls[0][:3] == ["npm", "view", "tokscale"]
+    assert "antigravity" in calls[1]
     assert Path(result.payload["receipt_path"]).is_file()
 
 
@@ -214,7 +219,7 @@ def test_daily_tokscale_rejects_missing_synced_projection(tmp_path: Path, monkey
 
     assert result.exit_code == 1
     assert result.payload["error"]["phase"] == "projection_env"
-    assert calls == []
+    assert not any("submit" in command for command in calls)
 
 
 def test_cli_daily_tokscale_passes_fleet_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:

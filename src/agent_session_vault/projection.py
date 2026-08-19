@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 
 from .archive import _sha256_file
@@ -23,8 +24,14 @@ LOCAL_PROJECTION_INVENTORY_NAME = ".projection-inventory.json"
 PROJECTION_METADATA_NAMES = {PROJECTION_ROOTS_MANIFEST_NAME, PROJECTION_INVENTORY_NAME}
 LOCAL_HOME_IMPORT_NAME = "local-home"
 LOCAL_HOME_STATE_NAME = ".local-home-projection-state.json"
-LOCAL_HOME_CLIENTS = ("codex", "gemini", "openclaw")
-CODEX_PROJECTION_VERSION = 2
+LOCAL_HOME_CLIENTS = ("codex", "gemini", "openclaw", "antigravity", "zcode")
+HOME_CLIENT_SOURCE_SPECS = (
+    ("codex", ".codex"),
+    ("gemini", ".gemini"),
+    ("openclaw", ".openclaw"),
+    ("zcode", ".zcode"),
+)
+CODEX_PROJECTION_VERSION = 3
 CODEX_SYSTEM_INJECTED_PREFIXES = (
     "<environment_context>",
     "<system-reminder>",
@@ -58,6 +65,7 @@ class ProjectionBundle:
     files_seen: int = 0
     files_projected: int = 0
     files_reused: int = 0
+    client_statuses: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,7 @@ class LocalHomeProjectionResult:
     dest_bytes_total: int
     token_events_total: int
     clients: tuple[str, ...]
+    client_statuses: dict[str, str]
     dry_run: bool
 
 
@@ -294,10 +303,114 @@ def local_home_projection_root(config: VaultConfig) -> Path:
     return config.paths.import_root / LOCAL_HOME_IMPORT_NAME
 
 
+def antigravity_config_root(config: VaultConfig) -> Path:
+    return local_home_projection_root(config) / ".source-cache" / "tokscale"
+
+
+def antigravity_cache_root(config: VaultConfig) -> Path:
+    return antigravity_config_root(config) / "antigravity-cache"
+
+
+def _zcode_usage_cache_path(config: VaultConfig) -> Path:
+    return local_home_projection_root(config) / ".source-cache" / "zcode" / "model-usage.jsonl"
+
+
+def _write_bytes_if_changed(path: Path, payload: bytes) -> bool:
+    if path.is_file() and path.read_bytes() == payload:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(payload)
+    temporary.replace(path)
+    return True
+
+
+def _zcode_usage_key(payload: dict[str, object]) -> str:
+    usage_id = payload.get("usageId")
+    if isinstance(usage_id, str) and usage_id:
+        return f"id:{usage_id}"
+    return "legacy:" + "\x1f".join(
+        str(payload.get(field) or "")
+        for field in ("sessionId", "model", "timestamp")
+    )
+
+
+def _prepare_zcode_usage_projection(config: VaultConfig) -> str:
+    source_db = config.paths.home / ".zcode" / "cli" / "db" / "db.sqlite"
+    destination = _zcode_usage_cache_path(config)
+    if not source_db.is_file():
+        return "cached" if destination.is_file() else "skipped_unavailable"
+
+    snapshot = destination.with_name(f".{destination.name}.{os.getpid()}.sqlite")
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.unlink(missing_ok=True)
+    try:
+        source_uri = f"file:{source_db}?mode=ro"
+        with sqlite3.connect(source_uri, uri=True) as source, sqlite3.connect(snapshot) as target:
+            source.backup(target)
+        with sqlite3.connect(snapshot) as connection:
+            rows = connection.execute(
+                "SELECT id, session_id, model_id, started_at, "
+                "input_tokens, output_tokens, reasoning_tokens, "
+                "cache_read_input_tokens, cache_creation_input_tokens, computed_total_tokens "
+                "FROM model_usage WHERE COALESCE(input_tokens, 0) "
+                "+ COALESCE(output_tokens, 0) + COALESCE(reasoning_tokens, 0) "
+                "+ COALESCE(cache_read_input_tokens, 0) "
+                "+ COALESCE(cache_creation_input_tokens, 0) > 0 ORDER BY started_at, id"
+            ).fetchall()
+        if not rows:
+            return "cached" if destination.is_file() else "skipped_unavailable"
+
+        records: dict[str, dict[str, object]] = {}
+        if destination.is_file():
+            for line in destination.read_text(encoding="utf-8").splitlines():
+                try:
+                    existing = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(existing, dict):
+                    records[_zcode_usage_key(existing)] = existing
+
+        for row in rows:
+            started_at = max(int(row[3] or 0), 0)
+            timestamp = datetime.fromtimestamp(started_at / 1000, UTC).isoformat()
+            record: dict[str, object] = {
+                "role": "assistant",
+                "usageId": str(row[0]),
+                "sessionId": str(row[1] or "zcode"),
+                "model": str(row[2] or "glm-5.2"),
+                "timestamp": timestamp,
+                "usage": {
+                    "input": max(int(row[4] or 0), 0),
+                    "output": max(int(row[5] or 0), 0),
+                    "reasoning": max(int(row[6] or 0), 0),
+                    "cache_read": max(int(row[7] or 0), 0),
+                    "cache_write": max(int(row[8] or 0), 0),
+                    "total": max(int(row[9] or 0), 0),
+                },
+            }
+            records.pop(
+                "legacy:" + "\x1f".join(str(record.get(field) or "") for field in ("sessionId", "model", "timestamp")),
+                None,
+            )
+            records[_zcode_usage_key(record)] = record
+        ordered = sorted(
+            records.values(),
+            key=lambda item: (str(item.get("timestamp") or ""), str(item.get("usageId") or "")),
+        )
+        lines = [json.dumps(record, separators=(",", ":")) for record in ordered]
+        _write_bytes_if_changed(destination, ("\n".join(lines) + "\n").encode("utf-8"))
+        return "projected"
+    except (OSError, sqlite3.Error, ValueError):
+        return "cached" if destination.is_file() else "skipped_unavailable"
+    finally:
+        snapshot.unlink(missing_ok=True)
+
+
 def _local_home_roots(config: VaultConfig) -> list[DiscoveredRoot]:
     roots: list[DiscoveredRoot] = []
-    for client in LOCAL_HOME_CLIENTS:
-        source_path = config.paths.home / f".{client}"
+    for client, relative_path in HOME_CLIENT_SOURCE_SPECS:
+        source_path = config.paths.home / relative_path
         if not source_path.is_dir():
             continue
         resolved = source_path.resolve()
@@ -309,6 +422,28 @@ def _local_home_roots(config: VaultConfig) -> list[DiscoveredRoot]:
                 source_path=resolved,
                 label="home",
                 kind="home_root",
+            )
+        )
+    antigravity_sessions = antigravity_cache_root(config) / "sessions"
+    if antigravity_sessions.is_dir():
+        roots.append(
+            DiscoveredRoot(
+                client="antigravity",
+                root_id="official-sync-cache",
+                source_path=antigravity_sessions.resolve(),
+                label="official-sync-cache",
+                kind="official_sync_cache",
+            )
+        )
+    zcode_usage = _zcode_usage_cache_path(config)
+    if zcode_usage.is_file():
+        roots.append(
+            DiscoveredRoot(
+                client="zcode",
+                root_id="sqlite-usage",
+                source_path=zcode_usage.resolve(),
+                label="sqlite-usage",
+                kind="generated_usage",
             )
         )
     return roots
@@ -361,6 +496,39 @@ def _iter_local_projection_files(root: DiscoveredRoot) -> list[_LocalProjectionF
                         ),
                     )
                 )
+        return files
+
+    if root.client == "antigravity":
+        for source_path in sorted(root.source_path.rglob("*.jsonl")):
+            files.append(
+                _LocalProjectionFile(
+                    client="antigravity",
+                    source_path=source_path,
+                    relative_destination=Path("antigravity") / root.root_id / source_path.relative_to(root.source_path),
+                )
+            )
+        return files
+
+    if root.client == "zcode":
+        if root.kind == "generated_usage":
+            files.append(
+                _LocalProjectionFile(
+                    client="zcode",
+                    source_path=root.source_path,
+                    relative_destination=Path("zcode") / root.root_id / root.source_path.name,
+                )
+            )
+            return files
+        source_root = root.source_path / "projects"
+        if source_root.is_dir():
+            for source_path in sorted(source_root.rglob("*.jsonl")):
+                files.append(
+                    _LocalProjectionFile(
+                        client="zcode",
+                        source_path=source_path,
+                        relative_destination=Path("zcode") / root.root_id / source_path.relative_to(source_root),
+                    )
+                )
     return files
 
 
@@ -391,7 +559,7 @@ def _project_local_file(item: _LocalProjectionFile, destination: Path) -> dict[s
     try:
         if item.client == "codex":
             result = build_codex_projection_file(item.source_path, temporary)
-        elif item.client == "gemini":
+        elif item.client in {"gemini", "antigravity", "zcode"}:
             shutil.copy2(item.source_path, temporary)
             result = {
                 "source_bytes": item.source_path.stat().st_size,
@@ -434,10 +602,16 @@ def _prepare_projection_home(config: VaultConfig) -> None:
         destination.symlink_to(source)
 
 
-def refresh_local_home_projection(config: VaultConfig, *, dry_run: bool = False) -> LocalHomeProjectionResult:
+def refresh_local_home_projection(
+    config: VaultConfig,
+    *,
+    dry_run: bool = False,
+    client_statuses: dict[str, str] | None = None,
+) -> LocalHomeProjectionResult:
     machine_root = local_home_projection_root(config)
     raw_root = machine_root / ".raw"
     state_path = machine_root / LOCAL_HOME_STATE_NAME
+    zcode_status = _prepare_zcode_usage_projection(config) if not dry_run else "planned"
     roots = _local_home_roots(config)
     state = _load_local_home_state(state_path)
     state_files = state["files"]
@@ -450,10 +624,21 @@ def refresh_local_home_projection(config: VaultConfig, *, dry_run: bool = False)
     dest_bytes_total = 0
     token_events_total = 0
     seen_clients: set[str] = set()
+    statuses = {client: "skipped_unavailable" for client in LOCAL_HOME_CLIENTS}
+    statuses["zcode"] = zcode_status
+    explicit_statuses = set(client_statuses or {})
+    if client_statuses:
+        statuses.update(client_statuses)
 
     for root in roots:
         seen_clients.add(root.client)
-        for item in _iter_local_projection_files(root):
+        items = _iter_local_projection_files(root)
+        if items and statuses[root.client] == "skipped_unavailable":
+            if root.client == "antigravity" and root.client in explicit_statuses:
+                pass
+            else:
+                statuses[root.client] = "cached" if root.client == "antigravity" else "projected"
+        for item in items:
             files_seen += 1
             signature = _local_projection_signature(item.source_path)
             source_key = str(item.source_path.resolve())
@@ -523,6 +708,7 @@ def refresh_local_home_projection(config: VaultConfig, *, dry_run: bool = False)
         dest_bytes_total=dest_bytes_total,
         token_events_total=token_events_total,
         clients=tuple(sorted(seen_clients)),
+        client_statuses=statuses,
         dry_run=dry_run,
     )
 
@@ -540,6 +726,7 @@ def local_home_projection_payload(result: LocalHomeProjectionResult) -> dict[str
         "dest_bytes_total": result.dest_bytes_total,
         "token_events_total": result.token_events_total,
         "clients": list(result.clients),
+        "client_statuses": result.client_statuses,
     }
 
 
@@ -590,7 +777,7 @@ def import_machine_projection(
 
     mode = str(payload.get("mode") or "projection_full")
     if mode == "projection_full":
-        for client in ("codex", "gemini", "openclaw"):
+        for client in LOCAL_HOME_CLIENTS:
             if (extract_root / client).is_dir():
                 # Keep the imported `.raw` tree append-only so Tokscale can
                 # continue submitting historical usage after upstream cleanup.
@@ -661,6 +848,11 @@ def import_machine_projection(
         files_seen=int(projection_state.get("files_seen", 0)),
         files_projected=int(projection_state.get("files_projected", 0)),
         files_reused=int(projection_state.get("files_reused", 0)),
+        client_statuses=(
+            {str(key): str(value) for key, value in payload["client_statuses"].items()}
+            if isinstance(payload.get("client_statuses"), dict)
+            else None
+        ),
     )
 
 
@@ -677,18 +869,140 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import subprocess
 import tarfile
 
 PROJECTION_ROOTS_MANIFEST_NAME = "roots-manifest.json"
 PROJECTION_INVENTORY_NAME = "inventory.json"
-CODEX_PROJECTION_VERSION = 2
+CODEX_PROJECTION_VERSION = 3
 PROJECTION_STATE_SCHEMA_VERSION = 1
 CODEX_SYSTEM_INJECTED_PREFIXES = (
     "<environment_context>",
     "<system-reminder>",
     "<user_instructions>",
 )
+
+
+def _write_bytes_if_changed(path, payload):
+    if path.is_file() and path.read_bytes() == payload:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(payload)
+    temporary.replace(path)
+    return True
+
+
+def _zcode_usage_key(payload):
+    usage_id = payload.get("usageId")
+    if isinstance(usage_id, str) and usage_id:
+        return f"id:{usage_id}"
+    return "legacy:" + "\x1f".join(
+        str(payload.get(field) or "")
+        for field in ("sessionId", "model", "timestamp")
+    )
+
+
+def _prepare_zcode_usage_projection(source_home, state_dir):
+    source_db = source_home / ".zcode" / "cli" / "db" / "db.sqlite"
+    destination = state_dir / "source-cache" / "zcode" / "model-usage.jsonl"
+    if not source_db.is_file():
+        return ("cached" if destination.is_file() else "skipped_unavailable"), destination
+    snapshot = destination.with_name(f".{destination.name}.{os.getpid()}.sqlite")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if snapshot.exists():
+        snapshot.unlink()
+    try:
+        source_uri = f"file:{source_db}?mode=ro"
+        with sqlite3.connect(source_uri, uri=True) as source, sqlite3.connect(snapshot) as target:
+            source.backup(target)
+        with sqlite3.connect(snapshot) as connection:
+            rows = connection.execute(
+                "SELECT id, session_id, model_id, started_at, "
+                "input_tokens, output_tokens, reasoning_tokens, "
+                "cache_read_input_tokens, cache_creation_input_tokens, computed_total_tokens "
+                "FROM model_usage WHERE COALESCE(input_tokens, 0) "
+                "+ COALESCE(output_tokens, 0) + COALESCE(reasoning_tokens, 0) "
+                "+ COALESCE(cache_read_input_tokens, 0) "
+                "+ COALESCE(cache_creation_input_tokens, 0) > 0 ORDER BY started_at, id"
+            ).fetchall()
+        if not rows:
+            return ("cached" if destination.is_file() else "skipped_unavailable"), destination
+        records = {}
+        if destination.is_file():
+            for line in destination.read_text(encoding="utf-8").splitlines():
+                try:
+                    existing = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(existing, dict):
+                    records[_zcode_usage_key(existing)] = existing
+
+        for row in rows:
+            started_at = max(int(row[3] or 0), 0)
+            timestamp = datetime.fromtimestamp(started_at / 1000, timezone.utc).isoformat()
+            record = {
+                "role": "assistant",
+                "usageId": str(row[0]),
+                "sessionId": str(row[1] or "zcode"),
+                "model": str(row[2] or "glm-5.2"),
+                "timestamp": timestamp,
+                "usage": {
+                    "input": max(int(row[4] or 0), 0),
+                    "output": max(int(row[5] or 0), 0),
+                    "reasoning": max(int(row[6] or 0), 0),
+                    "cache_read": max(int(row[7] or 0), 0),
+                    "cache_write": max(int(row[8] or 0), 0),
+                    "total": max(int(row[9] or 0), 0),
+                },
+            }
+            records.pop(
+                "legacy:" + "\x1f".join(str(record.get(field) or "") for field in ("sessionId", "model", "timestamp")),
+                None,
+            )
+            records[_zcode_usage_key(record)] = record
+        ordered = sorted(
+            records.values(),
+            key=lambda item: (str(item.get("timestamp") or ""), str(item.get("usageId") or "")),
+        )
+        lines = [json.dumps(record, separators=(",", ":")) for record in ordered]
+        _write_bytes_if_changed(destination, ("\\n".join(lines) + "\\n").encode("utf-8"))
+        return "projected", destination
+    except (OSError, sqlite3.Error, ValueError):
+        return ("cached" if destination.is_file() else "skipped_unavailable"), destination
+    finally:
+        if snapshot.exists():
+            snapshot.unlink()
+
+
+def _sync_antigravity_cache(package, source_home, state_dir):
+    config_dir = state_dir / "source-cache" / "tokscale"
+    cache_root = config_dir / "antigravity-cache"
+    if not package:
+        return "not_requested", cache_root
+    env = dict(os.environ)
+    env.pop("CODEX_HOME", None)
+    env.pop("TOKSCALE_EXTRA_DIRS", None)
+    env["HOME"] = str(source_home)
+    env["NPM_CONFIG_CACHE"] = str(source_home / ".npm")
+    env["TOKSCALE_CONFIG_DIR"] = str(config_dir)
+    try:
+        completed = subprocess.run(
+            ["npx", "-y", package, "antigravity", "sync"],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        output = completed.stdout + completed.stderr
+        match = re.search(r"detected connections:\\s*([\\d,]+)", output)
+        connections = int(match.group(1).replace(",", "")) if match else 0
+        status = "synced" if completed.returncode == 0 and connections > 0 else "skipped_unavailable"
+    except (OSError, subprocess.TimeoutExpired):
+        status = "skipped_unavailable"
+    return status, cache_root
 
 
 def _json_load(line):
@@ -1002,6 +1316,33 @@ def _build_projection_plan(machine_name, import_name, roots, source_home):
                         file_path,
                         Path("openclaw") / root["root_id"] / _openclaw_projected_relative_path(source_root, file_path),
                     )
+        elif client == "antigravity":
+            for file_path in sorted(source_path.rglob("*.jsonl")):
+                _add_projection_file(
+                    items,
+                    client,
+                    file_path,
+                    Path("antigravity") / root["root_id"] / file_path.relative_to(source_path),
+                )
+        elif client == "zcode":
+            if root.get("kind") == "generated_usage":
+                for file_path in sorted(source_path.glob("*.jsonl")):
+                    _add_projection_file(
+                        items,
+                        client,
+                        file_path,
+                        Path("zcode") / root["root_id"] / file_path.name,
+                    )
+            else:
+                source_root = source_path / "projects"
+                if source_root.is_dir():
+                    for file_path in sorted(source_root.rglob("*.jsonl")):
+                        _add_projection_file(
+                            items,
+                            client,
+                            file_path,
+                            Path("zcode") / root["root_id"] / file_path.relative_to(source_root),
+                        )
     return roots_manifest, [items[rel] for rel in sorted(items)]
 
 
@@ -1041,7 +1382,7 @@ def _project_to_blob(item, blob_root):
     try:
         if item["client"] == "codex":
             result = _build_codex_projection_file(source_path, temporary)
-        elif item["client"] == "gemini":
+        elif item["client"] in {"gemini", "antigravity", "zcode"}:
             shutil.copy2(source_path, temporary)
             result = {
                 "source_bytes": source_path.stat().st_size,
@@ -1203,7 +1544,8 @@ def main():
     artifact_root = Path(request["artifact_root"]).expanduser().resolve()
     state_root_raw = request.get("state_root")
     prune_previous_bundles = request.get("prune_previous_bundles") is True
-    roots = request["roots"]
+    roots = list(request["roots"])
+    tokscale_package = request.get("tokscale_package")
     requested_base_snapshot_id = request.get("base_snapshot_id")
     snapshot_id = request.get("snapshot_id") or f"{machine_name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
     bundle_dir = artifact_root / "projection" / machine_name / snapshot_id
@@ -1213,13 +1555,52 @@ def main():
     payload_root = staging_dir / "payload"
     payload_root.mkdir(parents=True, exist_ok=True)
 
-    roots_manifest, projection_items = _build_projection_plan(machine_name, import_name, roots, source_home)
-    roots_identity = _roots_manifest_identity(roots_manifest)
     persistent_state = isinstance(state_root_raw, str) and bool(state_root_raw)
     if persistent_state:
         state_dir = Path(state_root_raw).expanduser().resolve() / machine_name / "projection"
     else:
         state_dir = staging_dir / ".projection-state"
+
+    client_statuses = {client: "skipped_unavailable" for client in ("codex", "gemini", "openclaw", "antigravity", "zcode")}
+    antigravity_status, antigravity_cache = _sync_antigravity_cache(tokscale_package, source_home, state_dir)
+    client_statuses["antigravity"] = antigravity_status
+    antigravity_sessions = antigravity_cache / "sessions"
+    if antigravity_sessions.is_dir():
+        roots.append(
+            {
+                "client": "antigravity",
+                "path": str(antigravity_sessions),
+                "label": "official-sync-cache",
+                "kind": "official_sync_cache",
+            }
+        )
+    zcode_status, zcode_usage = _prepare_zcode_usage_projection(source_home, state_dir)
+    client_statuses["zcode"] = zcode_status
+    if zcode_usage.is_file():
+        roots.append(
+            {
+                "client": "zcode",
+                "path": str(zcode_usage.parent),
+                "label": "sqlite-usage",
+                "kind": "generated_usage",
+            }
+        )
+
+    for rule in roots:
+        client = rule["client"]
+        source_path = _expand_user_like(rule["path"], source_home)
+        if (
+            client in {"codex", "gemini", "openclaw"}
+            and source_path.exists()
+            and client_statuses.get(client) == "skipped_unavailable"
+        ):
+            client_statuses[client] = "projected"
+    zcode_projects = source_home / ".zcode" / "projects"
+    if client_statuses["zcode"] == "skipped_unavailable" and any(zcode_projects.rglob("*.jsonl")):
+        client_statuses["zcode"] = "projected"
+
+    roots_manifest, projection_items = _build_projection_plan(machine_name, import_name, roots, source_home)
+    roots_identity = _roots_manifest_identity(roots_manifest)
     state_path = state_dir / "state.json"
     blob_root = state_dir / "blobs"
     previous_state = _load_projection_state(state_path, roots_identity) if persistent_state else None
@@ -1296,6 +1677,7 @@ def main():
             "files_reused": reused_files,
             "files_deleted": len(state_deleted_files),
         },
+        "client_statuses": client_statuses,
     }
     if resolved_base_snapshot_id is not None:
         manifest_payload["base_snapshot_id"] = resolved_base_snapshot_id
@@ -1340,6 +1722,7 @@ def main():
                 "files_seen": len(projection_items),
                 "files_projected": len(projected_files),
                 "files_reused": reused_files,
+                "client_statuses": client_statuses,
             }
         )
     )
@@ -1356,6 +1739,7 @@ def fleet_projection_request(
     *,
     snapshot_id: str,
     base_snapshot_id: str | None = None,
+    tokscale_package: str | None = None,
 ) -> tuple[str, str]:
     artifact_root = ".local/state/agent-session-vault/fleet-jobs"
     remote_artifact_root = f"~/{artifact_root}"
@@ -1372,13 +1756,14 @@ def fleet_projection_request(
                 "roots": [
                     {
                         "client": client,
-                        "path": f"~/.{client}",
+                        "path": f"~/{relative_path}",
                         "glob": None,
                         "label": "home",
                         "kind": "home_root",
                     }
-                    for client in LOCAL_HOME_CLIENTS
+                    for client, relative_path in HOME_CLIENT_SOURCE_SPECS
                 ],
+                "tokscale_package": tokscale_package,
                 "base_snapshot_id": base_snapshot_id,
                 "prune_previous_bundles": True,
             },

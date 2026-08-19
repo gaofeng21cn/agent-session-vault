@@ -18,7 +18,7 @@ Codex 完整归档任务。
 | OPL Fleet | 节点清单、网络路由、准入、任务投放与产物传输 |
 | Agent Session Vault | 投影语义、导入、stable analytics 副本、Tokscale 执行与 Codex 归档 |
 | Tokscale | 下游用量计算与提交 |
-| Codex、Gemini CLI、OpenClaw | 各自的实时会话目录 |
+| Codex、Gemini CLI、OpenClaw、Antigravity IDE、ZCode | 各自的实时会话目录和 API |
 
 跨机只有一条路径，Tokscale 只有一个受管视图，两者都由本仓负责，不在本机配置中重复维护。
 
@@ -53,7 +53,7 @@ agent-session-vault sync fleet --json
 
 ```bash
 agent-session-vault tokscale env --json
-agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run
+agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run
 ```
 
 执行完整的每日同步与单次提交：

@@ -65,14 +65,14 @@ agent-session-vault tokscale env --json
 在该视图上运行 Tokscale 官方预览：
 
 ```bash
-agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run
+agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run
 ```
 
 `--` 后面的参数全部传给 Tokscale。相对地，把 Vault 自己的 `--dry-run` 放在分隔符前，
 只会打印 `npx` 调用：
 
 ```bash
-agent-session-vault tokscale exec --dry-run -- submit -c codex,gemini,openclaw
+agent-session-vault tokscale exec --dry-run -- submit -c codex,gemini,openclaw,antigravity,zcode
 ```
 
 除 Vault 自身的命令打印 dry run 外，`tokscale exec` 会先刷新本机 HOME 投影，再调用
@@ -82,7 +82,7 @@ Tokscale。不要裸跑 `tokscale`，否则会绕过受管 HOME 和 extra roots�
 
 ```bash
 AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=tokscale@<version> \
-  agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run
+  agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run
 ```
 
 ## 每日聚合提交
@@ -97,6 +97,10 @@ agent-session-vault ops daily-tokscale --mirror-stable --json
 这是一次真实的外部提交，只有确实要提交时才能运行。命令使用进程锁，并在配置文件所在目录
 的 `ops/daily-tokscale` 下写入 `current.json`、逐次日志和终态 `receipt.json`；
 `--run-root` 可以覆盖该位置。
+
+投影前，runner 会使用同一个当前 Tokscale 包在每个可用节点刷新 Antigravity IDE 官方 RPC
+cache。Antigravity language server 不可用时记为 `skipped_unavailable`，但不会丢弃旧 cache。
+ZCode SQLite 会先生成一致快照，再转为只含用量的 JSONL；不会从数据库复制对话正文。
 
 只有 `status: confirmed` 加本次回执的统计值才能证明本轮确认完成。`already_running`、
 `failed`、`unconfirmed` 和 `incomplete_receipt` 都不等于提交成功。stable mirror 告警不会

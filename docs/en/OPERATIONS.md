@@ -73,14 +73,14 @@ agent-session-vault tokscale env --json
 Run the official Tokscale preview against that view:
 
 ```bash
-agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run
+agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run
 ```
 
 Everything after `--` is passed to Tokscale. By contrast, placing Vault's
 `--dry-run` before the separator only prints the `npx` invocation:
 
 ```bash
-agent-session-vault tokscale exec --dry-run -- submit -c codex,gemini,openclaw
+agent-session-vault tokscale exec --dry-run -- submit -c codex,gemini,openclaw,antigravity,zcode
 ```
 
 Except for Vault's command-printing dry run, `tokscale exec` refreshes the
@@ -91,7 +91,7 @@ When a manual run requires a specific package, pin it for that invocation:
 
 ```bash
 AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=tokscale@<version> \
-  agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw --dry-run
+  agent-session-vault tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run
 ```
 
 ## Daily Aggregate Submit
@@ -105,6 +105,11 @@ agent-session-vault ops daily-tokscale --mirror-stable --json
 ```
 
 This is a real external submission. Run it only when submission is intended.
+Before projection, the runner uses that current package to refresh Antigravity
+IDE's official RPC cache on each available node. An unavailable Antigravity
+language server is reported as `skipped_unavailable` and does not discard the
+previous cache. ZCode SQLite is snapshotted and converted to usage-only JSONL;
+conversation content is not copied from the database.
 It uses a process lock and writes `current.json`, per-run logs, and a terminal
 `receipt.json` below the configured file's `ops/daily-tokscale` directory unless
 `--run-root` overrides it.

@@ -14,7 +14,9 @@ def _config(tmp_path: Path) -> Path:
     imports = tmp_path / "imports"
     projection_home = tmp_path / "projection-home"
     (imports / "local-home" / ".raw" / "codex").mkdir(parents=True)
+    (imports / "local-home" / ".raw" / "zcode").mkdir(parents=True)
     (imports / "fleet-node" / ".raw" / "gemini").mkdir(parents=True)
+    (imports / "fleet-node" / ".raw" / "antigravity").mkdir(parents=True)
     projection_home.mkdir()
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -40,6 +42,8 @@ def test_build_tokscale_invocation_uses_projection_only_view(tmp_path: Path) -> 
     assert invocation.env["HOME"] != str(config.paths.home)
     assert "imports/local-home/.raw/codex" in invocation.env["TOKSCALE_EXTRA_DIRS"]
     assert "imports/fleet-node/.raw/gemini" in invocation.env["TOKSCALE_EXTRA_DIRS"]
+    assert "imports/local-home/.raw/zcode" in invocation.env["TOKSCALE_EXTRA_DIRS"]
+    assert "imports/fleet-node/.raw/antigravity" in invocation.env["TOKSCALE_EXTRA_DIRS"]
     assert invocation.command[:3] == ["npx", "-y", DEFAULT_TOKSCALE_PACKAGE]
     assert invocation.command[-2:] == ["submit", "--dry-run"]
 

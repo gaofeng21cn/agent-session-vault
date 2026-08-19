@@ -18,16 +18,18 @@ from .projection import (
     LOCAL_HOME_CLIENTS,
     LOCAL_HOME_STATE_NAME,
     ProjectionBundle,
+    antigravity_cache_root,
+    antigravity_config_root,
     local_home_projection_payload,
     local_home_projection_root,
     refresh_local_home_projection,
 )
 from .stable import mirror_stable_layer, stable_mirror_payload
-from .tokscale import build_tokscale_invocation
+from .tokscale import build_antigravity_sync_invocation, build_tokscale_invocation
 from .views import build_tokscale_view
 
 
-DEFAULT_CLIENTS = ("codex", "gemini", "openclaw")
+DEFAULT_CLIENTS = LOCAL_HOME_CLIENTS
 @dataclass(frozen=True)
 class CommandResult:
     returncode: int
@@ -265,7 +267,15 @@ def _bundle_payload(bundle: ProjectionBundle) -> dict[str, object]:
             "files_projected": bundle.files_projected,
             "files_reused": bundle.files_reused,
         }
+    if bundle.client_statuses is not None:
+        payload["client_statuses"] = bundle.client_statuses
     return payload
+
+
+def _antigravity_sync_status(result: CommandResult) -> str:
+    match = re.search(r"detected connections:\s*([\d,]+)", _strip_ansi(result.output))
+    connections = int(match.group(1).replace(",", "")) if match else 0
+    return "synced" if result.returncode == 0 and connections > 0 else "skipped_unavailable"
 
 
 def run_daily_tokscale(
@@ -361,9 +371,47 @@ def run_daily_tokscale(
     help_seconds: float | None = None
     preview_seconds: float | None = None
     try:
+        latest = run_command(
+            ["npm", "view", "tokscale", "version"],
+            env=None,
+            log_name="npm-latest.log",
+            phase="npm_latest",
+            timeout_seconds=60,
+        )
+        if latest.returncode != 0:
+            raise DailyTokscaleError("npm_latest", f"npm view failed with exit {latest.returncode}")
+        version = _parse_latest_version(latest.output)
+        package = f"tokscale@{version}"
+
+        antigravity_invocation = build_antigravity_sync_invocation(
+            config,
+            package_override=package,
+            config_dir=str(antigravity_config_root(config)),
+        )
+        antigravity_sync = run_command(
+            antigravity_invocation.command,
+            env=antigravity_invocation.env,
+            log_name="antigravity-sync.log",
+            phase="antigravity_sync",
+            timeout_seconds=120,
+        )
+        antigravity_status = _antigravity_sync_status(antigravity_sync)
+        payload["source_sync"] = {
+            "antigravity": {
+                "status": antigravity_status,
+                "exit_code": antigravity_sync.returncode,
+                "duration_seconds": antigravity_sync.duration_seconds,
+                "cache_root": str(antigravity_cache_root(config)),
+                "log": str(run_dir / "antigravity-sync.log"),
+            }
+        }
+
         local_started = time.monotonic()
         update_status("local_projection")
-        local_projection = refresh_local_home_projection(config)
+        local_projection = refresh_local_home_projection(
+            config,
+            client_statuses={"antigravity": antigravity_status},
+        )
         local_payload = local_home_projection_payload(local_projection)
         local_payload["duration_seconds"] = round(time.monotonic() - local_started, 3)
         payload["local_projection"] = local_payload
@@ -375,6 +423,7 @@ def run_daily_tokscale(
             fleet_command=fleet_command,
             instance=fleet_instance,
             timeout_seconds=sync_timeout_seconds,
+            tokscale_package=package,
         )
         nodes = list(fleet_sync.nodes)
         payload["fleet"] = {
@@ -412,18 +461,6 @@ def run_daily_tokscale(
                 "projection_env",
                 "Tokscale view is missing the local projection HOME, local projection state, or synced Fleet roots",
             )
-
-        latest = run_command(
-            ["npm", "view", "tokscale", "version"],
-            env=None,
-            log_name="npm-latest.log",
-            phase="npm_latest",
-            timeout_seconds=60,
-        )
-        if latest.returncode != 0:
-            raise DailyTokscaleError("npm_latest", f"npm view failed with exit {latest.returncode}")
-        version = _parse_latest_version(latest.output)
-        package = f"tokscale@{version}"
 
         contract = _read_json(contract_path)
         contract_checked = force_contract_check or not _contract_matches(contract, version, clients)

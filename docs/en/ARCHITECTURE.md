@@ -10,7 +10,7 @@ invariants. It does not define configuration fields or operating procedures.
 | OPL Fleet | Approved node inventory, controller identity, routes, admission, job dispatch, artifact return | Projection semantics, Tokscale submission, archive contents |
 | Agent Session Vault | Projection format and state, imported analytics history, managed Tokscale environment, stable recovery copies, Codex archive lifecycle | Fleet inventory, live client state, provider billing truth |
 | Tokscale | Usage calculation, official preview, external submission | Cross-machine discovery, source collection, archive lifecycle |
-| Codex, Gemini CLI, OpenClaw | Authoritative live session roots | Analytics projection and Vault archive state |
+| Codex, Gemini CLI, OpenClaw, Antigravity IDE, ZCode | Authoritative live session roots and APIs | Analytics projection and Vault archive state |
 
 Each responsibility has one owner. Session Vault consumes Fleet and client
 interfaces without copying their control state.
@@ -44,7 +44,15 @@ not a selectable view: the product exposes one managed Tokscale projection.
 
 ## Projection Contract
 
-- Supported clients are Codex, Gemini CLI, and OpenClaw.
+- Supported clients are Codex, Gemini CLI, OpenClaw, Antigravity IDE, and
+  ZCode. Gemini history remains a separate client after the Antigravity rename.
+- Antigravity IDE usage is refreshed through the official Tokscale
+  `antigravity sync` RPC path using the same current package as submit. Vault
+  projects the resulting usage-only cache and retains the previous cache when
+  the IDE language server is unavailable.
+- ZCode's live SQLite database is read through SQLite backup. Vault exports
+  only model, timestamp, session identity, and token counters as JSONL, then
+  combines it with any legacy `.zcode/projects` JSONL history.
 - Tokscale receives `projection_home` as `HOME`; it never receives the real
   user HOME or `CODEX_HOME`.
 - `TOKSCALE_EXTRA_DIRS` contains the local projection, imported Fleet
@@ -111,6 +119,8 @@ deletion.
 - Maintaining machine inventory, routes, or artifact transport
 - Offering multiple selectable Tokscale views
 - Patching Tokscale or client upstreams
+- Enabling Antigravity CLI or DeepSeek Harness before their source format is
+  available in the current official Tokscale package and approved here
 - Treating provider billing as a Vault calculation
 - Restoring directly into a live Codex home
 - Keeping compatibility commands for retired workflows

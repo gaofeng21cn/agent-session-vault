@@ -116,6 +116,7 @@ def sync_fleet_node(
     fleet_command: str,
     instance: Path | None,
     timeout_seconds: float,
+    tokscale_package: str | None = None,
 ) -> FleetSyncResult:
     snapshot_id = _snapshot_id(node_id)
     import_name = node_id
@@ -123,6 +124,7 @@ def sync_fleet_node(
         node_id,
         snapshot_id=snapshot_id,
         base_snapshot_id=_base_snapshot_id(config, import_name),
+        tokscale_package=tokscale_package,
     )
     local_bundle_dir = fleet_local_bundle_dir(config, node_id, snapshot_id)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".py") as handle:
@@ -183,6 +185,7 @@ def sync_fleet(
     instance: Path | None,
     timeout_seconds: float,
     max_workers: int = 8,
+    tokscale_package: str | None = None,
 ) -> FleetSyncSummary:
     nodes = discover_fleet_nodes(
         fleet_command,
@@ -201,6 +204,7 @@ def sync_fleet(
                     fleet_command=fleet_command,
                     instance=instance,
                     timeout_seconds=timeout_seconds,
+                    tokscale_package=tokscale_package,
                 ): node.node_id
                 for node in remote_nodes
             }

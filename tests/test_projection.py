@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 
@@ -116,6 +117,31 @@ stable_root = "{tmp_path / 'stable'}"
     return config_path
 
 
+def _write_zcode_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE model_usage (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                model_id TEXT,
+                started_at INTEGER,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                cache_read_input_tokens INTEGER,
+                cache_creation_input_tokens INTEGER,
+                computed_total_tokens INTEGER
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO model_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("usage-1", "session-z", "GLM-5.2", 1781482056564, 100, 20, 5, 40, 10, 120),
+        )
+
+
 def test_refresh_local_home_projection_is_incremental_and_slim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     codex_session = home / ".codex" / "sessions" / "local.jsonl"
@@ -136,31 +162,83 @@ def test_refresh_local_home_projection_is_incremental_and_slim(tmp_path: Path) -
         + "\n",
     )
     _write(home / ".config" / "tokscale" / "credentials.json", '{"token":"test"}\n')
+    _write_zcode_db(home / ".zcode" / "cli" / "db" / "db.sqlite")
     config = load_config(_config(tmp_path, home))
+    _write(
+        local_home_projection_root(config)
+        / ".source-cache"
+        / "tokscale"
+        / "antigravity-cache"
+        / "sessions"
+        / "session.jsonl",
+        '{"type":"usage","sessionId":"a-1","timestamp":1781482056564,"input":10,"output":2}\n',
+    )
 
     first = refresh_local_home_projection(config)
     second = refresh_local_home_projection(config)
 
-    assert first.files_seen == 3
-    assert first.files_written == 3
-    assert set(first.clients) == {"codex", "gemini", "openclaw"}
+    with sqlite3.connect(home / ".zcode" / "cli" / "db" / "db.sqlite") as connection:
+        connection.execute("DELETE FROM model_usage WHERE id = ?", ("usage-1",))
+        connection.execute(
+            "INSERT INTO model_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("usage-2", "session-new", "GLM-5.2", 1781568456564, 200, 30, 0, 50, 0, 230),
+        )
+    third = refresh_local_home_projection(config)
+
+    assert first.files_seen == 5
+    assert first.files_written == 5
+    assert set(first.clients) == {"codex", "gemini", "openclaw", "antigravity", "zcode"}
+    assert first.client_statuses["antigravity"] == "cached"
+    assert first.client_statuses["zcode"] == "projected"
     assert second.files_written == 0
-    assert second.files_skipped == 3
+    assert second.files_skipped == 5
+    assert third.files_written == 1
     assert json.loads(first.state_path.read_text(encoding="utf-8"))["projector_version"] == CODEX_PROJECTION_VERSION
     assert (first.projection_home / ".config" / "tokscale" / "credentials.json").is_symlink()
 
     projected_root = local_home_projection_root(config) / ".raw"
     projected_codex = next((projected_root / "codex").rglob("local.jsonl"))
     projected_openclaw = next((projected_root / "openclaw").rglob("session.jsonl"))
+    projected_zcode = next((projected_root / "zcode").rglob("model-usage.jsonl"))
     assert "drop-" not in projected_codex.read_text(encoding="utf-8")
     assert "drop-this" not in projected_openclaw.read_text(encoding="utf-8")
+    zcode_rows = [json.loads(line) for line in projected_zcode.read_text(encoding="utf-8").splitlines()]
+    assert {row["usageId"] for row in zcode_rows} == {"usage-1", "usage-2"}
+    original_zcode_row = next(row for row in zcode_rows if row["usageId"] == "usage-1")
+    assert original_zcode_row["sessionId"] == "session-z"
+    assert original_zcode_row["usage"]["cache_read"] == 40
+    assert all("content" not in row for row in zcode_rows)
     assert not list((projected_root / "gemini").rglob("cache.json"))
+
+
+def test_refresh_local_home_projection_keeps_antigravity_cache_when_sync_is_unavailable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    config = load_config(_config(tmp_path, home))
+    cached_session = (
+        local_home_projection_root(config)
+        / ".source-cache"
+        / "tokscale"
+        / "antigravity-cache"
+        / "sessions"
+        / "session.jsonl"
+    )
+    _write(cached_session, '{"type":"usage","sessionId":"a-1","input":10,"output":2}\n')
+
+    result = refresh_local_home_projection(
+        config,
+        client_statuses={"antigravity": "skipped_unavailable"},
+    )
+
+    assert result.client_statuses["antigravity"] == "skipped_unavailable"
+    projected = next((local_home_projection_root(config) / ".raw" / "antigravity").rglob("session.jsonl"))
+    assert projected.read_text(encoding="utf-8") == cached_session.read_text(encoding="utf-8")
 
 
 def test_fleet_projection_request_exports_delta_and_imports_it(tmp_path: Path) -> None:
     source_home = tmp_path / "source-home"
     source_file = source_home / ".codex" / "sessions" / "one.jsonl"
     _write(source_file, '{"type":"event_msg","payload":{"type":"token_count","total":1}}\n')
+    _write_zcode_db(source_home / ".zcode" / "cli" / "db" / "db.sqlite")
     config = load_config(_config(tmp_path, tmp_path / "target-home"))
 
     first_script, _ = fleet_projection_request("node-a", snapshot_id="node-a-001")
@@ -178,6 +256,7 @@ def test_fleet_projection_request_exports_delta_and_imports_it(tmp_path: Path) -
     assert first.mode == "projection_full"
     assert first.state_status == "rebuilt"
     assert (config.paths.import_root / "node-a" / ".raw" / "codex").is_dir()
+    assert next((config.paths.import_root / "node-a" / ".raw" / "zcode").rglob("model-usage.jsonl"))
 
     _write(source_file, '{"type":"event_msg","payload":{"type":"token_count","total":22}}\n')
     second_script, _ = fleet_projection_request(

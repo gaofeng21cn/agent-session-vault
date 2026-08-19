@@ -31,7 +31,7 @@ OPL Fleet 是节点、网络、准入、任务投放和产物传输的唯一来�
 | 查看配置、存储、Tokscale 环境或归档状态 | `config --json`、`storage summary --json`、`tokscale env --json`、`archive list --json` | 只读 |
 | 刷新多机统计输入 | `sync fleet --json` | 更新本机和 Fleet projection/import 状态 |
 | 导入明确的临时 Codex home | `sync local-codex --source <root> --json` | 只写受管 local extras |
-| 预览 Tokscale 提交 | `tokscale exec -- submit -c codex,gemini,openclaw --dry-run` | 运行官方 preview，不提交 |
+| 预览 Tokscale 提交 | `tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run` | 运行官方 preview，不提交 |
 | 正式每日统计提交 | `ops daily-tokscale --mirror-stable --json` | 只有用户明确要求提交时执行 |
 | 创建或验证完整 Codex 快照 | `ops archive-cycle --due-only --deep --json` | 写 archive；不删除本机会话 |
 | 恢复 analytics stable 层 | `storage restore-stable --dest-root <staging> --json` | 只写独立目标 |

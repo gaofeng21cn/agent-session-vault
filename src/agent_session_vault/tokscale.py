@@ -35,3 +35,22 @@ def build_tokscale_invocation(
     if package_override:
         env[TOKSCALE_PACKAGE_ENV] = package_override
     return TokscaleInvocation(env=env, command=["npx", "-y", tokscale_package, *args])
+
+
+def build_antigravity_sync_invocation(
+    config: VaultConfig,
+    *,
+    package_override: str,
+    config_dir: str,
+) -> TokscaleInvocation:
+    env = dict(os.environ)
+    env.pop("CODEX_HOME", None)
+    env.pop("TOKSCALE_EXTRA_DIRS", None)
+    env["HOME"] = str(config.paths.home)
+    env["NPM_CONFIG_CACHE"] = str(config.paths.home / ".npm")
+    env["TOKSCALE_CONFIG_DIR"] = config_dir
+    env[TOKSCALE_PACKAGE_ENV] = package_override
+    return TokscaleInvocation(
+        env=env,
+        command=["npx", "-y", package_override, "antigravity", "sync"],
+    )

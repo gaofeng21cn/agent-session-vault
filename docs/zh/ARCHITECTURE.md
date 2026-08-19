@@ -9,7 +9,7 @@
 | OPL Fleet | 已批准节点清单、控制节点身份、路由、准入、任务投放和产物回传 | 投影语义、Tokscale 提交、归档内容 |
 | Agent Session Vault | 投影格式和状态、导入的统计历史、受管 Tokscale 环境、stable 恢复副本、Codex 归档生命周期 | Fleet inventory、实时客户端状态、provider 账单真相 |
 | Tokscale | 用量计算、官方 preview 和外部提交 | 跨机发现、来源收集、归档生命周期 |
-| Codex、Gemini CLI、OpenClaw | 各自权威的实时会话目录 | 统计投影和 Vault 归档状态 |
+| Codex、Gemini CLI、OpenClaw、Antigravity IDE、ZCode | 各自权威的实时会话目录和 API | 统计投影和 Vault 归档状态 |
 
 每项职责只有一个负责人。Session Vault 只消费 Fleet 和客户端接口，不复制它们的控制状态。
 
@@ -38,7 +38,12 @@ Fleet 投影任务 -------> 导入投影 + 受管本机 extras
 
 ## 投影合同
 
-- 支持 Codex、Gemini CLI 和 OpenClaw。
+- 支持 Codex、Gemini CLI、OpenClaw、Antigravity IDE 和 ZCode。Gemini 历史在
+  Antigravity 更名后仍作为独立 client 保留。
+- Antigravity IDE 通过与 submit 相同的当前 Tokscale 包执行官方 `antigravity sync`
+  RPC；Vault 只投影生成的 usage cache，IDE language server 不可用时保留旧 cache。
+- ZCode 实时 SQLite 数据库通过 SQLite backup 读取；Vault 只把 model、时间、session
+  identity 和 token 计数导出为 JSONL，并与旧 `.zcode/projects` JSONL 历史合并。
 - Tokscale 使用 `projection_home` 作为 `HOME`，永远不会收到真实用户 HOME 或 `CODEX_HOME`。
 - `TOKSCALE_EXTRA_DIRS` 包含本机投影、Fleet 导入投影，以及带 `sync-state.json` 的显式本机
   Codex namespace。
@@ -95,6 +100,7 @@ archive 只扫描已配置的 Codex source 和允许的 session/index 文件。�
 - 维护机器 inventory、route 或 artifact transport
 - 提供多个可选 Tokscale 视图
 - 修改 Tokscale 或客户端上游
+- 在当前正式 Tokscale 包提供并经本仓批准来源格式前启用 Antigravity CLI 或 DeepSeek Harness
 - 把 provider 账单作为 Vault 计算结果
 - 直接恢复到实时 Codex home
 - 为已退役流程保留兼容命令
