@@ -25,6 +25,12 @@ direct_max_delta_bytes = 456789
 projection_transport = "auto"
 projection_direct_max_bundle_bytes = 1073741824
 
+[archive]
+primary_backend = "nas"
+primary_root = "/tmp/nas-vault"
+cadence_days = 14
+source_paths = ["~/.codex"]
+
 [machines.machine-a]
 import_name = "machine-a"
 ssh_target = "session-sync-a"
@@ -70,6 +76,10 @@ remove_source = true
     assert config.sync.direct_max_delta_bytes == 456789
     assert config.sync.projection_transport == "auto"
     assert config.sync.projection_direct_max_bundle_bytes == 1073741824
+    assert config.archive.primary_backend == "nas"
+    assert config.archive.primary_root == Path("/tmp/nas-vault")
+    assert config.archive.cadence_days == 14
+    assert config.archive.source_paths[0].path == "~/.codex"
     assert config.machines["machine-a"].ssh_target == "session-sync-a"
     assert config.machines["machine-a"].source_home == Path("/remote/home")
     assert config.machines["machine-a"].remote_relay_root == Path("/remote/home/agent-session-vault/relay")

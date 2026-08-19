@@ -30,6 +30,29 @@ class SyncConfig:
 
 
 @dataclass(frozen=True)
+class ArchiveSourceConfig:
+    path: str
+    kind: str = "codex_home"
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class ArchiveConfig:
+    primary_backend: str
+    primary_root: Path
+    secondary_backend: str
+    secondary_root: Path | None
+    cadence_days: int
+    cold_age_days: int
+    shard_target_bytes: int
+    staging_root: Path
+    restore_staging_root: Path
+    machine_id_path: Path
+    source_paths: tuple[ArchiveSourceConfig, ...]
+    require_quiescent_for_prune: bool
+
+
+@dataclass(frozen=True)
 class RootRuleConfig:
     client: str
     path: str | None
@@ -72,6 +95,7 @@ class VaultConfig:
     config_path: Path
     paths: PathsConfig
     sync: SyncConfig
+    archive: ArchiveConfig
     machines: dict[str, MachineConfig]
     retention_rules: tuple[RetentionRuleConfig, ...]
 
@@ -161,6 +185,58 @@ def load_config(config_path: Path | None = None) -> VaultConfig:
         raise ValueError("sync projection bundle threshold must be an integer")
     if projection_transport not in {"auto", "ssh", "relay"}:
         raise ValueError(f"unsupported sync.projection_transport: {projection_transport}")
+
+    archive_raw = raw.get("archive") if isinstance(raw.get("archive"), dict) else {}
+    primary_backend = _str_value(archive_raw.get("primary_backend"), "local")
+    secondary_backend = _str_value(archive_raw.get("secondary_backend"), "none")
+    if primary_backend not in {"local", "nas", "onedrive"}:
+        raise ValueError(f"unsupported archive.primary_backend: {primary_backend}")
+    if secondary_backend not in {"none", "local", "nas", "onedrive"}:
+        raise ValueError(f"unsupported archive.secondary_backend: {secondary_backend}")
+    primary_root = _path_value(
+        archive_raw.get("primary_root"),
+        archive_root / "full-fidelity",
+    )
+    secondary_root = _optional_path_value(archive_raw.get("secondary_root"))
+    cadence_days = _int_value(archive_raw.get("cadence_days"), 14)
+    cold_age_days = _int_value(archive_raw.get("cold_age_days"), 30)
+    shard_target_bytes = _int_value(archive_raw.get("shard_target_bytes"), 256 * 1024 * 1024)
+    staging_root = _path_value(
+        archive_raw.get("staging_root"),
+        primary_root / "staging",
+    )
+    restore_staging_root = _path_value(
+        archive_raw.get("restore_staging_root"),
+        home / ".cache" / "agent-session-vault" / "restore",
+    )
+    machine_id_path = _path_value(
+        archive_raw.get("machine_id_path"),
+        home / ".config" / "agent-session-vault" / "machine-id",
+    )
+    source_paths_raw = archive_raw.get("source_paths") if isinstance(archive_raw.get("source_paths"), list) else []
+    source_paths: list[ArchiveSourceConfig] = []
+    for item in source_paths_raw:
+        if isinstance(item, str) and item:
+            source_paths.append(ArchiveSourceConfig(path=item))
+            continue
+        if not isinstance(item, dict):
+            continue
+        path_value = _str_value(item.get("path"))
+        if path_value is None:
+            raise ValueError("archive.source_paths entries require path")
+        source_paths.append(
+            ArchiveSourceConfig(
+                path=path_value,
+                kind=_str_value(item.get("kind"), "codex_home") or "codex_home",
+                label=_str_value(item.get("label")),
+            )
+        )
+    if cadence_days is None or cadence_days <= 0:
+        raise ValueError("archive.cadence_days must be a positive integer")
+    if cold_age_days is None or cold_age_days < 0:
+        raise ValueError("archive.cold_age_days must be a non-negative integer")
+    if shard_target_bytes is None or shard_target_bytes <= 0:
+        raise ValueError("archive.shard_target_bytes must be a positive integer")
 
     machines_raw = raw.get("machines") if isinstance(raw.get("machines"), dict) else {}
     machines: dict[str, MachineConfig] = {}
@@ -261,6 +337,23 @@ def load_config(config_path: Path | None = None) -> VaultConfig:
             direct_max_delta_bytes=direct_max_delta_bytes,
             projection_transport=projection_transport,
             projection_direct_max_bundle_bytes=projection_direct_max_bundle_bytes,
+        ),
+        archive=ArchiveConfig(
+            primary_backend=primary_backend,
+            primary_root=primary_root,
+            secondary_backend=secondary_backend,
+            secondary_root=secondary_root,
+            cadence_days=cadence_days,
+            cold_age_days=cold_age_days,
+            shard_target_bytes=shard_target_bytes,
+            staging_root=staging_root,
+            restore_staging_root=restore_staging_root,
+            machine_id_path=machine_id_path,
+            source_paths=tuple(source_paths),
+            require_quiescent_for_prune=_bool_value(
+                archive_raw.get("require_quiescent_for_prune"),
+                True,
+            ),
         ),
         machines=machines,
         retention_rules=tuple(retention_rules),

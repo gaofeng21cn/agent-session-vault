@@ -167,6 +167,47 @@ agent-session-vault archive offload-tree \
   --json
 ```
 
+完整 Codex 会话归档使用独立的 snapshot 流程。NAS 必须先初始化，之后再执行
+snapshot、publish 和深度校验；这条链路不会改变 Tokscale projection，也不会删除本机源文件：
+
+```bash
+agent-session-vault archive init --json
+agent-session-vault archive snapshot --json
+agent-session-vault archive publish --staging-root <snapshot-staging-root> --json
+agent-session-vault archive verify --snapshot <snapshot-id> --deep --json
+agent-session-vault archive list --from 2026-07-01T00:00:00Z --to 2026-08-01T00:00:00Z --json
+agent-session-vault archive plan-restore --destination /tmp/codex-restore --session-id <session-id> --plan-path /tmp/restore-plan.json --json
+agent-session-vault archive restore --plan /tmp/restore-plan.json --json
+```
+
+周期任务由外部调度器触发，Vault 自己负责 14 天 due 判断、单机锁、幂等发布和 receipt：
+
+```bash
+agent-session-vault ops archive-cycle --due-only --deep --json
+```
+
+该周期入口只做 snapshot、publish、verify，不做本机 prune。需要回收本机空间时，先显式
+生成并审阅裁剪计划，再单独执行：
+
+```bash
+agent-session-vault archive prune-plan \
+  --plan-path ~/.config/agent-session-vault/prune-plans/current.json \
+  --json
+agent-session-vault archive prune-apply \
+  --plan ~/.config/agent-session-vault/prune-plans/current.json \
+  --json
+```
+
+`prune-plan` 只接受 `archived_sessions` 中超过 `cold_age_days` 的文件。它要求最新 NAS
+snapshot 深度校验通过、当前源 SHA 与 snapshot 一致、没有指向 `sessions` 或其他位置的硬链接、
+对应的 local Tokscale projection 存在且当前 imports 已被 verified stable mirror 覆盖。计划还会
+以最近的 verified Tokscale submit contract 执行官方 dry-run。`prune-apply` 在删除前后各执行一次
+同样的 dry-run；任一准入或数值不一致都会拒绝删除或报告 partial receipt。NAS snapshot、stable
+analytics 和 projection 都不是 Codex live root。
+
+`archive restore` 当前只允许 staging mode。Codex live merge、自动 prune、OneDrive
+secondary mirror 和 OPL Cordis contribution 必须等各自的 owner 合同与验证阶段完成后再启用。
+
 ## 当前边界
 
 - OPL Fleet 是唯一多机节点、网络、准入与任务投放基座；Session Vault 不维护第二套机器控制面。

@@ -64,6 +64,41 @@ canonical 视图是更严格的本地 session 布局，供 Tokscale 或内部分
 - OneDrive 同步目录
 - iCloud 同步目录
 
+### 5. Full-Fidelity Archive Domain
+
+完整会话归档已经与 Tokscale projection 分开建模。当前第一阶段实现的 owner 是：
+
+- `archive_sources.py`：发现并扫描 Codex `sessions`、`archived_sessions` 和 `session_index.jsonl`
+- `archive_model.py`：定义 source、snapshot、manifest、bundle、catalog entry 和 restore plan
+- `archive_backend.py`：以显式 root marker、不可变 object、snapshot `COMMITTED` 标记实现 filesystem/NAS backend
+- `archive_ops.py`：构建 staging snapshot、复用未变化 bundle、发布和校验
+- `archive_catalog.py` / `archive_restore.py`：派生查询索引和 staging restore
+- `archive_prune.py`：持有 cold-session plan、NAS/stable/projection/Tokscale 准入和单一删除路径
+
+NAS 归档库不是 Codex live root，也不是 Tokscale 的读取路径。发布链路为：
+
+```text
+Codex source -> local staging -> NAS objects/snapshot/manifest -> catalog -> staging restore
+```
+
+当前已支持：
+
+- 稳定 `machine_id`、`source_id`、`snapshot_id` 和 `cycle_id`
+- 每个文件的 SHA-256、session id、时间范围和 parse status
+- 不可变 content-addressed `tar.zst` object
+- snapshot 的 `COMMITTED` 发布标记和深度逐文件恢复校验
+- 按 session、machine、source、时间范围的 catalog 查询
+- 默认 staging restore；`codex-live` 仍被明确拒绝，直到 Codex index merge 经过独立验证
+- 显式 `prune-plan` / `prune-apply`：只删除已深度验证快照覆盖、无其他硬链接、仍在 local projection 中且
+  stable analytics 已覆盖的冷 `archived_sessions`；删除前后强制同一 pinned Tokscale dry-run parity
+
+当前不允许：
+
+- 把 `~/.codex` 符号链接到 NAS
+- 由 snapshot/cycle 隐式删除本机源目录；裁剪只能走带 digest 的显式 plan/apply
+- 把归档正文写入 Tokscale projection
+- 把 OneDrive 或 Cordis projection 当作归档真相
+
 ## Fleet-Dispatched Projection Sync
 
 `sync fleet` 是默认跨机路径。Fleet 拥有节点、标准运行时、私有 route、fresh data-admission、并发投放和产物回收；Session Vault 拥有 projection schema、增量 snapshot、导入与 Tokscale 规则。Session Vault 是标准 Fleet 数据任务，不是节点声明的 capability：所有 approved 节点都会进入候选集，再由 fresh task admission 决定执行或带原因跳过。`sync auto <machine>` 保留为显式兼容/诊断入口。

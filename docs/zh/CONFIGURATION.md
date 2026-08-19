@@ -26,6 +26,7 @@ CLI 默认读取：
 - `[sync]`
 - `[machines.<name>]`
 - `[[retention.rules]]`
+- `[archive]`
 
 ## `paths`
 
@@ -47,6 +48,58 @@ CLI 默认读取：
   - 冷层 bundle 的存放目录
 - `relay_root`
   - projection 或 raw bundle 的本地 relay 目录
+
+## `archive`
+
+`archive` 是完整 Codex 会话归档的独立配置，不会改变默认 Tokscale projection。
+归档主根可以是本地目录或已挂载的 NAS；OneDrive 只能作为后续 secondary backup，不能作为
+Codex live root，也不能通过符号链接把 `~/.codex` 指向云盘。
+
+- `primary_backend`
+  - `local`、`nas` 或 `onedrive`。当前实现统一使用显式目录 backend，`nas` 只是主存储角色。
+- `primary_root`
+  - 主归档库。使用前必须显式执行 `archive init` 创建并校验 `root-marker.json`。
+- `secondary_backend` / `secondary_root`
+  - 当前只保存配置合同，secondary mirror 在主归档稳定后启用。
+- `cadence_days`
+  - 周期任务的 due 判断，默认 14 天。
+- `staging_root`
+  - 配置的 snapshot 和临时 bundle 目录；它不是归档真相。空间紧张的设备可将其设为 NAS 路径。
+- `restore_staging_root`
+  - 默认 staging restore 目录；第一版不自动写入 live Codex。
+- `machine_id_path`
+  - 本机稳定身份文件。Tart 克隆或重装后的机器必须重新确认身份。
+- `source_paths`
+  - 可选 Codex 根列表。为空时包含 `~/.codex`，以及现有 workspace 下含 `.codex` 的项目根。
+
+第一版允许归档的内容只有 Codex session 面：`sessions/`、`archived_sessions/` 下的
+`.jsonl`/`.jsonl.gz`，以及 `session_index.jsonl`。凭据、设备文件、cache 和其他运行时状态不进入归档。
+
+初始化和首次发布：
+
+```bash
+agent-session-vault archive init --json
+agent-session-vault archive snapshot --json
+agent-session-vault archive publish --staging-root <snapshot-staging-root> --json
+agent-session-vault archive verify --snapshot <snapshot-id> --deep --json
+```
+
+`archive snapshot` 只读取源目录并写入配置的 staging；只有 `publish` 才写入主归档根。
+源文件变化、NAS 未挂载或 root marker 不匹配时，命令失败或返回 pending，不会删除源文件。
+
+周期任务由 macOS `launchd` 或 OPL automation 触发：
+
+```bash
+agent-session-vault ops archive-cycle --due-only --deep --json
+```
+
+Python CLI 不常驻运行。Vault 自己持有 cadence、单机锁、幂等状态和 receipt；周期任务当前只做
+snapshot/publish/verify，不执行本地 prune。
+
+`cold_age_days` 是 `archive prune-plan` 的冷数据阈值，而非周期任务的隐式删除开关。裁剪必须
+显式创建带 digest 的 plan，并由 `archive prune-apply --plan ...` 消费。apply 只删除已覆盖且无其他
+硬链接的 `archived_sessions` 文件，并要求 NAS 深度校验、stable analytics coverage 与 Tokscale dry-run
+前后保持一致。
 
 ## Stable Layer
 

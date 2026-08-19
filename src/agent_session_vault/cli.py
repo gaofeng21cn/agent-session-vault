@@ -9,6 +9,17 @@ import sys
 
 from .adapters import build_canonicalize_machine_command, build_direct_sync_command
 from .archive import inventory_bundles, offload_tree, pack_tree, restore_bundle
+from .archive_ops import (
+    archive_cycle,
+    build_snapshot,
+    init_backend,
+    primary_backend,
+    publish_snapshot,
+    verify_snapshot,
+)
+from .archive_prune import apply_prune_plan, build_prune_plan, load_prune_plan, prune_plan_payload, write_prune_plan
+from .archive_catalog import query_catalog, rebuild_catalog
+from .archive_restore import build_restore_plan, load_restore_plan, restore_plan, write_restore_plan
 from .config import load_config
 from .daily_ops import DEFAULT_CLIENTS, run_daily_tokscale
 from .fleet import sync_fleet
@@ -146,6 +157,14 @@ def build_parser() -> argparse.ArgumentParser:
     ops_daily_tokscale.add_argument("--mirror-stable", action="store_true")
     ops_daily_tokscale.add_argument("--stable-root", type=Path, default=None)
     ops_daily_tokscale.add_argument("--json", action="store_true")
+    ops_archive_cycle = ops_sub.add_parser(
+        "archive-cycle",
+        help="Run one due-only full-fidelity archive cycle without pruning local sources",
+    )
+    ops_archive_cycle.add_argument("--machine-id", default=None)
+    ops_archive_cycle.add_argument("--due-only", action=argparse.BooleanOptionalAction, default=True)
+    ops_archive_cycle.add_argument("--deep", action=argparse.BooleanOptionalAction, default=True)
+    ops_archive_cycle.add_argument("--json", action="store_true")
 
     sync_parser = subparsers.add_parser("sync", help="Sync helpers")
     sync_sub = sync_parser.add_subparsers(dest="sync_command", required=True)
@@ -242,8 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     archive_offload.add_argument("--remove-source", action="store_true")
     archive_offload.add_argument("--json", action="store_true")
     archive_restore = archive_sub.add_parser("restore", help="Restore one bundle into a directory")
-    archive_restore.add_argument("--bundle", required=True, type=Path)
-    archive_restore.add_argument("--dest", required=True, type=Path)
+    restore_target = archive_restore.add_mutually_exclusive_group(required=True)
+    restore_target.add_argument("--bundle", type=Path)
+    restore_target.add_argument("--plan", type=Path)
+    archive_restore.add_argument("--dest", type=Path)
+    archive_restore.add_argument("--json", action="store_true")
     archive_plan = archive_sub.add_parser("plan", help="Plan which trees should be offloaded to archive")
     archive_plan.add_argument("--rule", action="append", default=[])
     archive_plan.add_argument("--json", action="store_true")
@@ -254,6 +276,59 @@ def build_parser() -> argparse.ArgumentParser:
     archive_inventory = archive_sub.add_parser("inventory", help="List archived bundles")
     archive_inventory.add_argument("--archive-root", type=Path, default=None)
     archive_inventory.add_argument("--json", action="store_true")
+    archive_init = archive_sub.add_parser("init", help="Initialize the explicit full-fidelity archive backend")
+    archive_init.add_argument("--json", action="store_true")
+    archive_snapshot = archive_sub.add_parser("snapshot", help="Scan Codex roots into an archive staging snapshot")
+    archive_snapshot.add_argument("--machine-id", default=None)
+    archive_snapshot.add_argument("--staging-root", type=Path, default=None)
+    archive_snapshot.add_argument("--json", action="store_true")
+    archive_publish = archive_sub.add_parser("publish", help="Publish one staged full-fidelity snapshot to the backend")
+    archive_publish.add_argument("--staging-root", type=Path, required=True)
+    archive_publish.add_argument(
+        "--verify-staged",
+        action="store_true",
+        help="Stream-verify staged bundle members before publishing (normally verify after commit)",
+    )
+    archive_publish.add_argument("--json", action="store_true")
+    archive_verify = archive_sub.add_parser("verify", help="Verify a committed full-fidelity snapshot")
+    archive_verify.add_argument("--snapshot", required=True)
+    archive_verify.add_argument("--deep", action="store_true")
+    archive_verify.add_argument("--json", action="store_true")
+    archive_list = archive_sub.add_parser("list", help="Query the committed archive catalog")
+    archive_list.add_argument("--from", dest="from_at", default=None)
+    archive_list.add_argument("--to", dest="to_at", default=None)
+    archive_list.add_argument("--machine-id", default=None)
+    archive_list.add_argument("--client", default="codex")
+    archive_list.add_argument("--session-id", default=None)
+    archive_list.add_argument("--source-id", default=None)
+    archive_list.add_argument("--json", action="store_true")
+    archive_catalog = archive_sub.add_parser("catalog-rebuild", help="Rebuild derived catalog segments from committed snapshots")
+    archive_catalog.add_argument("--machine-id", default=None)
+    archive_catalog.add_argument("--json", action="store_true")
+    archive_plan_restore = archive_sub.add_parser("plan-restore", help="Create a staging restore plan from catalog filters")
+    archive_plan_restore.add_argument("--destination", required=True, type=Path)
+    archive_plan_restore.add_argument("--mode", choices=["staging", "codex-live"], default="staging")
+    archive_plan_restore.add_argument("--from", dest="from_at", default=None)
+    archive_plan_restore.add_argument("--to", dest="to_at", default=None)
+    archive_plan_restore.add_argument("--machine-id", default=None)
+    archive_plan_restore.add_argument("--client", default="codex")
+    archive_plan_restore.add_argument("--session-id", default=None)
+    archive_plan_restore.add_argument("--source-id", default=None)
+    archive_plan_restore.add_argument("--collision-policy", choices=["error", "overwrite"], default="error")
+    archive_plan_restore.add_argument("--plan-path", type=Path, default=None)
+    archive_plan_restore.add_argument("--json", action="store_true")
+    archive_prune_plan = archive_sub.add_parser(
+        "prune-plan",
+        help="Build a verified full-fidelity prune plan without deleting local sessions",
+    )
+    archive_prune_plan.add_argument("--plan-path", required=True, type=Path)
+    archive_prune_plan.add_argument("--json", action="store_true")
+    archive_prune_apply = archive_sub.add_parser(
+        "prune-apply",
+        help="Apply one verified full-fidelity prune plan",
+    )
+    archive_prune_apply.add_argument("--plan", required=True, type=Path)
+    archive_prune_apply.add_argument("--json", action="store_true")
 
     return parser
 
@@ -282,6 +357,23 @@ def main(argv: list[str] | None = None) -> int:
                 "direct_max_delta_bytes": config.sync.direct_max_delta_bytes,
                 "projection_transport": config.sync.projection_transport,
                 "projection_direct_max_bundle_bytes": config.sync.projection_direct_max_bundle_bytes,
+            },
+            "archive": {
+                "primary_backend": config.archive.primary_backend,
+                "primary_root": str(config.archive.primary_root),
+                "secondary_backend": config.archive.secondary_backend,
+                "secondary_root": str(config.archive.secondary_root) if config.archive.secondary_root else None,
+                "cadence_days": config.archive.cadence_days,
+                "cold_age_days": config.archive.cold_age_days,
+                "shard_target_bytes": config.archive.shard_target_bytes,
+                "staging_root": str(config.archive.staging_root),
+                "restore_staging_root": str(config.archive.restore_staging_root),
+                "machine_id_path": str(config.archive.machine_id_path),
+                "source_paths": [
+                    {"path": item.path, "kind": item.kind, "label": item.label}
+                    for item in config.archive.source_paths
+                ],
+                "require_quiescent_for_prune": config.archive.require_quiescent_for_prune,
             },
             "machines": {
                 name: {
@@ -466,6 +558,19 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(result.payload)
         return result.exit_code
+
+    if args.command == "ops" and args.ops_command == "archive-cycle":
+        result = archive_cycle(
+            config,
+            machine_id=args.machine_id,
+            due_only=args.due_only,
+            deep=args.deep,
+        )
+        if args.json:
+            _json_dump(result.payload())
+        else:
+            print(result.payload())
+        return 0 if result.status in {"verified", "not_due"} else 2
 
     if args.command == "sync" and args.sync_command == "direct":
         command = build_direct_sync_command(config, args.machine)
@@ -907,8 +1012,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "archive" and args.archive_command == "restore":
-        restore_bundle(args.bundle, args.dest)
-        print(str(args.dest))
+        if args.bundle is not None:
+            if args.dest is None:
+                raise ValueError("--dest is required with --bundle")
+            restore_bundle(args.bundle, args.dest)
+            print(str(args.dest))
+            return 0
+        plan = load_restore_plan(args.plan)
+        payload = restore_plan(config, plan)
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
         return 0
 
     if args.command == "archive" and args.archive_command == "plan":
@@ -979,6 +1094,122 @@ def main(argv: list[str] | None = None) -> int:
             }
             for item in items
         ]
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "init":
+        payload = init_backend(config)
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "snapshot":
+        result = build_snapshot(config, machine_id=args.machine_id, staging_root=args.staging_root)
+        payload = result.payload()
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0 if all(snapshot.status == "staged" for snapshot in result.snapshots) else 2
+
+    if args.command == "archive" and args.archive_command == "publish":
+        published = publish_snapshot(
+            config,
+            args.staging_root.expanduser(),
+            verify_staged=args.verify_staged,
+        )
+        payload = {
+            "status": "published",
+            "backend_root": str(primary_backend(config).root),
+            "snapshots": [
+                {
+                    "snapshot_id": item.snapshot.snapshot_id,
+                    "source_id": item.snapshot.source.source_id,
+                    "snapshot_dir": str(item.snapshot_dir),
+                    "manifest_sha256": item.snapshot.manifest_sha256,
+                }
+                for item in published
+            ],
+        }
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "verify":
+        payload = verify_snapshot(config, args.snapshot, deep=args.deep)
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0 if payload["status"] == "verified" else 2
+
+    if args.command == "archive" and args.archive_command == "list":
+        entries = query_catalog(
+            config,
+            from_at=args.from_at,
+            to_at=args.to_at,
+            machine_id=args.machine_id,
+            client=args.client,
+            session_id=args.session_id,
+            source_id=args.source_id,
+        )
+        payload = [entry.to_payload() for entry in entries]
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "catalog-rebuild":
+        backend = primary_backend(config)
+        count = rebuild_catalog(backend, machine_id=args.machine_id)
+        payload = {"status": "rebuilt", "segments": count, "backend_root": str(backend.root)}
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "plan-restore":
+        plan = build_restore_plan(
+            config,
+            destination=args.destination,
+            mode=args.mode,
+            from_at=args.from_at,
+            to_at=args.to_at,
+            machine_id=args.machine_id,
+            client=args.client,
+            session_id=args.session_id,
+            source_id=args.source_id,
+            collision_policy=args.collision_policy,
+        )
+        plan_path = write_restore_plan(plan, args.plan_path) if args.plan_path else None
+        payload = {**plan.to_payload(), "plan_path": str(plan_path) if plan_path else None}
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "prune-plan":
+        plan = build_prune_plan(config)
+        plan_path = write_prune_plan(plan, args.plan_path)
+        payload = prune_plan_payload(plan, plan_path=plan_path)
+        if args.json:
+            _json_dump(payload)
+        else:
+            print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "prune-apply":
+        payload = apply_prune_plan(config, load_prune_plan(args.plan))
         if args.json:
             _json_dump(payload)
         else:

@@ -15,6 +15,26 @@ direct_max_delta_bytes = 268435456
 projection_transport = "auto"
 projection_direct_max_bundle_bytes = 1073741824
 
+# Full-fidelity Codex archive is a separate domain from Tokscale projection.
+# Keep the primary root on a mounted NAS only after creating its root marker with
+# `agent-session-vault archive init`. Do not symlink ~/.codex to this directory.
+[archive]
+primary_backend = "nas"
+primary_root = "/Volumes/YourNAS/agent-session-vault"
+secondary_backend = "none"
+secondary_root = ""
+cadence_days = 14
+cold_age_days = 30
+shard_target_bytes = 268435456
+staging_root = "~/.cache/agent-session-vault/archive-staging"
+restore_staging_root = "~/.cache/agent-session-vault/restore"
+machine_id_path = "~/.config/agent-session-vault/machine-id"
+require_quiescent_for_prune = true
+
+# Optional project Codex roots. ~/.codex is included automatically when this
+# list is empty; adding entries makes the source set explicit.
+# source_paths = ["~/workspace/project/.codex"]
+
 # OPL Fleet is the default machine/network/dispatch source of truth. New Fleet
 # nodes do not need a stanza here. Keep entries only for legacy `sync auto` or
 # to reuse an existing import_name while migrating.
