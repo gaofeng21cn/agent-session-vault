@@ -4,4 +4,4 @@ interface:
   default_prompt: "使用 $agent-session-vault 检查或执行 OPL 会话同步、Tokscale 统计、完整归档或 staging 恢复。"
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

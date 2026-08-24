@@ -1,6 +1,6 @@
 ---
 name: agent-session-vault
-description: 管理 OPL Fleet 的多机会话投影、Tokscale 统计、stable analytics 恢复、Codex 完整归档、本机冷数据裁剪与 staging 恢复。用户提到会话历史、Tokscale、Codex 磁盘回收或 NAS 会话归档时使用；不用于修改上游客户端。
+description: 仅在用户明确要求 OPL Agent Session Vault 的多机同步、Tokscale 统计、Codex 会话归档或 staging 恢复、本机冷数据裁剪时使用。不要因一般对话历史、侧边栏任务恢复、普通磁盘清理或客户端设置触发；不用于修改上游客户端。
 ---
 
 # Agent Session Vault
