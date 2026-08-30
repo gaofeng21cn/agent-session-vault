@@ -138,9 +138,13 @@ agent-session-vault archive init --json
 agent-session-vault ops archive-cycle --due-only --deep --json
 ```
 
+`--due-only` 先按路径和内容哈希检查 `archived_sessions` 文件是否已被该来源最新的
+deep-verified snapshot 覆盖；存在未覆盖或已变化的历史 session 时立即执行，不等待
+`cadence_days`。全部历史 session 已覆盖时，`cadence_days` 才作为保底周期。
+
 归档周期会扫描配置的 Codex 来源、创建增量不可变对象、发布 snapshot、重建 catalog segment、
-执行深度校验并写入回执。它绝不裁剪本机来源。`not_due` 是成功的空操作；`partial` 需要检查，
-并返回非零退出码。
+执行深度校验并写入回执。它绝不裁剪本机来源。`not_due` 表示保底周期尚未到达且历史 session
+已全部覆盖，是成功的空操作；`partial` 需要检查，并返回非零退出码。
 
 恢复或诊断时也可以逐阶段执行：
 

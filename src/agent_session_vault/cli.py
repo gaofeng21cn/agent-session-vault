@@ -101,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily.add_argument("--json", action="store_true")
     archive_cycle_parser = ops_sub.add_parser(
         "archive-cycle",
-        help="Run one due full-fidelity archive cycle without pruning local sources",
+        help="Run one coverage- or cadence-due full-fidelity archive cycle without pruning local sources",
     )
     archive_cycle_parser.add_argument("--machine-id", default=None)
     archive_cycle_parser.add_argument("--due-only", action=argparse.BooleanOptionalAction, default=True)

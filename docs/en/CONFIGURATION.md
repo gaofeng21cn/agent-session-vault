@@ -34,7 +34,7 @@ home-relative.
 | Field | Default | Constraint and meaning |
 | --- | --- | --- |
 | `root` | `<home>/agent-session-vault/archive` | Filesystem or mounted NAS root for immutable objects, snapshots, catalog, state, and receipts |
-| `cadence_days` | `14` | Positive integer controlling `archive-cycle --due-only` |
+| `cadence_days` | `14` | Positive fallback interval for `archive-cycle --due-only` when historical sessions are covered by the latest deep-verified snapshot; uncovered `archived_sessions` files trigger a cycle immediately |
 | `cold_age_days` | `30` | Non-negative integer used to admit local archived sessions for prune plans |
 | `staging_root` | `<home>/.cache/agent-session-vault/archive-staging` | Local snapshot construction area |
 | `machine_id_path` | `<home>/.config/agent-session-vault/machine-id` | Stable locally generated archive identity |

@@ -176,7 +176,7 @@ def test_missing_codex_source_is_reported_without_creating_a_snapshot(tmp_path: 
     assert str(source) in result.scan.missing_sources
 
 
-def test_archive_cycle_is_idempotent_with_cadence_state(tmp_path: Path) -> None:
+def test_archive_cycle_skips_when_cadence_is_not_reached_and_history_is_covered(tmp_path: Path) -> None:
     config_path, source, _ = _config(tmp_path)
     config = load_config(config_path)
     _write_session(source / "archived_sessions" / "old.jsonl", "session-old", "old")
@@ -185,6 +185,73 @@ def test_archive_cycle_is_idempotent_with_cadence_state(tmp_path: Path) -> None:
     assert first.status == "verified"
     second = archive_cycle(config, machine_id="machine-test", due_only=True)
     assert second.status == "not_due"
+    assert second.reason == "cadence_not_reached_and_archived_sessions_covered"
+
+
+def test_archive_cycle_runs_before_cadence_for_uncovered_archived_session(tmp_path: Path) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions" / "old.jsonl", "session-old", "old")
+    init_backend(config)
+    first = archive_cycle(config, machine_id="machine-test", due_only=False)
+    assert first.status == "verified"
+
+    _write_session(source / "archived_sessions" / "new.jsonl", "session-new", "new")
+    second = archive_cycle(config, machine_id="machine-test", due_only=True)
+
+    assert second.status == "verified"
+    assert second.snapshot_ids != first.snapshot_ids
+    assert all(verify_snapshot(config, snapshot_id, deep=True)["status"] == "verified" for snapshot_id in second.snapshot_ids)
+
+
+def test_archive_cycle_runs_before_cadence_for_changed_archived_session(tmp_path: Path) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    archived = source / "archived_sessions" / "old.jsonl"
+    _write_session(archived, "session-old", "old")
+    init_backend(config)
+    first = archive_cycle(config, machine_id="machine-test", due_only=False)
+    assert first.status == "verified"
+
+    _write_session(archived, "session-old", "changed")
+    second = archive_cycle(config, machine_id="machine-test", due_only=True)
+
+    assert second.status == "verified"
+    assert second.snapshot_ids != first.snapshot_ids
+
+
+def test_archive_cycle_does_not_bypass_cadence_for_live_session_change(tmp_path: Path) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    live = source / "sessions" / "2026" / "08" / "19" / "one.jsonl"
+    _write_session(live, "session-one", "one")
+    _write_session(source / "archived_sessions" / "old.jsonl", "session-old", "old")
+    init_backend(config)
+    first = archive_cycle(config, machine_id="machine-test", due_only=False)
+    assert first.status == "verified"
+
+    _write_session(live, "session-one", "changed")
+    second = archive_cycle(config, machine_id="machine-test", due_only=True)
+
+    assert second.status == "not_due"
+    assert second.reason == "cadence_not_reached_and_archived_sessions_covered"
+
+
+def test_archive_cycle_refuses_not_due_for_snapshot_that_fails_deep_verification(tmp_path: Path) -> None:
+    config_path, source, backend = _config(tmp_path)
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions" / "old.jsonl", "session-old", "old")
+    init_backend(config)
+    first = archive_cycle(config, machine_id="machine-test", due_only=False)
+    assert first.status == "verified"
+    manifest_path = next((backend / "snapshots").rglob("manifest.json"))
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace("session-old", "session-corrupt"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="latest archive snapshot is not deeply verified"):
+        archive_cycle(config, machine_id="machine-test", due_only=True)
 
 
 def test_deep_verify_detects_manifest_checksum_corruption(tmp_path: Path) -> None:

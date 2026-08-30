@@ -31,7 +31,7 @@
 | 字段 | 默认值 | 约束与含义 |
 | --- | --- | --- |
 | `root` | `<home>/agent-session-vault/archive` | 保存 immutable object、snapshot、catalog、state 和 receipt 的文件系统或已挂载 NAS root |
-| `cadence_days` | `14` | 正整数，控制 `archive-cycle --due-only` |
+| `cadence_days` | `14` | 正整数；当历史 session 已被最新 deep-verified snapshot 覆盖时，控制 `archive-cycle --due-only` 的保底周期；未覆盖的 `archived_sessions` 文件会立即触发归档 |
 | `cold_age_days` | `30` | 非负整数，用于筛选可进入 prune plan 的本机冷归档会话 |
 | `staging_root` | `<home>/.cache/agent-session-vault/archive-staging` | 本机 snapshot 构建目录 |
 | `machine_id_path` | `<home>/.config/agent-session-vault/machine-id` | 本机生成且稳定保存的 archive identity |

@@ -382,8 +382,19 @@ def archive_cycle(
         try:
             resolved_machine_id = machine_id or _read_machine_id_for_cycle(config)
             state = _read_state(state_path)
-            if due_only and not _is_due(state, config.archive.cadence_days):
-                return ArchiveCycleResult("not_due", resolved_machine_id, None, (), (), "cadence_not_reached")
+            if (
+                due_only
+                and not _is_due(state, config.archive.cadence_days)
+                and not _has_uncovered_archived_sessions(config, resolved_machine_id)
+            ):
+                return ArchiveCycleResult(
+                    "not_due",
+                    resolved_machine_id,
+                    None,
+                    (),
+                    (),
+                    "cadence_not_reached_and_archived_sessions_covered",
+                )
             built = build_snapshot(config, machine_id=resolved_machine_id)
             if not built.snapshots:
                 return ArchiveCycleResult("pending", resolved_machine_id, built.cycle_id, (), (), "no_codex_sources")
@@ -451,3 +462,47 @@ def _is_due(state: dict[str, object], cadence_days: int) -> bool:
     if last.tzinfo is None:
         last = last.replace(tzinfo=UTC)
     return (datetime.now(UTC) - last.astimezone(UTC)).total_seconds() >= cadence_days * 86400
+
+
+def _has_uncovered_archived_sessions(config: VaultConfig, machine_id: str) -> bool:
+    scan = scan_codex_sources(config, machine_id=machine_id)
+    backend: FilesystemArchiveBackend | None = None
+
+    for scanned in scan.sources:
+        root = Path(scanned.source.root_path)
+        archived_records = tuple(
+            item.record
+            for item in scanned.files
+            if _is_archived_session_path(root, item.source_path)
+        )
+        if not archived_records:
+            continue
+
+        backend = backend or archive_backend(config)
+        latest = _latest_published_manifest(backend, machine_id, scanned.source.source_id)
+        if latest is None:
+            return True
+        snapshot, manifest = latest
+        snapshot_dir = next(
+            (path for path in backend.iter_snapshot_dirs(machine_id) if path.name == snapshot.snapshot_id),
+            None,
+        )
+        if snapshot_dir is None:
+            return True
+        verification = backend.verify_snapshot(snapshot_dir, deep=True)
+        if verification.get("status") != "verified":
+            raise ValueError(f"latest archive snapshot is not deeply verified: {snapshot.snapshot_id}")
+
+        covered = {record.path: record.sha256 for record in manifest.files}
+        if any(covered.get(record.path) != record.sha256 for record in archived_records):
+            return True
+
+    return False
+
+
+def _is_archived_session_path(root: Path, path: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return bool(relative.parts) and relative.parts[0] == "archived_sessions"

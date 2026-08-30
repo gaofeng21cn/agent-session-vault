@@ -154,10 +154,18 @@ agent-session-vault archive init --json
 agent-session-vault ops archive-cycle --due-only --deep --json
 ```
 
+`--due-only` first compares `archived_sessions` paths and content hashes with
+the latest deep-verified snapshot for each source. An uncovered or changed
+historical session triggers a cycle immediately without waiting for
+`cadence_days`. The cadence is only the fallback interval when all historical
+sessions are covered.
+
 The cycle scans configured Codex sources, creates incremental immutable
 objects, publishes snapshots, rebuilds catalog segments, performs deep
-verification, and writes receipts. It never prunes local sources. `not_due` is
-a successful no-op; `partial` requires inspection and returns a non-zero exit.
+verification, and writes receipts. It never prunes local sources. `not_due`
+means the fallback cadence has not elapsed and all historical sessions are
+covered; it is a successful no-op. `partial` requires inspection and returns a
+non-zero exit.
 
 The equivalent manual stages are available for recovery and diagnosis:
 
