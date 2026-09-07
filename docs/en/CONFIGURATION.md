@@ -36,7 +36,7 @@ home-relative.
 | `root` | `<home>/agent-session-vault/archive` | Filesystem or mounted NAS root for immutable objects, snapshots, catalog, state, and receipts |
 | `cadence_days` | `14` | Positive fallback interval for `archive-cycle --due-only` when historical sessions are covered by the latest deep-verified snapshot; uncovered `archived_sessions` files trigger a cycle immediately |
 | `cold_age_days` | `30` | Non-negative integer used to admit local archived sessions for prune plans |
-| `staging_root` | `<home>/.cache/agent-session-vault/archive-staging` | Local snapshot construction area |
+| `staging_root` | `<home>/.cache/agent-session-vault/archive-staging` | Snapshot construction area; `archive-cycle` removes its own cycle directory after all sources verify, while incomplete verification leaves it for diagnosis |
 | `machine_id_path` | `<home>/.config/agent-session-vault/machine-id` | Stable locally generated archive identity |
 | `source_paths` | automatic | Explicit Codex source roots; see below |
 | `require_quiescent_for_prune` | `true` | Reject prune planning when a source changes during the scan |

@@ -8,6 +8,7 @@ import shutil
 
 import pytest
 
+import agent_session_vault.archive_ops as archive_ops
 from agent_session_vault.archive_ops import archive_cycle, build_snapshot, init_backend, publish_snapshot, verify_snapshot
 from agent_session_vault.archive_prune import apply_prune_plan, build_prune_plan, load_prune_plan, write_prune_plan
 from agent_session_vault.archive_restore import build_restore_plan, restore_plan
@@ -181,8 +182,16 @@ def test_archive_cycle_skips_when_cadence_is_not_reached_and_history_is_covered(
     config = load_config(config_path)
     _write_session(source / "archived_sessions" / "old.jsonl", "session-old", "old")
     init_backend(config)
+    sibling = config.archive.staging_root / "previous-cycle" / "diagnostic.txt"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("retained", encoding="utf-8")
     first = archive_cycle(config, machine_id="machine-test", due_only=False)
     assert first.status == "verified"
+    assert first.staging_cleanup == "removed"
+    assert not (config.archive.staging_root / first.cycle_id).exists()
+    assert sibling.read_text(encoding="utf-8") == "retained"
+    assert (source / "archived_sessions" / "old.jsonl").is_file()
+    assert all(verify_snapshot(config, snapshot_id, deep=True)["status"] == "verified" for snapshot_id in first.snapshot_ids)
     second = archive_cycle(config, machine_id="machine-test", due_only=True)
     assert second.status == "not_due"
     assert second.reason == "cadence_not_reached_and_archived_sessions_covered"
@@ -252,6 +261,82 @@ def test_archive_cycle_refuses_not_due_for_snapshot_that_fails_deep_verification
 
     with pytest.raises(ValueError, match="latest archive snapshot is not deeply verified"):
         archive_cycle(config, machine_id="machine-test", due_only=True)
+
+
+def test_archive_cycle_retains_staging_when_cycle_is_partial(tmp_path: Path) -> None:
+    config_path, source, _ = _config(tmp_path)
+    missing = tmp_path / "missing-codex"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            f'source_paths = ["{source}"]',
+            f'source_paths = ["{source}", "{missing}"]',
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions" / "old.jsonl", "session-old", "old")
+    init_backend(config)
+
+    result = archive_cycle(config, machine_id="machine-test", due_only=False)
+
+    assert result.status == "partial"
+    assert result.staging_cleanup == "retained"
+    assert (config.archive.staging_root / result.cycle_id).is_dir()
+
+
+@pytest.mark.parametrize("cleanup_error", [OSError("cleanup failed"), ValueError("unsafe staging path")])
+def test_archive_cycle_reports_partial_when_staging_cleanup_fails(tmp_path: Path, monkeypatch, cleanup_error) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions" / "old.jsonl", "session-old", "old")
+    init_backend(config)
+
+    def _fail_cycle_cleanup(*args, **kwargs):
+        raise cleanup_error
+
+    monkeypatch.setattr(archive_ops, "_cleanup_cycle_staging", _fail_cycle_cleanup)
+
+    result = archive_cycle(config, machine_id="machine-test", due_only=False)
+
+    assert result.status == "partial"
+    assert result.reason == "staging_cleanup_failed"
+    assert result.staging_cleanup == "failed"
+    assert (config.archive.staging_root / result.cycle_id).is_dir()
+    assert not (config.paths.home / ".config" / "agent-session-vault" / "archive-cycle-state.json").exists()
+    receipts = [json.loads(path.read_text(encoding="utf-8")) for path in (config.archive.root / "receipts").rglob("*.json")]
+    cycle_receipt = next(item for item in receipts if item["operation"] == "archive-cycle")
+    assert cycle_receipt["status"] == "partial"
+    assert cycle_receipt["details"]["staging_cleanup"] == "failed"
+
+
+def test_cleanup_cycle_staging_rejects_paths_outside_configured_root(tmp_path: Path) -> None:
+    config_path, _, _ = _config(tmp_path)
+    config = load_config(config_path)
+    outside = tmp_path / "cycle-outside"
+    outside.mkdir()
+
+    with pytest.raises(ValueError, match="outside the configured root"):
+        archive_ops._cleanup_cycle_staging(config, outside, outside.name)
+
+    assert outside.is_dir()
+
+
+def test_cleanup_cycle_staging_rejects_symlink_without_touching_target(tmp_path: Path) -> None:
+    config_path, _, _ = _config(tmp_path)
+    config = load_config(config_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "keep.txt"
+    marker.write_text("retained", encoding="utf-8")
+    config.archive.staging_root.mkdir()
+    candidate = config.archive.staging_root / "cycle-test"
+    candidate.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not be symlinks"):
+        archive_ops._cleanup_cycle_staging(config, candidate, candidate.name)
+
+    assert marker.read_text(encoding="utf-8") == "retained"
+    assert candidate.is_symlink()
 
 
 def test_deep_verify_detects_manifest_checksum_corruption(tmp_path: Path) -> None:

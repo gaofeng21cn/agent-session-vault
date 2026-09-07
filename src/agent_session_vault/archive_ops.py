@@ -64,6 +64,7 @@ class ArchiveCycleResult:
     snapshot_ids: tuple[str, ...]
     verifications: tuple[dict[str, object], ...]
     reason: str | None = None
+    staging_cleanup: str | None = None
 
     def payload(self) -> dict[str, object]:
         return {
@@ -73,6 +74,7 @@ class ArchiveCycleResult:
             "snapshot_ids": list(self.snapshot_ids),
             "verifications": list(self.verifications),
             "reason": self.reason,
+            "staging_cleanup": self.staging_cleanup,
         }
 
 
@@ -397,9 +399,25 @@ def archive_cycle(
                 )
             built = build_snapshot(config, machine_id=resolved_machine_id)
             if not built.snapshots:
-                return ArchiveCycleResult("pending", resolved_machine_id, built.cycle_id, (), (), "no_codex_sources")
+                return ArchiveCycleResult(
+                    "pending",
+                    resolved_machine_id,
+                    built.cycle_id,
+                    (),
+                    (),
+                    "no_codex_sources",
+                    "retained",
+                )
             if any(snapshot.status != "staged" for snapshot in built.snapshots):
-                return ArchiveCycleResult("pending", resolved_machine_id, built.cycle_id, (), (), "source_changed_during_scan")
+                return ArchiveCycleResult(
+                    "pending",
+                    resolved_machine_id,
+                    built.cycle_id,
+                    (),
+                    (),
+                    "source_changed_during_scan",
+                    "retained",
+                )
             published = publish_snapshot(config, built.staging_root)
             verifications = tuple(
                 verify_snapshot(config, item.snapshot.snapshot_id, deep=deep)
@@ -408,6 +426,17 @@ def archive_cycle(
             snapshot_ids = tuple(item.snapshot.snapshot_id for item in published)
             verified = bool(published) and all(item.get("status") == "verified" for item in verifications)
             status = "verified" if verified and not built.scan.missing_sources else "partial"
+            reason = None
+            staging_cleanup = "retained"
+            if status == "verified":
+                try:
+                    _cleanup_cycle_staging(config, built.staging_root, built.cycle_id)
+                except (OSError, ValueError):
+                    status = "partial"
+                    reason = "staging_cleanup_failed"
+                    staging_cleanup = "failed"
+                else:
+                    staging_cleanup = "removed"
             if status == "verified":
                 _write_json(
                     state_path,
@@ -428,9 +457,19 @@ def archive_cycle(
                     "snapshot_ids": list(snapshot_ids),
                     "missing_sources": list(built.scan.missing_sources),
                     "verifications": list(verifications),
+                    "staging_root": str(built.staging_root),
+                    "staging_cleanup": staging_cleanup,
                 },
             )
-            return ArchiveCycleResult(status, resolved_machine_id, built.cycle_id, snapshot_ids, verifications)
+            return ArchiveCycleResult(
+                status,
+                resolved_machine_id,
+                built.cycle_id,
+                snapshot_ids,
+                verifications,
+                reason,
+                staging_cleanup,
+            )
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
@@ -462,6 +501,16 @@ def _is_due(state: dict[str, object], cadence_days: int) -> bool:
     if last.tzinfo is None:
         last = last.replace(tzinfo=UTC)
     return (datetime.now(UTC) - last.astimezone(UTC)).total_seconds() >= cadence_days * 86400
+
+
+def _cleanup_cycle_staging(config: VaultConfig, staging_root: Path, cycle_id: str) -> None:
+    configured_root = config.archive.staging_root.expanduser()
+    candidate = staging_root.expanduser()
+    if configured_root.is_symlink() or candidate.is_symlink():
+        raise ValueError("archive cycle staging paths must not be symlinks")
+    if candidate.name != cycle_id or candidate.parent.resolve() != configured_root.resolve():
+        raise ValueError(f"archive cycle staging path is outside the configured root: {candidate}")
+    shutil.rmtree(candidate)
 
 
 def _has_uncovered_archived_sessions(config: VaultConfig, machine_id: str) -> bool:

@@ -167,6 +167,15 @@ means the fallback cadence has not elapsed and all historical sessions are
 covered; it is a successful no-op. `partial` requires inspection and returns a
 non-zero exit.
 
+A `verified` cycle removes the exact cycle staging directory it created before
+writing verified state and its receipt. The terminal JSON reports
+`staging_cleanup: "removed"`. A cleanup failure returns `partial` with
+`reason: "staging_cleanup_failed"`; any remaining staging is left for diagnosis.
+Cycles that do not verify all sources do not attempt cleanup. If writing state
+or receipts fails after cleanup succeeds, staging has already been removed;
+inspect the published snapshots. Manual `archive publish` does not remove a
+caller-provided staging root.
+
 The equivalent manual stages are available for recovery and diagnosis:
 
 ```bash

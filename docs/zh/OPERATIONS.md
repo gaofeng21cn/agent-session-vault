@@ -146,6 +146,12 @@ deep-verified snapshot 覆盖；存在未覆盖或已变化的历史 session 时
 执行深度校验并写入回执。它绝不裁剪本机来源。`not_due` 表示保底周期尚未到达且历史 session
 已全部覆盖，是成功的空操作；`partial` 需要检查，并返回非零退出码。
 
+`verified` cycle 在写入 verified state 和 receipt 前删除自己创建的精确 cycle staging，终态 JSON
+返回 `staging_cleanup: "removed"`。清理失败时返回 `partial`、
+`reason: "staging_cleanup_failed"`，剩余 staging 留作诊断。未完成全部来源验证的 cycle
+不会尝试清理。清理成功后若写入 state 或 receipt 失败，staging 已被删除，应检查已发布的
+snapshot。手工 `archive publish` 不删除调用方传入的 staging root。
+
 恢复或诊断时也可以逐阶段执行：
 
 ```bash
