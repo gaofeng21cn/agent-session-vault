@@ -53,8 +53,10 @@ not a selectable view: the product exposes one managed Tokscale projection.
 - ZCode's live SQLite database is read through SQLite backup. Vault exports
   only model, timestamp, session identity, and token counters as JSONL, then
   combines it with any legacy `.zcode/projects` JSONL history.
-- Tokscale receives `projection_home` as `HOME`; it never receives the real
-  user HOME or `CODEX_HOME`.
+- Tokscale analytics preview and submission receive `projection_home` as
+  `HOME`, with `CODEX_HOME` removed. The separate official Antigravity RPC
+  cache refresh uses the real user HOME to reach the IDE and writes to a
+  dedicated `TOKSCALE_CONFIG_DIR`; it does not perform analytics submission.
 - `TOKSCALE_EXTRA_DIRS` contains the local projection, imported Fleet
   projections, and explicit local Codex namespaces carrying `sync-state.json`.
 - Workspace `.codex` roots and client live roots never enter Tokscale directly.
