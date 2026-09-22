@@ -47,6 +47,7 @@ def pack_paths(source: Path, relative_paths: list[str], bundle_path: Path) -> No
         _run(
             [
                 "bsdtar",
+                "--no-mac-metadata",
                 "--zstd",
                 "-cf",
                 str(bundle_path),
@@ -76,7 +77,7 @@ def restore_bundle_member(bundle_path: Path, member: str, destination: Path) -> 
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.restore")
     process = subprocess.Popen(
-        ["bsdtar", "-xOf", str(bundle_path), "--", member],
+        ["bsdtar", "--no-mac-metadata", "--options", "!mac-ext", "-xOf", str(bundle_path), "--", member],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )

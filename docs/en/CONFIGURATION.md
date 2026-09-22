@@ -38,7 +38,7 @@ home-relative.
 | `cold_age_days` | `30` | Non-negative integer used to admit local archived sessions for prune plans |
 | `staging_root` | `<home>/.cache/agent-session-vault/archive-staging` | Snapshot construction area; `archive-cycle` removes its own cycle directory after all sources verify, while incomplete verification leaves it for diagnosis |
 | `machine_id_path` | `<home>/.config/agent-session-vault/machine-id` | Stable locally generated archive identity |
-| `source_paths` | automatic | Explicit Codex source roots; see below |
+| `source_paths` | automatic | Explicit archive source roots; see below |
 | `require_quiescent_for_prune` | `true` | Reject prune planning when a source changes during the scan |
 
 When `source_paths` is absent or empty, archive discovery uses `<home>/.codex`
@@ -66,6 +66,14 @@ source_paths = [
 
 `path` is required for every table entry. Empty or invalid entries are not a
 compatibility mechanism: an entry without `path` is rejected.
+
+An explicitly configured `kind = "file_tree"` archives all regular non-symlink
+files under that source as opaque `client = "files"` records. This supports
+one-time consolidation of historical supporting files into the same verified
+archive format. It is never auto-discovered or included in Codex analytics.
+Use a separate `--config` for a one-time import so temporary sources do not
+become recurring inputs. Query and restore these records with `--client files`;
+the default `codex` client and its restricted file selection remain unchanged.
 
 ## Effective Readback
 

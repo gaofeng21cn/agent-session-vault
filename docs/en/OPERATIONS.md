@@ -191,6 +191,14 @@ Query by time, machine, session, or source as needed:
 agent-session-vault archive list --session-id <session-id> --json
 ```
 
+For a one-time historical import, use a separate configuration with explicit
+source roots, then the same snapshot, publish, deep-verify, and staging-restore
+commands. A `file_tree` source stores supporting files in the same archive as
+`client = "files"`; query or plan their restore with `--client files`. Keep the
+recurring configuration pointed at live session sources. Retire old containers
+only after their contents are covered and a restore succeeds; imported
+analytics projections must not be described as complete conversations.
+
 ## Staging Restore
 
 Build a digest-protected plan from the archive catalog, review it, then restore

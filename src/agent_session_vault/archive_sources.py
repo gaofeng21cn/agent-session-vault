@@ -144,7 +144,8 @@ def _relative_root(config: VaultConfig, path: Path, item: ArchiveSourceConfig) -
 
 
 def _source_id(machine_id: str, relative_root: str, item: ArchiveSourceConfig) -> str:
-    identity = f"{machine_id}\0codex\0{item.kind}\0{relative_root}".encode("utf-8")
+    client = "files" if item.kind == "file_tree" else "codex"
+    identity = f"{machine_id}\0{client}\0{item.kind}\0{relative_root}".encode("utf-8")
     return f"source-{hashlib.sha256(identity).hexdigest()[:24]}"
 
 
@@ -196,7 +197,7 @@ def _scan_source(config: VaultConfig, machine_id: str, item: ArchiveSourceConfig
     source = ArchiveSource(
         source_id=_source_id(machine_id, relative_root, item),
         machine_id=machine_id,
-        client="codex",
+        client="files" if item.kind == "file_tree" else "codex",
         kind=item.kind,
         root_path=str(root),
         relative_root=relative_root,
@@ -205,7 +206,10 @@ def _scan_source(config: VaultConfig, machine_id: str, item: ArchiveSourceConfig
     files: list[ScannedFile] = []
     warnings: list[str] = []
     seen: set[Path] = set()
-    for path in _iter_allowed_files(root):
+    candidates = sorted(root.rglob("*"), key=str) if item.kind == "file_tree" else _iter_allowed_files(root)
+    for path in candidates:
+        if path.is_symlink() or not path.is_file():
+            continue
         resolved = path.resolve()
         if resolved in seen:
             continue
@@ -216,7 +220,10 @@ def _scan_source(config: VaultConfig, machine_id: str, item: ArchiveSourceConfig
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             warnings.append(f"unstable:{path}")
         relative = Path(relative_root) / _relative_file(root, path)
-        if path.name == "session_index.jsonl":
+        if item.kind == "file_tree":
+            session_id = f"file-{hashlib.sha256(relative.as_posix().encode('utf-8')).hexdigest()[:24]}"
+            start_at, end_at, parse_status = None, None, "opaque"
+        elif path.name == "session_index.jsonl":
             session_id, start_at, end_at, parse_status = "index", None, None, "index"
         else:
             session_id, start_at, end_at, parse_status = _record_metadata(path)

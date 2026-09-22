@@ -167,6 +167,12 @@ agent-session-vault archive catalog-rebuild --json
 agent-session-vault archive list --session-id <session-id> --json
 ```
 
+一次性导入历史数据时，使用独立配置显式指定来源，再执行同一套 snapshot、publish、
+深度验证和 staging 恢复命令。`file_tree` 来源将配套文件作为 `client = "files"`
+存入同一归档库，查询或生成恢复计划时使用 `--client files`。定期任务配置仍只指向
+实时会话来源。旧容器的内容全部得到覆盖且恢复验证成功后，才能撤下旧容器；导入的
+统计投影不能描述为完整对话。
+
 ## Staging 恢复
 
 根据 archive catalog 生成带 digest 的计划，审阅后恢复到 staging 目录：

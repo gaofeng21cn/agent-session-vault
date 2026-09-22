@@ -13,6 +13,7 @@ from agent_session_vault.archive_ops import archive_cycle, build_snapshot, init_
 from agent_session_vault.archive_prune import apply_prune_plan, build_prune_plan, load_prune_plan, write_prune_plan
 from agent_session_vault.archive_restore import build_restore_plan, restore_plan
 from agent_session_vault.archive_sources import scan_codex_sources
+from agent_session_vault.archive_catalog import query_catalog
 from agent_session_vault.config import load_config
 from agent_session_vault.stable import mirror_stable_layer
 
@@ -103,6 +104,38 @@ def _preview(_config) -> dict[str, object]:
 
 def _current_machine_id(config) -> str:
     return scan_codex_sources(config).machine_id
+
+
+def test_explicit_file_tree_round_trip_is_separate_from_codex(tmp_path: Path) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config_path.write_text(config_path.read_text().replace(
+        f'source_paths = ["{source}"]',
+        f'source_paths = [{{path = "{source}", kind = "file_tree", label = "supporting-files"}}]',
+    ))
+    content = b"\x00\xffhistorical data\n"
+    (source / "history.bin").write_bytes(content)
+    (source / "._history.bin").write_bytes(b"\x00\x05\x16\x07\x00\x02\x00\x00" + bytes(18))
+    (source / "session_index.jsonl").write_text('{"type":"session_meta","payload":{"id":"not-a-session"}}\n')
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("excluded")
+    (source / "linked-file").symlink_to(outside / "secret.txt")
+    (source / "linked-directory").symlink_to(outside, target_is_directory=True)
+    config = load_config(config_path)
+    init_backend(config)
+    built = build_snapshot(config, machine_id="machine-test")
+    assert not built.snapshots[0].warnings
+    publish_snapshot(config, built.staging_root)
+    assert verify_snapshot(config, built.snapshots[0].snapshot_id, deep=True)["status"] == "verified"
+    assert query_catalog(config) == []
+    records = query_catalog(config, client="files")
+    assert len(records) == 3
+    assert all(row.parse_status == "opaque" and row.session_id.startswith("file-") for row in records)
+    dest = tmp_path / "restored"
+    plan = build_restore_plan(config, destination=dest, client="files")
+    assert restore_plan(config, plan)["status"] == "verified"
+    assert (dest / ".codex/history.bin").read_bytes() == content
+    assert (dest / ".codex/._history.bin").read_bytes() == (source / "._history.bin").read_bytes()
 
 
 def test_codex_snapshot_publish_and_deep_verify_reuses_unchanged_objects(tmp_path: Path) -> None:

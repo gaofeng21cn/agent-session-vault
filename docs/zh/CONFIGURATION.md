@@ -35,7 +35,7 @@
 | `cold_age_days` | `30` | 非负整数，用于筛选可进入 prune plan 的本机冷归档会话 |
 | `staging_root` | `<home>/.cache/agent-session-vault/archive-staging` | snapshot 构建目录；`archive-cycle` 在全部来源验证通过后删除自己创建的 cycle 子目录，验证未完成时保留供诊断 |
 | `machine_id_path` | `<home>/.config/agent-session-vault/machine-id` | 本机生成且稳定保存的 archive identity |
-| `source_paths` | 自动发现 | 显式 Codex source root，规则见下文 |
+| `source_paths` | 自动发现 | 显式归档 source root，规则见下文 |
 | `require_quiescent_for_prune` | `true` | source 在扫描过程中变化时拒绝生成 prune plan |
 
 `source_paths` 缺失或为空时，archive 会发现 `<home>/.codex` 和每个已存在的
@@ -61,6 +61,12 @@ source_paths = [
 ```
 
 每个 table entry 都必须提供 `path`。空 entry 或无效 entry 不是兼容机制；缺失 `path` 会直接拒绝。
+
+显式配置 `kind = "file_tree"` 时，会将来源下所有非 symlink 普通文件作为
+`client = "files"` 的不透明记录归档，用于将历史配套文件一次性整合到同一种经过验证的
+归档格式。此来源不会被自动发现，也不会进入 Codex 统计。一次性迁移应使用独立的
+`--config`，避免临时来源成为定期任务的输入。查询和恢复使用 `--client files`；默认
+`codex` 类型及其限定的文件选择范围保持不变。
 
 ## 生效回读
 
