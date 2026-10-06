@@ -96,6 +96,13 @@ AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=tokscale@<version> \
 
 ## Daily Aggregate Submit
 
+The scheduled job runs a NAS preflight before any write. It verifies the
+`Personal-Drive` mount, archive identity, and configured `archive/stable/staging`
+paths. SMB path checks run in an isolated worker with a 45-second hard timeout;
+`status: blocked` or a timeout stops the job before submission and reports the
+failing `phase` for file-access recovery. The real submit command is allowed
+only after the preflight returns `status: ready`.
+
 The operational entrypoint refreshes local and Fleet projections, validates
 the resulting view, resolves the current Tokscale package, checks a new submit
 contract with official help and preview, and submits once from the controller:

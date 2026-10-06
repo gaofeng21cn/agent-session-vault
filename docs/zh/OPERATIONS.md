@@ -87,6 +87,11 @@ AGENT_SESSION_VAULT_TOKSCALE_PACKAGE=tokscale@<version> \
 
 ## 每日聚合提交
 
+定时任务在任何写入前先运行 NAS 预检，确认 `Personal-Drive` 挂载、归档身份以及
+`archive/stable/staging` 路径。预检把 SMB 路径检查放在独立 worker 中，并有 45 秒硬超时；
+若返回 `status: blocked` 或超时，任务必须停止在提交前，并根据输出的 `phase` 恢复文件访问。
+预检未返回 `status: ready` 时不得启动下面的真实提交命令。
+
 正式操作入口会刷新本机和 Fleet 投影、验证结果视图、解析当前 Tokscale 包、在新提交合同
 出现时检查官方 help 和 preview，并且只从控制节点提交一次：
 
