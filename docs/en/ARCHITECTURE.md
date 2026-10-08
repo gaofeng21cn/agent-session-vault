@@ -50,6 +50,16 @@ not a selectable view: the product exposes one managed Tokscale projection.
   `antigravity sync` RPC path using the same current package as submit. Vault
   projects the resulting usage-only cache and retains the previous cache when
   the IDE language server is unavailable.
+- OpenClaw projection supports current per-agent SQLite (including WAL,
+  zstd transcript rows, and database-held deleted/cold archives), legacy JSONL,
+  compressed `.zst`/`.gz` history, and agent-owned Codex rollouts. SQLite is
+  snapshotted read-only and reduced to model metadata and usage events; auth,
+  conversation text, and tool output are excluded. The analytics cache retains
+  past events when the client deletes them. Local and Fleet collectors share
+  the same implementation. Extra roots preserve the exact agent-directory
+  depth required by Tokscale's native SQLite discovery.
+- Native Tokscale owns event/fork deduplication and reconciliation of Codex
+  rollouts with transcript mirrors.
 - ZCode's live SQLite database is read through SQLite backup. Vault exports
   only model, timestamp, session identity, and token counters as JSONL, then
   combines it with any legacy `.zcode/projects` JSONL history.

@@ -85,3 +85,11 @@ agent-session-vault config --json
 
 This readback includes only current `[paths]` and `[archive]` fields. Fleet
 nodes, routes, admission, and transport do not belong in this configuration.
+
+## Tokscale Exporter
+
+The default qualified package is `tokscale@4.18.0`, which supports current
+OpenClaw SQLite and compressed history. `AGENT_SESSION_VAULT_TOKSCALE_PACKAGE`
+explicitly overrides the package for `tokscale exec`; versions older than
+4.18.0 are not qualified for these OpenClaw inputs. The daily runner resolves
+npm latest on every run instead of using the default pin.

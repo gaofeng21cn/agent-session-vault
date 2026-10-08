@@ -77,3 +77,10 @@ agent-session-vault config --json
 ```
 
 回读只包含当前 `[paths]` 和 `[archive]` 字段。Fleet 节点、路由、准入和传输不属于本仓配置。
+
+## Tokscale 导出器
+
+默认已验证包为 `tokscale@4.18.0`，支持当前 OpenClaw SQLite 与压缩历史。
+`AGENT_SESSION_VAULT_TOKSCALE_PACKAGE` 可显式覆盖 `tokscale exec` 使用的包；
+低于 4.18.0 的版本未经这些 OpenClaw 输入验证。daily runner 每次查询 npm latest，
+不使用该默认固定版本。

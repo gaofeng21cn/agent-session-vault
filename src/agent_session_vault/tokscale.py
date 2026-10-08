@@ -7,7 +7,7 @@ from .config import VaultConfig
 from .views import build_tokscale_view
 
 
-DEFAULT_TOKSCALE_PACKAGE = "tokscale@3.0.0"
+DEFAULT_TOKSCALE_PACKAGE = "tokscale@4.18.0"
 TOKSCALE_PACKAGE_ENV = "AGENT_SESSION_VAULT_TOKSCALE_PACKAGE"
 
 

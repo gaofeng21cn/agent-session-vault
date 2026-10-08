@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import base64
 import gzip
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,11 @@ import shutil
 import sqlite3
 import subprocess
 
+from . import openclaw
+from .openclaw import (
+    OPENCLAW_PROJECTION_VERSION, openclaw_projection_files, openclaw_project_record,
+    openclaw_is_codex_rollout, openclaw_read_text,
+)
 from .archive import _sha256_file
 from .config import VaultConfig
 
@@ -192,88 +198,35 @@ def build_codex_projection_file(source_path: Path, dest_path: Path) -> dict[str,
     }
 
 
-def _project_openclaw_content_item(item: object) -> object:
-    if not isinstance(item, dict):
-        return item
-
-    item_type = item.get("type")
-    if item_type == "text":
-        projected = {"type": "text", "text": ""}
-        if "textSignature" in item:
-            projected["textSignature"] = item["textSignature"]
-        return projected
-    if item_type == "thinking":
-        projected = {"type": "thinking", "thinking": ""}
-        if "thinkingSignature" in item:
-            projected["thinkingSignature"] = item["thinkingSignature"]
-        return projected
-    if item_type == "toolCall":
-        projected = {"type": "toolCall"}
-        for key in ("id", "name"):
-            if key in item:
-                projected[key] = item[key]
-        if "arguments" in item:
-            arguments = item["arguments"]
-            projected["arguments"] = {} if isinstance(arguments, dict) else arguments
-        if "partialJson" in item:
-            projected["partialJson"] = ""
-        return projected
-    if item_type == "image":
-        projected = {"type": "image"}
-        if "mimeType" in item:
-            projected["mimeType"] = item["mimeType"]
-        if "data" in item:
-            projected["data"] = ""
-        return projected
-    return item
-
-
 def _openclaw_projected_relative_path(source_root: Path, file_path: Path) -> Path:
     rel = file_path.relative_to(source_root)
     name = rel.name
-    if name.endswith(".jsonl") or ".reset." in name:
+    if name == "openclaw-agent.sqlite" or name.endswith(".jsonl") or ".reset." in name:
         return rel
     normalized_name = f"{name.replace('.jsonl', '__jsonl__')}.jsonl"
     return Path(*rel.parts[:-1]) / "_normalized" / normalized_name
 
 
 def _project_openclaw_record(obj: dict) -> dict:
-    if obj.get("type") != "message":
-        return obj
-
-    message = obj.get("message")
-    if not isinstance(message, dict):
-        return obj
-
-    projected_message = {key: value for key, value in message.items() if key != "content"}
-    content = message.get("content")
-    if isinstance(content, list):
-        projected_message["content"] = [_project_openclaw_content_item(item) for item in content]
-    elif isinstance(content, str):
-        projected_message["content"] = ""
-    elif content is not None:
-        projected_message["content"] = content
-
-    projected = dict(obj)
-    projected["message"] = projected_message
-    return projected
+    return openclaw_project_record(obj)
 
 
 def _build_openclaw_projection_file(source_path: Path, dest_path: Path) -> dict[str, int]:
+    if source_path.name == "openclaw-agent.sqlite":
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        return {"source_bytes": source_path.stat().st_size, "dest_bytes": dest_path.stat().st_size}
+    if openclaw_is_codex_rollout(source_path):
+        return build_codex_projection_file(source_path, dest_path)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with source_path.open("r", encoding="utf-8", errors="replace") as src, dest_path.open("w", encoding="utf-8") as dst:
-        for raw in src:
-            try:
-                obj = json.loads(raw)
-            except Exception:
-                dst.write(raw)
+    with dest_path.open("w", encoding="utf-8") as dst:
+        for raw in openclaw_read_text(source_path).splitlines():
+            if not raw.strip():
                 continue
+            obj = json.loads(raw)
             dst.write(json.dumps(_project_openclaw_record(obj), ensure_ascii=False, separators=(",", ":")))
             dst.write("\n")
-    return {
-        "source_bytes": source_path.stat().st_size,
-        "dest_bytes": dest_path.stat().st_size,
-    }
+    return {"source_bytes": source_path.stat().st_size, "dest_bytes": dest_path.stat().st_size}
 
 
 def _projection_state_path(machine_root: Path) -> Path:
@@ -449,7 +402,7 @@ def _local_home_roots(config: VaultConfig) -> list[DiscoveredRoot]:
     return roots
 
 
-def _iter_local_projection_files(root: DiscoveredRoot) -> list[_LocalProjectionFile]:
+def _iter_local_projection_files(root: DiscoveredRoot, cache_root: Path, dry_run: bool = False) -> list[_LocalProjectionFile]:
     files: list[_LocalProjectionFile] = []
     if root.client == "codex":
         source_shapes: list[tuple[str, Path]] = []
@@ -482,20 +435,11 @@ def _iter_local_projection_files(root: DiscoveredRoot) -> list[_LocalProjectionF
         return files
 
     if root.client == "openclaw":
-        source_root = root.source_path / "agents" if (root.source_path / "agents").is_dir() else root.source_path
-        for source_path in sorted(source_root.rglob("*")):
-            if source_path.is_file() and ".jsonl" in source_path.name:
-                files.append(
-                    _LocalProjectionFile(
-                        client="openclaw",
-                        source_path=source_path,
-                        relative_destination=(
-                            Path("openclaw")
-                            / root.root_id
-                            / _openclaw_projected_relative_path(source_root, source_path)
-                        ),
-                    )
-                )
+        for source_path, relative in openclaw_projection_files(root.source_path, cache_root / root.root_id, dry_run):
+            files.append(_LocalProjectionFile(
+                client="openclaw", source_path=source_path,
+                relative_destination=Path("openclaw") / root.root_id / _openclaw_projected_relative_path(Path(), relative),
+            ))
         return files
 
     if root.client == "antigravity":
@@ -550,6 +494,11 @@ def _load_local_home_state(path: Path) -> dict[str, object]:
         or not isinstance(payload.get("files"), dict)
     ):
         return {"schema_version": 1, "files": {}}
+    if payload.get("openclaw_projector_version") != OPENCLAW_PROJECTION_VERSION:
+        payload["files"] = {
+            key: value for key, value in payload["files"].items()
+            if not isinstance(value, dict) or value.get("client") != "openclaw"
+        }
     return payload
 
 
@@ -632,7 +581,7 @@ def refresh_local_home_projection(
 
     for root in roots:
         seen_clients.add(root.client)
-        items = _iter_local_projection_files(root)
+        items = _iter_local_projection_files(root, machine_root / ".source-cache" / "openclaw", dry_run)
         if items and statuses[root.client] == "skipped_unavailable":
             if root.client == "antigravity" and root.client in explicit_statuses:
                 pass
@@ -688,6 +637,7 @@ def refresh_local_home_projection(
             {
                 "schema_version": 1,
                 "projector_version": CODEX_PROJECTION_VERSION,
+                "openclaw_projector_version": OPENCLAW_PROJECTION_VERSION,
                 "status": "valid",
                 "source_home": str(config.paths.home),
                 "projection_home": str(config.paths.projection_home),
@@ -857,7 +807,7 @@ def import_machine_projection(
 
 
 def _remote_helper_source() -> str:
-    return """
+    helper = """
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -1164,84 +1114,35 @@ def _build_codex_projection_file(source_path, dest_path):
     }
 
 
-def _project_openclaw_content_item(item):
-    if not isinstance(item, dict):
-        return item
-    item_type = item.get("type")
-    if item_type == "text":
-        projected = {"type": "text", "text": ""}
-        if "textSignature" in item:
-            projected["textSignature"] = item["textSignature"]
-        return projected
-    if item_type == "thinking":
-        projected = {"type": "thinking", "thinking": ""}
-        if "thinkingSignature" in item:
-            projected["thinkingSignature"] = item["thinkingSignature"]
-        return projected
-    if item_type == "toolCall":
-        projected = {"type": "toolCall"}
-        for key in ("id", "name"):
-            if key in item:
-                projected[key] = item[key]
-        if "arguments" in item:
-            arguments = item["arguments"]
-            projected["arguments"] = {} if isinstance(arguments, dict) else arguments
-        if "partialJson" in item:
-            projected["partialJson"] = ""
-        return projected
-    if item_type == "image":
-        projected = {"type": "image"}
-        if "mimeType" in item:
-            projected["mimeType"] = item["mimeType"]
-        if "data" in item:
-            projected["data"] = ""
-        return projected
-    return item
-
-
 def _openclaw_projected_relative_path(source_root, file_path):
     rel = file_path.relative_to(source_root)
     name = rel.name
-    if name.endswith(".jsonl") or ".reset." in name:
+    if name == "openclaw-agent.sqlite" or name.endswith(".jsonl") or ".reset." in name:
         return rel
     normalized_name = f"{name.replace('.jsonl', '__jsonl__')}.jsonl"
     return Path(*rel.parts[:-1]) / "_normalized" / normalized_name
 
 
 def _project_openclaw_record(obj):
-    if obj.get("type") != "message":
-        return obj
-    message = obj.get("message")
-    if not isinstance(message, dict):
-        return obj
-    projected_message = {key: value for key, value in message.items() if key != "content"}
-    content = message.get("content")
-    if isinstance(content, list):
-        projected_message["content"] = [_project_openclaw_content_item(item) for item in content]
-    elif isinstance(content, str):
-        projected_message["content"] = ""
-    elif content is not None:
-        projected_message["content"] = content
-    projected = dict(obj)
-    projected["message"] = projected_message
-    return projected
+    return openclaw_project_record(obj)
 
 
 def _build_openclaw_projection_file(source_path, dest_path):
+    if source_path.name == "openclaw-agent.sqlite":
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        return {"source_bytes": source_path.stat().st_size, "dest_bytes": dest_path.stat().st_size}
+    if openclaw_is_codex_rollout(source_path):
+        return _build_codex_projection_file(source_path, dest_path)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with source_path.open("r", encoding="utf-8", errors="replace") as src, dest_path.open("w", encoding="utf-8") as dst:
-        for raw in src:
-            try:
-                obj = json.loads(raw)
-            except Exception:
-                dst.write(raw)
+    with dest_path.open("w", encoding="utf-8") as dst:
+        for raw in openclaw_read_text(source_path).splitlines():
+            if not raw.strip():
                 continue
+            obj = json.loads(raw)
             dst.write(json.dumps(_project_openclaw_record(obj), ensure_ascii=False, separators=(",", ":")))
             dst.write("\\n")
-    return {
-        "source_bytes": source_path.stat().st_size,
-        "dest_bytes": dest_path.stat().st_size,
-    }
+    return {"source_bytes": source_path.stat().st_size, "dest_bytes": dest_path.stat().st_size}
 
 
 def _add_projection_file(items, client, source_path, relative_destination):
@@ -1256,12 +1157,12 @@ def _add_projection_file(items, client, source_path, relative_destination):
     }
 
 
-def _build_projection_plan(machine_name, import_name, roots, source_home):
+def _build_projection_plan(machine_name, import_name, roots, source_home, state_dir):
     discovered = discover_machine_roots(roots, source_home)
     roots_manifest = {
         "machine": machine_name,
         "import_name": import_name,
-        "projector_versions": {"codex": CODEX_PROJECTION_VERSION},
+        "projector_versions": {"codex": CODEX_PROJECTION_VERSION, "openclaw": OPENCLAW_PROJECTION_VERSION},
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "roots": [],
     }
@@ -1307,15 +1208,13 @@ def _build_projection_plan(machine_name, import_name, roots, source_home):
                         Path("gemini") / root["root_id"] / file_path.relative_to(source_root),
                     )
         elif client == "openclaw":
-            source_root = source_path / "agents" if (source_path / "agents").is_dir() else source_path
-            for file_path in sorted(source_root.rglob("*")):
-                if file_path.is_file() and ".jsonl" in file_path.name:
-                    _add_projection_file(
-                        items,
-                        client,
-                        file_path,
-                        Path("openclaw") / root["root_id"] / _openclaw_projected_relative_path(source_root, file_path),
-                    )
+            for file_path, relative in openclaw_projection_files(
+                source_path, state_dir / "source-cache" / "openclaw" / root["root_id"]
+            ):
+                _add_projection_file(
+                    items, client, file_path,
+                    Path("openclaw") / root["root_id"] / _openclaw_projected_relative_path(Path(), relative),
+                )
         elif client == "antigravity":
             for file_path in sorted(source_path.rglob("*.jsonl")):
                 _add_projection_file(
@@ -1362,7 +1261,7 @@ def _load_projection_state(path, roots_identity):
         return None
     if payload.get("schema_version") != PROJECTION_STATE_SCHEMA_VERSION:
         return None
-    if payload.get("projector_versions") != {"codex": CODEX_PROJECTION_VERSION}:
+    if payload.get("projector_versions") != {"codex": CODEX_PROJECTION_VERSION, "openclaw": OPENCLAW_PROJECTION_VERSION}:
         return None
     if payload.get("roots_identity") != roots_identity:
         return None
@@ -1599,7 +1498,7 @@ def main():
     if client_statuses["zcode"] == "skipped_unavailable" and any(zcode_projects.rglob("*.jsonl")):
         client_statuses["zcode"] = "projected"
 
-    roots_manifest, projection_items = _build_projection_plan(machine_name, import_name, roots, source_home)
+    roots_manifest, projection_items = _build_projection_plan(machine_name, import_name, roots, source_home, state_dir)
     roots_identity = _roots_manifest_identity(roots_manifest)
     state_path = state_dir / "state.json"
     blob_root = state_dir / "blobs"
@@ -1694,7 +1593,7 @@ def main():
             state_path,
             {
                 "schema_version": PROJECTION_STATE_SCHEMA_VERSION,
-                "projector_versions": {"codex": CODEX_PROJECTION_VERSION},
+                "projector_versions": {"codex": CODEX_PROJECTION_VERSION, "openclaw": OPENCLAW_PROJECTION_VERSION},
                 "roots_identity": roots_identity,
                 "current_snapshot_id": snapshot_id,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1732,6 +1631,8 @@ def main():
 if __name__ == "__main__":
     raise SystemExit(main())
 """
+    shared = inspect.getsource(openclaw).replace("from __future__ import annotations", "")
+    return helper.replace("import tarfile", "import tarfile\n" + shared, 1)
 
 
 def fleet_projection_request(

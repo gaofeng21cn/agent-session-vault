@@ -60,6 +60,16 @@ def discover_local_workspace_extra_codex_roots(extras_root: Path, *, managed_onl
 def _append_unique_root(extra_dirs: list[tuple[str, Path]], seen: set[tuple[str, Path]], client: str, root: Path) -> None:
     if not root.exists():
         return
+    if client == "openclaw":
+        # Native SQLite discovery expects <agent>/agent/openclaw-agent.sqlite
+        # immediately beneath each extra root, rather than recursive discovery.
+        for agents_root in sorted(root.iterdir()):
+            if agents_root.is_dir():
+                key = (client, agents_root.resolve())
+                if key not in seen:
+                    seen.add(key)
+                    extra_dirs.append((client, agents_root))
+        return
     key = (client, root.resolve())
     if key in seen:
         return
