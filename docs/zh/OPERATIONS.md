@@ -111,6 +111,16 @@ ZCode SQLite 会先生成一致快照，再转为只含用量的 JSONL；不会�
 `failed`、`unconfirmed` 和 `incomplete_receipt` 都不等于提交成功。stable mirror 告警不会
 推翻已经确认的提交，需要单独检查 `stable_mirror.status`。
 
+指定 `--mirror-stable` 后，runner 在提交尝试结束后保存刷新后的 analytics，即使提交未确认
+也会执行镜像。镜像成功不证明数据已提交到 Tokscale，镜像失败也不会覆盖提交结果。
+请求发出后的传输中断意味着送达状态未知；runner 不会自动重试真实 submit。
+
+本机调度器应调用一个固定启动脚本，由脚本负责工作目录、只读 HTTPS 检查、原样 NAS 预检、
+完整的 Python detached 启动命令、启动锁和持久启动记录，提示词不再拼接业务命令。
+仅只读连接检查可以重试；存活或状态未明确的原启动必须继续核对。脚本提供只读状态查询，
+绑定原 runner 的 receipt 和真实退出码。提交端点对 GET 返回 405 只证明 HTTPS 连接可用，
+不证明 POST 已送达。部署路径、机器身份、日志和调度配置均留在仓库外。
+
 ## Stable Analytics 恢复层
 
 先预览，再创建 imports、受管 extras、配置和 Tokscale custom pricing 的 packed、verified

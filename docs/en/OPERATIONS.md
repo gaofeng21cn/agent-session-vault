@@ -127,6 +127,22 @@ confirmed run. `already_running`, `failed`, `unconfirmed`, and
 warning does not invalidate an already confirmed submit; inspect
 `stable_mirror.status` separately.
 
+When `--mirror-stable` is requested, the runner mirrors the refreshed analytics
+after the submit attempt, even when submission is unconfirmed. Mirror success
+does not confirm delivery to Tokscale, and mirror failure does not replace the
+submit result. A transport interruption after sending a request leaves delivery
+unknown; the runner never retries a real submit automatically.
+
+The local scheduler should call one fixed launcher script rather than assemble
+the business command in its prompt. That script owns the required working
+directory, read-only HTTPS probe, unchanged NAS preflight, exact Python detached
+launcher invocation, launch lock, and durable launch record. Only read-only
+connection probes may retry. It reattaches to a live or unresolved original
+launch and exposes a read-only status operation bound to that runner's receipt
+and actual exit code. GET response 405 from the submit endpoint proves only that
+the HTTPS connection works; it does not prove POST delivery. Deployment paths,
+machine identities, logs, and scheduler configuration stay outside the repository.
+
 ## Stable Analytics Recovery
 
 Preview and then create a packed, verified restore copy of imports, managed

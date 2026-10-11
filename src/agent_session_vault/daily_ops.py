@@ -543,14 +543,16 @@ def run_daily_tokscale(
             "preview_log": str(run_dir / "preview.log") if preview_ran else None,
         }
         payload["stable_mirror"] = {"status": "not_requested"}
-        if confirmed and mirror_stable:
+        # Projection recovery is independent of the external submit result.
+        # A transport failure must not leave refreshed analytics without a copy.
+        if mirror_stable:
             update_status("stable_mirror")
             try:
                 stable_result = mirror_stable_layer(config, stable_root=stable_root)
                 payload["stable_mirror"] = stable_mirror_payload(stable_result)
                 if stable_result.status != "verified":
                     payload.setdefault("warnings", []).append("stable_mirror_not_verified")
-            except Exception as exc:  # noqa: BLE001 - a backup warning must not invalidate a confirmed submit
+            except Exception as exc:  # noqa: BLE001 - preserve the submit result independently
                 payload["stable_mirror"] = {
                     "status": "failed",
                     "error": f"{type(exc).__name__}: {exc}",

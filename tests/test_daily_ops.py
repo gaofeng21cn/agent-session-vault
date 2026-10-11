@@ -3,9 +3,11 @@ from __future__ import annotations
 import fcntl
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from agent_session_vault import daily_ops
 from agent_session_vault.cli import main
 from agent_session_vault.config import load_config
 from agent_session_vault.daily_ops import CommandResult, DailyTokscaleResult, run_daily_tokscale
@@ -207,6 +209,52 @@ def test_daily_tokscale_preserves_submit_when_stable_mirror_fails(
     assert result.payload["status"] == "confirmed"
     assert result.payload["stable_mirror"]["status"] == "failed"
     assert result.payload["warnings"] == ["stable_mirror_failed"]
+
+
+@pytest.mark.parametrize("mirror_fails", [False, True])
+def test_unconfirmed_submit_still_mirrors_without_resubmitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mirror_fails: bool,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    run_root = tmp_path / "ops"
+    calls: list[list[str]] = []
+    _write_cached_contract(run_root)
+    _install_fleet_fake(monkeypatch, tmp_path)
+    _install_command_fake(monkeypatch, calls)
+    command_fake = daily_ops._run_logged_command
+
+    def fail_submit(command, **kwargs):
+        if "submit" in command:
+            calls.append(command)
+            output = STATS_OUTPUT + "\nError: Failed to connect to server.\nTLS unexpected EOF\n"
+            kwargs["log_path"].write_text(output)
+            return CommandResult(returncode=1, output=output, duration_seconds=0.1, pid=4321)
+        return command_fake(command, **kwargs)
+
+    mirrors = []
+
+    def mirror(*args, **kwargs):
+        mirrors.append(True)
+        if mirror_fails:
+            raise RuntimeError("stable root unavailable")
+        return SimpleNamespace(status="verified")
+
+    monkeypatch.setattr("agent_session_vault.daily_ops._run_logged_command", fail_submit)
+    monkeypatch.setattr("agent_session_vault.daily_ops.mirror_stable_layer", mirror)
+    monkeypatch.setattr("agent_session_vault.daily_ops.stable_mirror_payload", lambda result: {"status": result.status})
+
+    result = run_daily_tokscale(config, run_root=run_root, mirror_stable=True)
+
+    assert result.exit_code == 1
+    assert result.payload["status"] == "unconfirmed"
+    assert result.payload["error"]["phase"] == "submit"
+    assert result.payload["tokscale"]["submit_exit_code"] == 1
+    assert result.payload["stable_mirror"]["status"] == ("failed" if mirror_fails else "verified")
+    assert mirrors == [True]
+    assert len([command for command in calls if "submit" in command]) == 1
+    receipt = json.loads(Path(result.payload["receipt_path"]).read_text())
+    assert receipt["status"] == "unconfirmed"
+    assert receipt["stable_mirror"] == result.payload["stable_mirror"]
 
 
 def test_daily_tokscale_rejects_missing_synced_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
