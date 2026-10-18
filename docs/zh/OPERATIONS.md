@@ -114,6 +114,9 @@ ZCode SQLite 会先生成一致快照，再转为只含用量的 JSONL；不会�
 指定 `--mirror-stable` 后，runner 在提交尝试结束后保存刷新后的 analytics，即使提交未确认
 也会执行镜像。镜像成功不证明数据已提交到 Tokscale，镜像失败也不会覆盖提交结果。
 请求发出后的传输中断意味着送达状态未知；runner 不会自动重试真实 submit。
+提交未确认时，`tokscale.submit_error` 保留 CLI 的实际错误及可用的传输细节，并写入
+`error.message`。定价告警不等于提交失败；进一步诊断以完整的 `submit_log` 为准，
+服务端报错也不能证明数据一定没有写入。
 
 本机调度器应调用一个固定启动脚本，由脚本负责工作目录、只读 HTTPS 检查、原样 NAS 预检、
 完整的 Python detached 启动命令、启动锁和持久启动记录，提示词不再拼接业务命令。

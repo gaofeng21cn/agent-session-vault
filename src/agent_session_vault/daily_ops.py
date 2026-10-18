@@ -211,6 +211,14 @@ def _parse_profile_url(output: str) -> str | None:
     return match.group(0).rstrip(".,") if match else None
 
 
+def _parse_submit_error(output: str) -> str | None:
+    # Preserve CLI evidence, including transport detail, without interpreting
+    # server delivery or treating pricing warnings as the submission failure.
+    text = _strip_ansi(output)
+    match = re.search(r"^\s*Error:\s*[^\r\n]+(?:\n[ \t]+[^\r\n]+)*", text, re.MULTILINE)
+    return match.group(0).strip()[:2000] if match else None
+
+
 def _parse_latest_version(output: str) -> str:
     version_pattern = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
     versions = [line.strip() for line in output.splitlines() if version_pattern.fullmatch(line.strip())]
@@ -524,6 +532,7 @@ def run_daily_tokscale(
         numeric_stats = submit_stats or preview_stats
         confirmed = submit.returncode == 0 and "Successfully submitted!" in _strip_ansi(submit.output)
         receipt_complete = confirmed and numeric_stats is not None
+        submit_error = _parse_submit_error(submit.output) if not confirmed else None
         payload["tokscale"] = {
             "submit_status": "confirmed" if confirmed else "unconfirmed",
             "version": version,
@@ -538,6 +547,7 @@ def run_daily_tokscale(
             "statistics": numeric_stats,
             "profile_url": _parse_profile_url(submit.output),
             "submit_exit_code": submit.returncode,
+            "submit_error": submit_error,
             "submit_seconds": submit.duration_seconds,
             "submit_log": str(run_dir / "submit.log"),
             "preview_log": str(run_dir / "preview.log") if preview_ran else None,
@@ -573,7 +583,10 @@ def run_daily_tokscale(
             payload["error"] = {
                 "phase": "submit",
                 "type": "SubmitFailed",
-                "message": f"Tokscale submit did not return a confirmed receipt; exit={submit.returncode}",
+                "message": (
+                    f"Tokscale submit did not return a confirmed receipt; exit={submit.returncode}"
+                    + (f"; {submit_error}" if submit_error else "")
+                ),
             }
     except DailyTokscaleError as exc:
         payload["status"] = "failed"

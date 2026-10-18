@@ -212,8 +212,12 @@ def test_daily_tokscale_preserves_submit_when_stable_mirror_fails(
 
 
 @pytest.mark.parametrize("mirror_fails", [False, True])
+@pytest.mark.parametrize("submit_error", [
+    "Error: Failed to connect to server.\n  TLS unexpected EOF",
+    "Error: Internal server error",
+])
 def test_unconfirmed_submit_still_mirrors_without_resubmitting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mirror_fails: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mirror_fails: bool, submit_error: str,
 ) -> None:
     config = load_config(_write_config(tmp_path))
     run_root = tmp_path / "ops"
@@ -226,7 +230,7 @@ def test_unconfirmed_submit_still_mirrors_without_resubmitting(
     def fail_submit(command, **kwargs):
         if "submit" in command:
             calls.append(command)
-            output = STATS_OUTPUT + "\nError: Failed to connect to server.\nTLS unexpected EOF\n"
+            output = STATS_OUTPUT + "\nWarning: unpriced usage\n\n  " + submit_error + "\n\n"
             kwargs["log_path"].write_text(output)
             return CommandResult(returncode=1, output=output, duration_seconds=0.1, pid=4321)
         return command_fake(command, **kwargs)
@@ -249,12 +253,15 @@ def test_unconfirmed_submit_still_mirrors_without_resubmitting(
     assert result.payload["status"] == "unconfirmed"
     assert result.payload["error"]["phase"] == "submit"
     assert result.payload["tokscale"]["submit_exit_code"] == 1
+    assert result.payload["tokscale"]["submit_error"] == submit_error
+    assert submit_error in result.payload["error"]["message"]
     assert result.payload["stable_mirror"]["status"] == ("failed" if mirror_fails else "verified")
     assert mirrors == [True]
     assert len([command for command in calls if "submit" in command]) == 1
     receipt = json.loads(Path(result.payload["receipt_path"]).read_text())
     assert receipt["status"] == "unconfirmed"
     assert receipt["stable_mirror"] == result.payload["stable_mirror"]
+    assert receipt["tokscale"]["submit_error"] == submit_error
 
 
 def test_daily_tokscale_rejects_missing_synced_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

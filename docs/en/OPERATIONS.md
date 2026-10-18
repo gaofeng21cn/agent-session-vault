@@ -132,6 +132,10 @@ after the submit attempt, even when submission is unconfirmed. Mirror success
 does not confirm delivery to Tokscale, and mirror failure does not replace the
 submit result. A transport interruption after sending a request leaves delivery
 unknown; the runner never retries a real submit automatically.
+For an unconfirmed submit, `tokscale.submit_error` retains the CLI's error and
+transport detail (when present), also included in `error.message`. Pricing
+warnings are not submission failures. The full `submit_log` remains the source
+for further diagnosis; a server error does not establish whether data was stored.
 
 The local scheduler should call one fixed launcher script rather than assemble
 the business command in its prompt. That script owns the required working
