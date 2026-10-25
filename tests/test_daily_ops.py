@@ -211,6 +211,36 @@ def test_daily_tokscale_preserves_submit_when_stable_mirror_fails(
     assert result.payload["warnings"] == ["stable_mirror_failed"]
 
 
+def test_daily_tokscale_mirrors_local_projection_when_fleet_discovery_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    calls: list[list[str]] = []
+    mirrors: list[bool] = []
+    _install_command_fake(monkeypatch, calls)
+    monkeypatch.setattr(
+        "agent_session_vault.daily_ops.sync_fleet",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fleet state unavailable")),
+    )
+
+    def mirror(*args, **kwargs):
+        mirrors.append(True)
+        return SimpleNamespace(status="verified")
+
+    monkeypatch.setattr("agent_session_vault.daily_ops.mirror_stable_layer", mirror)
+    monkeypatch.setattr("agent_session_vault.daily_ops.stable_mirror_payload", lambda result: {"status": result.status})
+
+    result = run_daily_tokscale(config, run_root=tmp_path / "ops", mirror_stable=True)
+
+    assert result.exit_code == 1
+    assert result.payload["status"] == "failed"
+    assert result.payload["error"]["phase"] == "fleet_discovery"
+    assert result.payload["stable_mirror"]["status"] == "verified"
+    assert mirrors == [True]
+    assert not any("submit" in command for command in calls)
+
+
 @pytest.mark.parametrize("mirror_fails", [False, True])
 @pytest.mark.parametrize("submit_error", [
     "Error: Failed to connect to server.\n  TLS unexpected EOF",

@@ -378,6 +378,7 @@ def run_daily_tokscale(
     preview_ran = False
     help_seconds: float | None = None
     preview_seconds: float | None = None
+    local_projection_succeeded = False
     try:
         latest = run_command(
             ["npm", "view", "tokscale", "version"],
@@ -420,6 +421,7 @@ def run_daily_tokscale(
             config,
             client_statuses={"antigravity": antigravity_status},
         )
+        local_projection_succeeded = True
         local_payload = local_home_projection_payload(local_projection)
         local_payload["duration_seconds"] = round(time.monotonic() - local_started, 3)
         payload["local_projection"] = local_payload
@@ -552,22 +554,6 @@ def run_daily_tokscale(
             "submit_log": str(run_dir / "submit.log"),
             "preview_log": str(run_dir / "preview.log") if preview_ran else None,
         }
-        payload["stable_mirror"] = {"status": "not_requested"}
-        # Projection recovery is independent of the external submit result.
-        # A transport failure must not leave refreshed analytics without a copy.
-        if mirror_stable:
-            update_status("stable_mirror")
-            try:
-                stable_result = mirror_stable_layer(config, stable_root=stable_root)
-                payload["stable_mirror"] = stable_mirror_payload(stable_result)
-                if stable_result.status != "verified":
-                    payload.setdefault("warnings", []).append("stable_mirror_not_verified")
-            except Exception as exc:  # noqa: BLE001 - preserve the submit result independently
-                payload["stable_mirror"] = {
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-                payload.setdefault("warnings", []).append("stable_mirror_failed")
         if receipt_complete:
             payload["status"] = "confirmed"
             exit_code = 0
@@ -599,6 +585,23 @@ def run_daily_tokscale(
             "message": str(exc),
         }
     finally:
+        payload.setdefault("stable_mirror", {"status": "not_requested"})
+        # A refreshed local projection must always receive a recovery copy, even
+        # when Fleet discovery or the external submit fails before its normal
+        # completion point. The mirror result stays independent of run status.
+        if mirror_stable and local_projection_succeeded:
+            update_status("stable_mirror")
+            try:
+                stable_result = mirror_stable_layer(config, stable_root=stable_root)
+                payload["stable_mirror"] = stable_mirror_payload(stable_result)
+                if stable_result.status != "verified":
+                    payload.setdefault("warnings", []).append("stable_mirror_not_verified")
+            except Exception as exc:  # noqa: BLE001 - preserve the primary run result
+                payload["stable_mirror"] = {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                payload.setdefault("warnings", []).append("stable_mirror_failed")
         payload["phase"] = "complete"
         payload["child_pid"] = None
         payload["finished_at"] = _timestamp()

@@ -127,11 +127,13 @@ confirmed run. `already_running`, `failed`, `unconfirmed`, and
 warning does not invalidate an already confirmed submit; inspect
 `stable_mirror.status` separately.
 
-When `--mirror-stable` is requested, the runner mirrors the refreshed analytics
-after the submit attempt, even when submission is unconfirmed. Mirror success
-does not confirm delivery to Tokscale, and mirror failure does not replace the
-submit result. A transport interruption after sending a request leaves delivery
-unknown; the runner never retries a real submit automatically.
+When `--mirror-stable` is requested and the local projection succeeds, the
+runner attempts the stable mirror on every terminal path, including Fleet
+discovery or submit failure. The mirror covers projections available before the
+failure. Mirror success does not confirm delivery to Tokscale, and mirror
+failure does not replace the primary run result. A transport interruption after
+sending a request leaves delivery unknown; the runner never retries a real
+submit automatically.
 For an unconfirmed submit, `tokscale.submit_error` retains the CLI's error and
 transport detail (when present), also included in `error.message`. Pricing
 warnings are not submission failures. The full `submit_log` remains the source

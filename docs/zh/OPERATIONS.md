@@ -111,8 +111,9 @@ ZCode SQLite 会先生成一致快照，再转为只含用量的 JSONL；不会�
 `failed`、`unconfirmed` 和 `incomplete_receipt` 都不等于提交成功。stable mirror 告警不会
 推翻已经确认的提交，需要单独检查 `stable_mirror.status`。
 
-指定 `--mirror-stable` 后，runner 在提交尝试结束后保存刷新后的 analytics，即使提交未确认
-也会执行镜像。镜像成功不证明数据已提交到 Tokscale，镜像失败也不会覆盖提交结果。
+指定 `--mirror-stable` 且本机投影成功后，runner 在每条终态路径上都会尝试镜像，包括 Fleet
+发现或提交失败；镜像覆盖失败前已成功生成的投影。镜像成功不证明数据已提交到 Tokscale，
+镜像失败也不会覆盖主运行结果。
 请求发出后的传输中断意味着送达状态未知；runner 不会自动重试真实 submit。
 提交未确认时，`tokscale.submit_error` 保留 CLI 的实际错误及可用的传输细节，并写入
 `error.message`。定价告警不等于提交失败；进一步诊断以完整的 `submit_log` 为准，
