@@ -7,6 +7,9 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
+from contextlib import contextmanager
 from typing import Iterable
 import uuid
 
@@ -67,7 +70,38 @@ def _sha256_file(path: Path) -> str:
 def _open_text(path: Path):
     if path.name.endswith(".gz"):
         return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    if path.name.endswith(".zst"):
+        return _open_zstd_text(path)
     return path.open("r", encoding="utf-8", errors="replace")
+
+
+@contextmanager
+def _open_zstd_text(path: Path):
+    zstd = shutil.which("zstd")
+    if zstd is None:
+        raise OSError("zstd executable is unavailable")
+    process = subprocess.Popen(
+        [zstd, "--quiet", "--stdout", "--decompress", "--", str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        yield process.stdout
+        process.stdout.close()
+        stderr = process.stderr.read() if process.stderr is not None else ""
+        returncode = process.wait()
+        if returncode != 0:
+            raise OSError(stderr.strip() or f"zstd exited with {returncode}")
+    finally:
+        if process.stdout is not None and not process.stdout.closed:
+            process.stdout.close()
+        if process.stderr is not None and not process.stderr.closed:
+            process.stderr.close()
+        if process.poll() is None:
+            process.terminate()
+            process.wait()
 
 
 def _timestamp(value: object) -> str | None:
@@ -178,7 +212,7 @@ def _iter_allowed_files(root: Path) -> Iterable[Path]:
         for path in sorted(bucket_root.rglob("*"), key=str):
             if path.is_symlink() or not path.is_file():
                 continue
-            if path.name.endswith((".jsonl", ".jsonl.gz")):
+            if path.name.endswith((".jsonl", ".jsonl.gz", ".jsonl.zst")):
                 yield path
     index_path = root / "session_index.jsonl"
     if index_path.is_file() and not index_path.is_symlink():

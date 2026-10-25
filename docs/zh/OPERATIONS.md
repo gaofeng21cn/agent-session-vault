@@ -165,6 +165,10 @@ deep-verified snapshot 覆盖；存在未覆盖或已变化的历史 session 时
 执行深度校验并写入回执。它绝不裁剪本机来源。`not_due` 表示保底周期尚未到达且历史 session
 已全部覆盖，是成功的空操作；`partial` 需要检查，并返回非零退出码。
 
+`archived_sessions` 下的 Codex `.jsonl.zst` 会作为 opaque full-fidelity 成员纳入归档，
+不会加入 Tokscale projection。它们满足冷度、深度归档和恢复校验后可以独立裁剪；裁剪前后
+Tokscale dry-run 必须保持一致。
+
 `verified` cycle 在写入 verified state 和 receipt 前删除自己创建的精确 cycle staging，终态 JSON
 返回 `staging_cleanup: "removed"`。清理失败时返回 `partial`、
 `reason: "staging_cleanup_failed"`，剩余 staging 留作诊断。未完成全部来源验证的 cycle
@@ -221,7 +225,8 @@ agent-session-vault archive prune-apply \
   --json
 ```
 
-计划只接纳同时被当前 deep-verified archive snapshot、当前 projection 和 verified stable imports
-mirror 覆盖的冷 `archived_sessions` 文件；共享 hard link 和外部 hard link 会被拒绝，并记录
-Tokscale 官方 preview。执行时再次校验 plan digest、来源 metadata、checksum、archive snapshot、
-stable coverage，以及删除前后的 Tokscale parity。任一前提变化都必须重新生成计划，不得手工删除来源。
+计划只接纳同时被当前 deep-verified archive snapshot 和 verified stable imports mirror 覆盖的冷
+`archived_sessions` 文件。普通 JSONL 仍要求当前 projection 文件；opaque `.jsonl.zst` 有意不要求，
+因为 Tokscale 不读取它们。共享 hard link 和外部 hard link 会被拒绝，并记录 Tokscale 官方
+preview。执行时再次校验 plan digest、来源 metadata、checksum、archive snapshot、stable coverage，
+以及删除前后的 Tokscale parity。任一前提变化都必须重新生成计划，不得手工删除来源。

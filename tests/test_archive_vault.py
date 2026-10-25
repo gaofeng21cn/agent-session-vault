@@ -5,6 +5,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -59,6 +60,21 @@ def _write_session(path: Path, session_id: str, message: str) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def _write_zstd_session(path: Path, session_id: str, message: str) -> None:
+    zstd = shutil.which("zstd")
+    if zstd is None:
+        pytest.skip("zstd executable is unavailable")
+    plain = path.with_suffix("")
+    _write_session(plain, session_id, message)
+    completed = subprocess.run(
+        [zstd, "--quiet", "--stdout", "--", str(plain)],
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    path.write_bytes(completed.stdout)
+    plain.unlink()
 
 
 def _prepare_projection_and_stable(config, source_path: Path) -> Path:
@@ -160,6 +176,57 @@ def test_codex_snapshot_publish_and_deep_verify_reuses_unchanged_objects(tmp_pat
     second_snapshot_id = second.snapshots[0].snapshot_id
     assert verify_snapshot(config, second_snapshot_id, deep=True)["status"] == "verified"
     assert len(list((backend / "objects").glob("*.tar.zst"))) == 2
+
+
+def test_codex_snapshot_includes_and_parses_zstd_session(tmp_path: Path) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    zstd_path = source / "archived_sessions" / "old.jsonl.zst"
+    _write_zstd_session(zstd_path, "session-zstd", "old")
+
+    scanned = scan_codex_sources(config)
+    records = [item.record for item in scanned.files if item.source_path == zstd_path]
+    assert len(records) == 1
+    assert records[0].session_id == "session-zstd"
+    assert records[0].parse_status == "parsed"
+    assert records[0].end_at == "2026-08-19T01:02:03+00:00"
+
+
+def test_zstd_prune_does_not_require_tokscale_projection(tmp_path: Path) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    old = source / "archived_sessions" / "old.jsonl.zst"
+    _write_zstd_session(old, "session-zstd", "old")
+    init_backend(config)
+    built = build_snapshot(config, machine_id=_current_machine_id(config))
+    publish_snapshot(config, built.staging_root)
+
+    unrelated_projection = config.paths.import_root / "unrelated.jsonl"
+    unrelated_projection.parent.mkdir(parents=True, exist_ok=True)
+    unrelated_projection.write_text("projection\n", encoding="utf-8")
+    state_path = config.paths.import_root / "local-home" / ".local-home-projection-state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "valid",
+                "files": {"/unrelated/source.jsonl": {"destination": str(unrelated_projection)}},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert mirror_stable_layer(config).status == "verified"
+
+    plan = build_prune_plan(config, now=datetime(2026, 9, 20, tzinfo=UTC), preview_runner=_preview)
+    assert len(plan.entries) == 1
+    assert plan.entries[0].source_path == str(old)
+    assert plan.entries[0].projection_path == ""
+
+    result = apply_prune_plan(config, plan, preview_runner=_preview)
+    assert result["status"] == "verified"
+    assert result["deleted_file_count"] == 1
+    assert not old.exists()
 
 
 def test_catalog_and_staging_restore_round_trip_selected_session(tmp_path: Path) -> None:

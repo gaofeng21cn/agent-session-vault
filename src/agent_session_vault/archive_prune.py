@@ -366,7 +366,10 @@ def build_prune_plan(
                 continue
             projection = projection_files.get(str(item.source_path.resolve()))
             projection_path = projection.get("destination") if projection else None
-            if not isinstance(projection_path, str) or not Path(projection_path).is_file():
+            opaque_codex_archive = item.source_path.name.endswith(".jsonl.zst")
+            if opaque_codex_archive:
+                projection_path = ""
+            elif not isinstance(projection_path, str) or not Path(projection_path).is_file():
                 skipped["projection_missing"] += 1
                 continue
             entries.append(
@@ -425,6 +428,10 @@ def _verify_entry(entry: PruneEntry) -> None:
         raise ValueError(f"prune source metadata changed: {path}")
     if sha256_file(path) != entry.sha256:
         raise ValueError(f"prune source checksum changed: {path}")
+    if not entry.projection_path:
+        if not entry.archive_path.endswith(".jsonl.zst"):
+            raise ValueError(f"Tokscale projection is missing for non-opaque archive: {path}")
+        return
     projection = Path(entry.projection_path)
     if not projection.is_file():
         raise ValueError(f"Tokscale projection is missing: {projection}")

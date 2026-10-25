@@ -196,6 +196,11 @@ means the fallback cadence has not elapsed and all historical sessions are
 covered; it is a successful no-op. `partial` requires inspection and returns a
 non-zero exit.
 
+Codex `.jsonl.zst` files under `archived_sessions` are included as opaque
+full-fidelity members and are not added to the Tokscale projection. They can be
+pruned after the same deep archive and restore checks when they are cold; the
+Tokscale dry-run must remain unchanged before and after the operation.
+
 A `verified` cycle removes the exact cycle staging directory it created before
 writing verified state and its receipt. The terminal JSON reports
 `staging_cleanup: "removed"`. A cleanup failure returns `partial` with
@@ -260,9 +265,10 @@ agent-session-vault archive prune-apply \
 ```
 
 Planning admits only cold `archived_sessions` files covered by a current,
-deeply verified archive snapshot, the current projection, and a verified stable
-imports mirror. It rejects shared or external hard links and records an
-official Tokscale preview. Apply rechecks the plan digest, source metadata,
-checksums, archive snapshots, stable coverage, and Tokscale parity before and
-after deletion. If any prerequisite changes, generate a new plan; do not delete
-the source manually.
+deeply verified archive snapshot and a verified stable imports mirror. Normal
+JSONL sessions still require their current projection file; opaque `.jsonl.zst`
+members intentionally do not, because Tokscale does not read them. The plan
+rejects shared or external hard links and records an official Tokscale preview.
+Apply rechecks the plan digest, source metadata, checksums, archive snapshots,
+stable coverage, and Tokscale parity before and after deletion. If any
+prerequisite changes, generate a new plan; do not delete the source manually.
