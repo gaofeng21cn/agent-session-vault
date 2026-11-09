@@ -230,3 +230,29 @@ agent-session-vault archive prune-apply \
 因为 Tokscale 不读取它们。共享 hard link 和外部 hard link 会被拒绝，并记录 Tokscale 官方
 preview。执行时再次校验 plan digest、来源 metadata、checksum、archive snapshot、stable coverage，
 以及删除前后的 Tokscale parity。任一前提变化都必须重新生成计划，不得手工删除来源。
+
+## 只读归档审阅
+
+Agent 结果与 OPL 共享视图读取同一 owner 数据：
+
+```bash
+agent-session-vault archive review --json
+agent-session-vault archive review --plan /path/to/prune-plan.json --expected-revision <plan_digest> --json
+agent-session-vault archive review --plan /path/to/prune-plan.json --receipt /path/to/receipt.json --json
+```
+
+`review` 读取当前 stable 覆盖和已存在的 restore/prune 计划，校验计划摘要，
+并拒绝与指定 revision 不符的计划。Prune 审阅核对当前本地源文件身份、stable
+imports 覆盖和归档对象校验和，展示精确 snapshot ID。归档成员的深度验证与
+Tokscale 一致性仍由 `prune-apply` 执行；审阅结果不等于执行授权。
+
+共享 `vault.archive.review` 视图通过 `agent.session.vault.v1#review` 接收可选的绝对
+路径 `config_path`、`plan_path`、`receipt_path` 及 `expected_revision`。Adapter 调用
+同一 Python owner，不提供动作，也不创建计划、收据或运行状态。Descriptor 为
+`development_only` 源码接入，不表示已经发行或安装载体；其源码树须保留与
+adapter 同级的 `src/` 包。
+
+选中 prune 计划后，视图自动读取同一计划摘要的 owner 收据。`partial`、`failed`
+或 `unknown` 收据与当前源文件检查分别展示；文件缺失本身不能证明由该次操作删除。
+先对照收据、剩余源文件和已记录的归档 snapshot，再通过已有 CLI 创建新计划。
+刷新或重开不会重试操作。Restore 计划仍绑定原 staging 目标与碰撞处理策略。

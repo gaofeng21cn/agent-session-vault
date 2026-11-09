@@ -1,0 +1,38 @@
+{
+  "schema_version": "opl-package-app-contribution-adapter.v1",
+  "reads": {
+    "agent.session.vault.v1#review": {
+      "kind": "command",
+      "cwd": "package",
+      "argv": [
+        "python3",
+        "./app_contribution.py"
+      ],
+      "stdin": "request_json",
+      "passthrough": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "title": "Vault configuration"
+          },
+          "plan_path": {
+            "type": "string",
+            "title": "Exact restore or prune plan"
+          },
+          "receipt_path": {
+            "type": "string",
+            "title": "Exact archive receipt"
+          },
+          "expected_revision": {
+            "type": "string",
+            "title": "Expected plan digest"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "actions": {}
+}

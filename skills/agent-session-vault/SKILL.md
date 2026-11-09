@@ -35,6 +35,7 @@ OPL Fleet 是节点、网络、准入、任务投放和产物传输的唯一来�
 | 正式每日统计提交 | `ops daily-tokscale --mirror-stable --json` | 只有用户明确要求提交时执行 |
 | 创建或验证完整 Codex 快照 | `ops archive-cycle --due-only --deep --json` | 写 archive；不删除本机会话 |
 | 恢复 analytics stable 层 | `storage restore-stable --dest-root <staging> --json` | 只写独立目标 |
+| 审阅既有计划、覆盖和收据 | `archive review --plan <plan> --expected-revision <plan_digest> --json`；共享视图 `vault.archive.review` | 只读；刷新不重试，partial/unknown 先对账 |
 | 查找和恢复旧会话 | `archive plan-restore ... --plan-path <plan> --json`，再 `archive restore --plan <plan> --json` | 只恢复到 staging |
 | 回收本机冷归档空间 | `archive prune-plan ... --json`，再 `archive prune-apply ... --json` | 仅限用户直接要求清理或已明确授权的自动化 |
 

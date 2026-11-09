@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from .app_review import review_archive
 from .archive_catalog import query_catalog, rebuild_catalog
 from .archive_ops import (
     archive_backend,
@@ -172,6 +173,11 @@ def build_parser() -> argparse.ArgumentParser:
     archive_prune_apply = archive_sub.add_parser("prune-apply", help="Apply a verified local prune plan")
     archive_prune_apply.add_argument("--plan", required=True, type=Path)
     archive_prune_apply.add_argument("--json", action="store_true")
+    archive_review = archive_sub.add_parser("review", help="Read existing plan, coverage and receipt without executing")
+    archive_review.add_argument("--plan", type=Path)
+    archive_review.add_argument("--receipt", type=Path)
+    archive_review.add_argument("--expected-revision")
+    archive_review.add_argument("--json", action="store_true")
     return parser
 
 
@@ -451,6 +457,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "archive" and args.archive_command == "prune-apply":
         payload = apply_prune_plan(config, load_prune_plan(args.plan))
+        _json_dump(payload) if args.json else print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "review":
+        try:
+            payload = review_archive(config, plan_path=args.plan, receipt_path=args.receipt, expected_revision=args.expected_revision)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            payload = {"state": "error", "error": {"code": "review_unavailable", "message": str(exc)}}
+            _json_dump(payload) if args.json else print(payload)
+            return 2
         _json_dump(payload) if args.json else print(payload)
         return 0
 

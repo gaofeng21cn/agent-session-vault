@@ -272,3 +272,34 @@ rejects shared or external hard links and records an official Tokscale preview.
 Apply rechecks the plan digest, source metadata, checksums, archive snapshots,
 stable coverage, and Tokscale parity before and after deletion. If any
 prerequisite changes, generate a new plan; do not delete the source manually.
+
+## Read-only archive review
+
+Use the same owner data in an Agent response or the shared OPL view:
+
+```bash
+agent-session-vault archive review --json
+agent-session-vault archive review --plan /path/to/prune-plan.json --expected-revision <plan_digest> --json
+agent-session-vault archive review --plan /path/to/prune-plan.json --receipt /path/to/receipt.json --json
+```
+
+`review` reads current stable coverage and an existing restore or prune plan. It
+validates the plan digest and rejects a different requested revision. Prune
+review checks current local source identity, stable imports coverage, and archive
+object checksums; it shows the exact snapshot IDs. Deep member verification and
+Tokscale parity still run in `prune-apply`. A review is not execution approval.
+
+The shared `vault.archive.review` view uses `agent.session.vault.v1#review` with
+optional absolute `config_path`, `plan_path`, `receipt_path` and
+`expected_revision`. Its adapter calls the same Python owner, exposes no actions,
+and does not create plans, receipts or runtime state. The descriptor is a
+`development_only` source integration; it does not claim a published or installed
+carrier. The source tree must contain its `src/` package alongside the adapter.
+
+When a prune plan is selected, matching owner receipts are read automatically.
+A partial/failed/unknown receipt stays distinct from the current source checks;
+a missing file alone does not prove deletion by that operation. Compare the
+receipt with the displayed remaining sources and recorded archive snapshots
+before creating a new plan through the existing CLI. Refresh and reopen never
+retry an operation. Restore plans remain bound to their staging destination and
+collision policy.

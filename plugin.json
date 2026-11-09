@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agent-session-vault",
+  "version": "0.1.0",
+  "description": "Read archive plans, stable coverage and owner receipts; execute through the Vault CLI.",
+  "author": {
+    "name": "gaofeng21cn"
+  },
+  "repository": "https://github.com/gaofeng21cn/agent-session-vault",
+  "license": "Apache-2.0",
+  "skills": "./skills/"
+}
