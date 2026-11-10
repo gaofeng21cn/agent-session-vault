@@ -24,11 +24,34 @@ Codex 完整归档任务。
 
 ## 安装
 
+应用目录使用正式名称 **Agent Session Vault**、Package ID
+`agent-session-vault` 和 `opl-package.json` 中的版本。Codex 源码版由原生插件管理器安装；
+添加来源时选择已审阅的 Git commit：
+
 ```bash
-git clone <your-repo-url> agent-session-vault
+codex plugin marketplace add gaofeng21cn/agent-session-vault --ref <owner-commit> --json
+codex plugin add agent-session-vault@agent-session-vault --json
+codex plugin list --marketplace agent-session-vault --json
+```
+
+插件包含 CLI 源码及 `vault.py` 入口，需要 Python 3.12 或更高版本，Agent 调用无需另装
+全局 CLI。目录的开发版/源码版状态描述分发成熟度，不授予归档、裁剪或提交权限。
+原生插件卸载保留配置、会话资料、统计投影与归档：
+
+```bash
+codex plugin remove agent-session-vault@agent-session-vault --json
+```
+
+需要独立终端命令时：
+
+```bash
+git clone https://github.com/gaofeng21cn/agent-session-vault.git
 cd agent-session-vault
 uv tool install --python 3.12 --editable .
 ```
+
+通过 `uv tool uninstall agent-session-vault` 卸载这份独立 CLI。插件与 Python 工具分别
+由各自原生管理器维护；软件卸载不删除 Vault 数据。
 
 创建本机配置：
 

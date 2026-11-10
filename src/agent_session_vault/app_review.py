@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import sys
 
 from .archive import sha256_file
@@ -14,6 +15,7 @@ from .config import VaultConfig, load_config
 from .stable import migration_plan_payload
 
 REF = "agent.session.vault.v1#review"
+STATUS_REF = "agent.session.vault.v1#status"
 REQUEST_SCHEMA = "opl-package-app-contribution-request.v1"
 RESPONSE_SCHEMA = "opl-package-app-contribution-response.v1"
 INPUT_SCHEMA = {
@@ -26,6 +28,30 @@ INPUT_SCHEMA = {
     },
     "additionalProperties": False,
 }
+
+
+def runtime_status() -> dict[str, object]:
+    """Observe local prerequisites without opening user data or running tools."""
+    python_ready = sys.version_info >= (3, 12)
+    fleet_present = shutil.which("opl-fleet") is not None
+    npx_present = shutil.which("npx") is not None
+    return {
+        "state": "ready" if python_ready and fleet_present and npx_present else "attention",
+        "data": {
+            "read_only": True, "observed_at": utc_now(),
+            "runtime_ready": python_ready,
+            "business_configuration": "not_checked",
+            "summary": "Local prerequisites only; node access, archive coverage, and submission require their own checks.",
+            "items": [
+                {"id": "python", "title": "Python runtime", "status": "ready" if python_ready else "missing",
+                 "summary": f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}; requires 3.12 or later."},
+                {"id": "fleet", "title": "Fleet synchronization", "status": "ready" if python_ready and fleet_present else "missing",
+                 "summary": "OPL Fleet command found; node access is not checked." if fleet_present else "Install OPL Fleet to synchronize approved nodes."},
+                {"id": "tokscale", "title": "Usage analytics", "status": "ready" if python_ready and npx_present else "missing",
+                 "summary": "npx found; Tokscale version and service access are checked at invocation." if npx_present else "Install Node.js with npx to run Tokscale analytics."},
+            ],
+        },
+    }
 
 
 def _read_object(path: Path) -> dict[str, object]:
@@ -161,8 +187,13 @@ def review_archive(
 
 
 def read_contribution(request: object) -> dict[str, object]:
-    if not isinstance(request, dict) or request.get("schema_version") != REQUEST_SCHEMA or request.get("operation") != "read" or request.get("ref") != REF:
+    if not isinstance(request, dict) or request.get("schema_version") != REQUEST_SCHEMA or request.get("operation") != "read" or request.get("ref") not in (REF, STATUS_REF):
         raise ValueError("unsupported app contribution request")
+    if request["ref"] == STATUS_REF:
+        if request.get("input", {}) != {}:
+            raise ValueError("runtime status accepts no input")
+        return {"schema_version": RESPONSE_SCHEMA, "ok": True, "ref": STATUS_REF,
+                "operation": "read", "result": runtime_status()}
     input_value = request.get("input", {})
     if not isinstance(input_value, dict) or set(input_value) - set(INPUT_SCHEMA["properties"]):
         raise ValueError("unsupported contribution input")
@@ -179,9 +210,12 @@ def read_contribution(request: object) -> dict[str, object]:
 
 
 def main() -> int:
+    request: object = None
     try:
-        response = read_contribution(json.load(sys.stdin))
+        request = json.load(sys.stdin)
+        response = read_contribution(request)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        response = {"schema_version": RESPONSE_SCHEMA, "ok": False, "ref": REF, "operation": "read", "error": {"code": "review_unavailable", "message": str(exc)}}
+        ref = STATUS_REF if isinstance(request, dict) and request.get("ref") == STATUS_REF else REF
+        response = {"schema_version": RESPONSE_SCHEMA, "ok": False, "ref": ref, "operation": "read", "error": {"code": "review_unavailable", "message": str(exc)}}
     json.dump(response, sys.stdout, ensure_ascii=False)
     return 0 if response["ok"] else 2
