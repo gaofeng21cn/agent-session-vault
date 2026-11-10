@@ -137,17 +137,19 @@
     ],
     "digest": "sha256:65713b60e209c139e17b501dff79935cc3432f9339d53f13519a94f16b62f3e3"
   },
-  "description_i18n": {
-    "en-US": "Session synchronization, usage analytics, and recoverable Codex archives.",
-    "zh-CN": "同步 Agent 会话统计，管理用量分析与可恢复的 Codex 归档。"
-  },
-  "display_name_i18n": {
-    "en-US": "Agent Session Vault",
-    "zh-CN": "Agent Session Vault"
-  },
-  "session_routing_summary_i18n": {
-    "en-US": "Inspect session analytics, synchronize approved Fleet projections, and review archive plans through the Vault owner.",
-    "zh-CN": "通过 Vault 查看会话统计、同步获准的 Fleet 投影并审阅归档计划。"
-  },
-  "home_shortcuts": []
+  "presentation": {
+    "display_name_i18n": {
+      "en-US": "Agent Session Vault",
+      "zh-CN": "Agent Session Vault"
+    },
+    "description_i18n": {
+      "en-US": "Session synchronization, usage analytics, and recoverable Codex archives.",
+      "zh-CN": "同步 Agent 会话统计，管理用量分析与可恢复的 Codex 归档。"
+    },
+    "session_routing_summary_i18n": {
+      "en-US": "Inspect session analytics, synchronize approved Fleet projections, and review archive plans through the Vault owner.",
+      "zh-CN": "通过 Vault 查看会话统计、同步获准的 Fleet 投影并审阅归档计划。"
+    },
+    "home_shortcuts": []
+  }
 }
