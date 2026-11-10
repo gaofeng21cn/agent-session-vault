@@ -8,13 +8,16 @@
   },
   "repository": "https://github.com/gaofeng21cn/agent-session-vault",
   "license": "Apache-2.0",
-  "skills": "./skills/",
-  "interface": {
-    "displayName": "Agent Session Vault",
-    "shortDescription": "Session synchronization, usage analytics, and recoverable Codex archives.",
-    "longDescription": "Synchronize approved Fleet analytics, inspect usage, and review Codex archive plans and receipts. Archives, projections, credentials, and configuration remain with their existing owners.",
-    "developerName": "One Person Lab",
-    "category": "Productivity",
-    "websiteURL": "https://github.com/gaofeng21cn/agent-session-vault"
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Agent Session Vault",
+        "shortDescription": "Session synchronization, usage analytics, and recoverable Codex archives.",
+        "longDescription": "Synchronize approved Fleet analytics, inspect usage, and review Codex archive plans and receipts. Archives, projections, credentials, and configuration remain with their existing owners.",
+        "developerName": "One Person Lab",
+        "category": "Productivity",
+        "websiteURL": "https://github.com/gaofeng21cn/agent-session-vault"
+      }
+    }
   }
 }
