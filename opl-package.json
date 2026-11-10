@@ -135,7 +135,7 @@
       "src/agent_session_vault/views.py",
       "vault.py"
     ],
-    "digest": "sha256:6365193ede49b6f13e2cc7f01d304c4fe170a344054ec6d1952e3f1c7eb2506d"
+    "digest": "sha256:612bf541677c5ccf7bd54c6d2138a3b3d33e5e3e798f1a6bc6f2bf2392db58f7"
   },
   "presentation": {
     "display_name_i18n": {
