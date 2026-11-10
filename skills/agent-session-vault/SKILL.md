@@ -11,14 +11,17 @@ description: 仅在用户明确要求 OPL Agent Session Vault 的多机同步、
 
 ## 开始
 
-先确认 CLI 和生效配置，除非当前任务已经提供同一次运行的可信回执：
+从当前 Skill 的 `../..` 定位已安装 Package 根目录，使用同包的 `vault.py` 调用 owner。
+它直接执行随包提供的 CLI，无须再安装另一份 Python 工具。需要 Python 3.12 或更高版本。
+先确认入口和生效配置，除非当前任务已经提供同一次运行的可信回执：
 
 ```bash
-command -v agent-session-vault
-agent-session-vault config --json
+python3 <package-root>/vault.py --help
+python3 <package-root>/vault.py config --json
 ```
 
-CLI 不存在时说明安装缺失并停止；只有用户明确要求安装时才安装。真实配置默认位于
+下表中的 `agent-session-vault` 均指上述同包入口；独立 CLI 安装仍供终端用户使用。
+Package 入口或 Python 版本不可用时报告所缺依赖。真实配置默认位于
 `~/.config/agent-session-vault/config.toml`，不要输出完整私有配置。
 
 OPL Fleet 是节点、网络、准入、任务投放和产物传输的唯一来源。不要复制节点清单、读取 Fleet

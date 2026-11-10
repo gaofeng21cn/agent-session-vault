@@ -140,3 +140,29 @@ def test_package_content_and_read_only_contract_are_complete():
         digest.update(body)
     assert manifest["content_lock"]["digest"] == "sha256:" + digest.hexdigest()
     assert "src/agent_session_vault/app_review.py" in manifest["content_lock"]["paths"]
+
+
+def test_installed_package_cli_does_not_require_a_separate_python_tool(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run([sys.executable, str(root / "vault.py"), "--help"],
+                               cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert "agent-session-vault" in completed.stdout
+    assert "archive" in completed.stdout
+    assert "sync" in completed.stdout
+
+
+def test_runtime_status_separates_feature_dependencies_without_user_data(monkeypatch):
+    import agent_session_vault.app_review as owner
+    monkeypatch.setattr(owner.shutil, "which", lambda command: None)
+    monkeypatch.setattr(owner, "load_config", lambda *_: pytest.fail("status must not read configuration"))
+    request = {"schema_version": REQUEST_SCHEMA, "operation": "read", "ref": owner.STATUS_REF}
+    response = read_contribution(request)
+    data = response["result"]["data"]
+    assert data["runtime_ready"]
+    assert data["business_configuration"] == "not_checked"
+    assert {item["id"]: item["status"] for item in data["items"]} == {
+        "python": "ready", "fleet": "missing", "tokscale": "missing",
+    }
+    assert response["result"]["state"] == "attention"
+    with pytest.raises(ValueError, match="no input"):
+        read_contribution({**request, "input": {"config_path": "/private/ignored"}})

@@ -41,11 +41,28 @@
     },
     "app_contribution_adapter": {
       "manifest": "app-contribution-adapter.json"
+    },
+    "configured_codex_plugin_carrier": {
+      "kind": "codex_plugin_manager",
+      "plugin_selector": "agent-session-vault@agent-session-vault",
+      "executor_route": "codex_cli",
+      "marketplace_source": "gaofeng21cn/agent-session-vault",
+      "publication_ref": null
     }
   },
   "app_contributions": {
     "schema_version": "opl-app-contributions.v1",
     "views": [
+      {
+        "view_id": "vault.runtime.status",
+        "view_type": "service_status",
+        "title_i18n": {
+          "en-US": "Runtime prerequisites",
+          "zh-CN": "运行依赖"
+        },
+        "data_ref": "agent.session.vault.v1#status",
+        "command_ids": []
+      },
       {
         "view_id": "vault.archive.review",
         "view_type": "list_detail",
@@ -59,6 +76,15 @@
     ],
     "commands": [],
     "ui": [
+      {
+        "contribution_id": "vault.runtime.status",
+        "slot": "settings.section",
+        "contribution_kind": "view",
+        "trust_tier": "declarative",
+        "scope": "root",
+        "sort_order": 690,
+        "view_id": "vault.runtime.status"
+      },
       {
         "contribution_id": "vault.archive.review",
         "slot": "settings.section",
@@ -74,9 +100,15 @@
     "algorithm": "sha256",
     "canonicalization": "ordered_path_length_file_length_bytes",
     "paths": [
+      ".agents/plugins/marketplace.json",
+      ".codex-plugin/plugin.json",
+      "README.md",
+      "README.zh-CN.md",
       "app-contribution-adapter.json",
       "app_contribution.py",
+      "config/agent-session-vault.example.toml",
       "plugin.json",
+      "pyproject.toml",
       "skills/agent-session-vault/SKILL.md",
       "src/agent_session_vault/__init__.py",
       "src/agent_session_vault/__main__.py",
@@ -100,8 +132,22 @@
       "src/agent_session_vault/stable_pack.py",
       "src/agent_session_vault/storage.py",
       "src/agent_session_vault/tokscale.py",
-      "src/agent_session_vault/views.py"
+      "src/agent_session_vault/views.py",
+      "vault.py"
     ],
-    "digest": "sha256:e94ef34b3aa0b781ee8885ceeffe64c3a9041652ab0fcc3e8a9db9e750f42bef"
-  }
+    "digest": "sha256:65713b60e209c139e17b501dff79935cc3432f9339d53f13519a94f16b62f3e3"
+  },
+  "description_i18n": {
+    "en-US": "Session synchronization, usage analytics, and recoverable Codex archives.",
+    "zh-CN": "同步 Agent 会话统计，管理用量分析与可恢复的 Codex 归档。"
+  },
+  "display_name_i18n": {
+    "en-US": "Agent Session Vault",
+    "zh-CN": "Agent Session Vault"
+  },
+  "session_routing_summary_i18n": {
+    "en-US": "Inspect session analytics, synchronize approved Fleet projections, and review archive plans through the Vault owner.",
+    "zh-CN": "通过 Vault 查看会话统计、同步获准的 Fleet 投影并审阅归档计划。"
+  },
+  "home_shortcuts": []
 }

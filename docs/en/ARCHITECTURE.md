@@ -15,6 +15,25 @@ invariants. It does not define configuration fields or operating procedures.
 Each responsibility has one owner. Session Vault consumes Fleet and client
 interfaces without copying their control state.
 
+## Application management
+
+`opl-package.json` owns the stable Package identity, display metadata, version,
+and native carrier declaration. The Codex marketplace resolves the root plugin;
+`.codex-plugin/plugin.json` and the generic `plugin.json` describe the same
+plugin. Framework pins a reviewed owner commit for source-edition installation
+and projects carrier readback into the shared application catalog. The
+`development_only` publication status remains separate from software-management
+compatibility and does not claim a stable artifact release.
+
+The plugin runs `vault.py`, which dispatches directly to the shipped CLI owner.
+It does not depend on a different version from the user's PATH. The review view
+uses the existing `app_contribution.py` adapter. Install, update, and removal
+belong to the native plugin manager; archive, prune, restore, and submission
+remain explicit Vault operations. Removing software preserves all external data.
+The runtime status view checks Python, Fleet, and npx availability without
+reading user configuration or executing those tools. Per-feature prerequisites
+remain separate from node access, archive coverage, and submission acceptance.
+
 ## Runtime Data Flow
 
 ```text

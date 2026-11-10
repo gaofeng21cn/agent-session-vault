@@ -13,6 +13,20 @@
 
 每项职责只有一个负责人。Session Vault 只消费 Fleet 和客户端接口，不复制它们的控制状态。
 
+## 应用管理
+
+`opl-package.json` 持有稳定 Package 身份、显示元数据、版本和原生载体声明。Codex
+marketplace 解析仓库根目录插件；`.codex-plugin/plugin.json` 与通用 `plugin.json`
+描述同一插件。Framework 为源码版安装固定已审阅的 owner commit，并把原生载体回读
+投影到统一应用目录。`development_only` 发布状态与软件管理兼容性分开，不表示已有
+稳定制品发行。
+
+插件通过 `vault.py` 直接调用同包 CLI owner，不依赖用户 PATH 上的另一版本。
+审阅视图继续使用 `app_contribution.py`。安装、更新与卸载由原生插件管理器负责；归档、
+裁剪、恢复和提交仍由 Vault 显式操作。卸载软件保留全部外部数据。
+运行状态视图只检查 Python、Fleet 和 npx 是否可用，不读取用户配置或执行这些工具。
+各功能的依赖状态与节点访问、归档覆盖及提交验收分别展示。
+
 ## 运行数据流
 
 ```text

@@ -26,11 +26,38 @@ repository rather than duplicated in local machine configuration.
 
 ## Install
 
+The application catalog identifies this product as **Agent Session Vault**,
+with Package ID `agent-session-vault` and version from `opl-package.json`.
+The Codex source edition uses the native plugin manager. Select a reviewed Git
+commit when adding the source:
+
 ```bash
-git clone <your-repo-url> agent-session-vault
+codex plugin marketplace add gaofeng21cn/agent-session-vault --ref <owner-commit> --json
+codex plugin add agent-session-vault@agent-session-vault --json
+codex plugin list --marketplace agent-session-vault --json
+```
+
+The plugin includes the CLI source and its `vault.py` entrypoint. It requires
+Python 3.12 or later; no separate global CLI installation is needed for Agent
+invocation. The catalog's development/source status describes distribution,
+not permission to run archive, prune, or submission operations. Native plugin
+removal preserves configuration, session data, projections, and archives:
+
+```bash
+codex plugin remove agent-session-vault@agent-session-vault --json
+```
+
+For a standalone terminal command:
+
+```bash
+git clone https://github.com/gaofeng21cn/agent-session-vault.git
 cd agent-session-vault
 uv tool install --python 3.12 --editable .
 ```
+
+Use `uv tool uninstall agent-session-vault` to remove that separate CLI
+installation. Plugin lifecycle and Python-tool lifecycle remain with their
+native managers; neither deletes Vault data.
 
 Create the local configuration:
 
