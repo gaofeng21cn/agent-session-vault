@@ -128,6 +128,9 @@ def test_package_content_and_read_only_contract_are_complete():
     manifest = json.loads((root / "opl-package.json").read_text())
     adapter = json.loads((root / "app-contribution-adapter.json").read_text())
     assert manifest["publication_channel_admission"] == "development_only"
+    assert manifest["presentation"]["display_name_i18n"]["en-US"] == manifest["display_name"]
+    assert manifest["presentation"]["description_i18n"]["zh-CN"]
+    assert "description_i18n" not in manifest
     assert manifest["app_contributions"]["commands"] == []
     assert adapter["actions"] == {}
     digest = hashlib.sha256()
