@@ -1,6 +1,6 @@
 {
   "name": "agent-session-vault",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Session synchronization, usage analytics, and recoverable Codex archives.",
   "author": {
     "name": "gaofeng21cn"
