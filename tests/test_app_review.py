@@ -127,7 +127,10 @@ def test_package_content_and_read_only_contract_are_complete():
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "opl-package.json").read_text())
     adapter = json.loads((root / "app-contribution-adapter.json").read_text())
-    assert manifest["publication_channel_admission"] == "development_only"
+    assert manifest["publication_channel_admission"] == "admitted"
+    assert manifest["codex_surface"]["configured_codex_plugin_carrier"]["publication_ref"] == (
+        "ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault:latest-stable"
+    )
     assert manifest["presentation"]["display_name_i18n"]["en-US"] == manifest["display_name"]
     assert manifest["presentation"]["description_i18n"]["zh-CN"]
     assert "description_i18n" not in manifest

@@ -28,36 +28,26 @@ repository rather than duplicated in local machine configuration.
 
 The application catalog identifies this product as **Agent Session Vault**,
 with Package ID `agent-session-vault` and version from `opl-package.json`.
-The Codex source edition uses the native plugin manager. Select a reviewed Git
-commit when adding the source:
+Use OPL Software Center or its CLI for the released Package:
 
 ```bash
-codex plugin marketplace add gaofeng21cn/agent-session-vault --ref <owner-commit> --json
-codex plugin add agent-session-vault@agent-session-vault --json
-codex plugin list --marketplace agent-session-vault --json
+opl packages install agent-session-vault --json
+opl packages status --package-id agent-session-vault --json
+opl packages update agent-session-vault --json
 ```
 
-The plugin includes the CLI source and its `vault.py` entrypoint. It requires
-Python 3.12 or later; no separate global CLI installation is needed for Agent
-invocation. The catalog's development/source status describes distribution,
-not permission to run archive, prune, or submission operations. Native plugin
-removal preserves configuration, session data, projections, and archives:
+The publication source is
+`ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault`.
+Each immutable artifact binds an annotated owner tag. The native plugin manager
+owns installed bytes; removal preserves configuration, sessions, projections,
+and archives. Archive, prune and submission operations retain their own authority.
 
-```bash
-codex plugin remove agent-session-vault@agent-session-vault --json
-```
-
-For a standalone terminal command:
-
-```bash
-git clone https://github.com/gaofeng21cn/agent-session-vault.git
-cd agent-session-vault
-uv tool install --python 3.12 --editable .
-```
-
-Use `uv tool uninstall agent-session-vault` to remove that separate CLI
-installation. Plugin lifecycle and Python-tool lifecycle remain with their
-native managers; neither deletes Vault data.
+The Package includes the CLI source and `vault.py` entrypoint, and requires
+Python 3.12 or later. Agent invocation needs no separate global CLI installation.
+For terminal development, an explicit checkout may use
+`uv tool install --python 3.12 --editable .`; that is a developer override,
+not a software-center release channel. Remove only that separate CLI with
+`uv tool uninstall agent-session-vault`.
 
 Create the local configuration:
 

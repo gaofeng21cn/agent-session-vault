@@ -25,33 +25,23 @@ Codex 完整归档任务。
 ## 安装
 
 应用目录使用正式名称 **Agent Session Vault**、Package ID
-`agent-session-vault` 和 `opl-package.json` 中的版本。Codex 源码版由原生插件管理器安装；
-添加来源时选择已审阅的 Git commit：
+`agent-session-vault` 和 `opl-package.json` 中的版本。通过 OPL 软件中心或同一
+CLI 管理正式 Package：
 
 ```bash
-codex plugin marketplace add gaofeng21cn/agent-session-vault --ref <owner-commit> --json
-codex plugin add agent-session-vault@agent-session-vault --json
-codex plugin list --marketplace agent-session-vault --json
+opl packages install agent-session-vault --json
+opl packages status --package-id agent-session-vault --json
+opl packages update agent-session-vault --json
 ```
 
-插件包含 CLI 源码及 `vault.py` 入口，需要 Python 3.12 或更高版本，Agent 调用无需另装
-全局 CLI。目录的开发版/源码版状态描述分发成熟度，不授予归档、裁剪或提交权限。
-原生插件卸载保留配置、会话资料、统计投影与归档：
+发行源为 `ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault`。
+每个不可变制品绑定 annotated owner 标签。原生插件管理器负责安装字节；卸载保留
+配置、会话资料、统计投影与归档。归档、裁剪和提交操作继续使用各自授权。
 
-```bash
-codex plugin remove agent-session-vault@agent-session-vault --json
-```
-
-需要独立终端命令时：
-
-```bash
-git clone https://github.com/gaofeng21cn/agent-session-vault.git
-cd agent-session-vault
-uv tool install --python 3.12 --editable .
-```
-
-通过 `uv tool uninstall agent-session-vault` 卸载这份独立 CLI。插件与 Python 工具分别
-由各自原生管理器维护；软件卸载不删除 Vault 数据。
+Package 包含 CLI 源码及 `vault.py` 入口，需要 Python 3.12 或更高版本，Agent 调用
+无需另装全局 CLI。终端开发可在显式 checkout 中运行
+`uv tool install --python 3.12 --editable .`；这是开发覆盖，不是软件中心发行渠道。
+通过 `uv tool uninstall agent-session-vault` 仅卸载这份独立开发 CLI。
 
 创建本机配置：
 

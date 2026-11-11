@@ -3,11 +3,11 @@
   "package_id": "agent-session-vault",
   "display_name": "Agent Session Vault",
   "publisher": "gaofeng21cn",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "source": "first_party_repo_local",
   "source_repo": "https://github.com/gaofeng21cn/agent-session-vault.git",
   "package_role": "capability_package",
-  "publication_channel_admission": "development_only",
+  "publication_channel_admission": "admitted",
   "capability_abi": {
     "id": "agent.session.vault.v1",
     "version": "1.0.0",
@@ -47,7 +47,7 @@
       "plugin_selector": "agent-session-vault@agent-session-vault",
       "executor_route": "codex_cli",
       "marketplace_source": "gaofeng21cn/agent-session-vault",
-      "publication_ref": null
+      "publication_ref": "ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault:latest-stable"
     }
   },
   "app_contributions": {
@@ -135,7 +135,7 @@
       "src/agent_session_vault/views.py",
       "vault.py"
     ],
-    "digest": "sha256:612bf541677c5ccf7bd54c6d2138a3b3d33e5e3e798f1a6bc6f2bf2392db58f7"
+    "digest": "sha256:7a316e58c1a249ece974d371ffd2f93a36ea461507a97a73510aab99e75a2d10"
   },
   "presentation": {
     "display_name_i18n": {
@@ -150,6 +150,8 @@
       "en-US": "Inspect session analytics, synchronize approved Fleet projections, and review archive plans through the Vault owner.",
       "zh-CN": "通过 Vault 查看会话统计、同步获准的 Fleet 投影并审阅归档计划。"
     },
-    "home_shortcuts": []
-  }
+    "home_shortcuts": [],
+    "software_type": "application"
+  },
+  "management_scope": "local_product"
 }
