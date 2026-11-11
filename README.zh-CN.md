@@ -30,7 +30,7 @@ CLI 管理正式 Package：
 
 ```bash
 opl packages install agent-session-vault --json
-opl packages status agent-session-vault --json
+opl packages status --package-id agent-session-vault --json
 opl packages update agent-session-vault --json
 ```
 

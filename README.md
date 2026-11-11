@@ -32,7 +32,7 @@ Use OPL Software Center or its CLI for the released Package:
 
 ```bash
 opl packages install agent-session-vault --json
-opl packages status agent-session-vault --json
+opl packages status --package-id agent-session-vault --json
 opl packages update agent-session-vault --json
 ```
 
