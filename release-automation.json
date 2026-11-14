@@ -1,0 +1,11 @@
+{
+  "strategy": "daily_patch",
+  "prepare": [],
+  "verify": [],
+  "version_files": [
+    {
+      "path": "pyproject.toml",
+      "kind": "toml_project"
+    }
+  ]
+}
