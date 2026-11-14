@@ -1,7 +1,7 @@
 {
   "name": "agent-session-vault",
   "interface": {
-    "displayName": "Agent Session Vault"
+    "displayName": "OPL Session Vault"
   },
   "plugins": [
     {

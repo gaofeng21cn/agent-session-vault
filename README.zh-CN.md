@@ -1,10 +1,14 @@
 <p align="center">
-  <a href="./README.md">English</a> | <strong>中文</strong>
+  <img src="assets/branding/agent-session-vault-logo.png" alt="OPL Session Vault logo" width="132" />
 </p>
 
-# Agent Session Vault
+<p align="center"><a href="./README.md">English</a> | <strong>中文</strong></p>
 
-Agent Session Vault 是运行在 OPL Fleet 上的本地优先会话投影、Tokscale 聚合与
+<h1 align="center">OPL Session Vault</h1>
+
+<p align="center"><strong>会话用量统计与可恢复归档。</strong></p>
+
+OPL Session Vault 是运行在 OPL Fleet 上的本地优先会话投影、Tokscale 聚合与
 Codex 完整归档任务。
 
 默认产品合同刻意保持精简：从每个已批准的 Fleet 节点构建体积小、可复现的统计投影，
@@ -16,7 +20,7 @@ Codex 完整归档任务。
 | 负责人 | 职责 |
 | --- | --- |
 | OPL Fleet | 节点清单、网络路由、准入、任务投放与产物传输 |
-| Agent Session Vault | 投影语义、导入、stable analytics 副本、Tokscale 执行与 Codex 归档 |
+| OPL Session Vault | 投影语义、导入、stable analytics 副本、Tokscale 执行与 Codex 归档 |
 | Tokscale | 下游用量计算与提交 |
 | Codex、Gemini CLI、OpenClaw、Antigravity IDE、ZCode | 各自的实时会话目录和 API |
 
@@ -24,7 +28,7 @@ Codex 完整归档任务。
 
 ## 安装
 
-应用目录使用正式名称 **Agent Session Vault**、Package ID
+应用目录使用正式名称 **OPL Session Vault**、Package ID
 `agent-session-vault` 和 `opl-package.json` 中的版本。通过 OPL 软件中心或同一
 CLI 管理正式 Package：
 

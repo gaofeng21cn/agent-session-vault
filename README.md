@@ -1,10 +1,14 @@
 <p align="center">
-  <strong>English</strong> | <a href="./README.zh-CN.md">中文</a>
+  <img src="assets/branding/agent-session-vault-logo.png" alt="OPL Session Vault logo" width="132" />
 </p>
 
-# Agent Session Vault
+<p align="center"><strong>English</strong> | <a href="./README.zh-CN.md">中文</a></p>
 
-Agent Session Vault is the local-first projection, Tokscale aggregation, and
+<h1 align="center">OPL Session Vault</h1>
+
+<p align="center"><strong>Session analytics and recoverable archives.</strong></p>
+
+OPL Session Vault is the local-first projection, Tokscale aggregation, and
 full-fidelity Codex archive job for OPL Fleet.
 
 The default product contract is deliberately narrow: build a compact,
@@ -17,7 +21,7 @@ conversation archives are a separate, explicit workflow.
 | Owner | Responsibility |
 | --- | --- |
 | OPL Fleet | Node inventory, network routes, admission, dispatch, and artifact transport |
-| Agent Session Vault | Projection semantics, imports, stable analytics copies, Tokscale execution, and Codex archives |
+| OPL Session Vault | Projection semantics, imports, stable analytics copies, Tokscale execution, and Codex archives |
 | Tokscale | Downstream usage calculation and submission |
 | Codex, Gemini CLI, OpenClaw, Antigravity IDE, ZCode | Their own live session roots and APIs |
 
@@ -26,7 +30,7 @@ repository rather than duplicated in local machine configuration.
 
 ## Install
 
-The application catalog identifies this product as **Agent Session Vault**,
+The application catalog identifies this product as **OPL Session Vault**,
 with Package ID `agent-session-vault` and version from `opl-package.json`.
 Use OPL Software Center or its CLI for the released Package:
 

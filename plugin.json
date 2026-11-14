@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-session-vault",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Session synchronization, usage analytics, and recoverable Codex archives.",
   "author": {
     "name": "gaofeng21cn"
@@ -11,12 +11,14 @@
   "extensions": {
     "com.openai": {
       "interface": {
-        "displayName": "Agent Session Vault",
+        "displayName": "OPL Session Vault",
         "shortDescription": "Session synchronization, usage analytics, and recoverable Codex archives.",
         "longDescription": "Synchronize approved Fleet analytics, inspect usage, and review Codex archive plans and receipts. Archives, projections, credentials, and configuration remain with their existing owners.",
         "developerName": "One Person Lab",
         "category": "Productivity",
-        "websiteURL": "https://github.com/gaofeng21cn/agent-session-vault"
+        "websiteURL": "https://github.com/gaofeng21cn/agent-session-vault",
+        "logo": "./assets/branding/agent-session-vault-logo.png",
+        "composerIcon": "./assets/branding/agent-session-vault-logo.png"
       }
     }
   }

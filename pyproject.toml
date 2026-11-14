@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-session-vault"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local-first session vault for multi-machine AI agent histories"
 requires-python = ">=3.12"
 authors = [{ name = "gaofeng" }]
