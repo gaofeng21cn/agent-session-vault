@@ -37,6 +37,8 @@ OPL Fleet 是节点、网络、准入、任务投放和产物传输的唯一来�
 | 预览 Tokscale 提交 | `tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run` | 运行官方 preview，不提交 |
 | 正式每日统计提交 | `ops daily-tokscale --mirror-stable --json` | 只有用户明确要求提交时执行 |
 | 创建或验证完整 Codex 快照 | `ops archive-cycle --due-only --deep --json` | 写 archive；不删除本机会话 |
+| 已授权双周维护 | `ops archive-maintenance --json`；`--status --json` 只读核对 | 各阶段只启动一次；含严格保护的会话裁剪 |
+| 冷数据完整批次下沉 | `ops cold-inventory` → AI 用途审阅 → `ops cold-plan` → `ops cold-pack` → `ops cold-cleanup`，均带本轮 `--run-dir`、`--json` | 仅限明确空间优化授权；先核验 TAR 与恢复样本，再清空本轮专属 Trash |
 | 恢复 analytics stable 层 | `storage restore-stable --dest-root <staging> --json` | 只写独立目标 |
 | 审阅既有计划、覆盖和收据 | `archive review --plan <plan> --expected-revision <plan_digest> --json`；共享视图 `vault.archive.review` | 只读；刷新不重试，partial/unknown 先对账 |
 | 查找和恢复旧会话 | `archive plan-restore ... --plan-path <plan> --json`，再 `archive restore --plan <plan> --json` | 只恢复到 staging |
@@ -73,7 +75,14 @@ Tokscale 只读取 Vault 准备的一份受管 projection 和 managed extras，�
 带 digest 的 plan。计划与执行必须证明：archive deep verification、stable imports coverage、
 projection coverage、无 live/external hard link，以及删除前后官方 Tokscale preview 一致。
 
-任一校验失败、候选为空或状态改变时都停止并报告；不得改用 `rm`、移动 source 或绕过 plan。
+任一校验失败或状态改变时都停止并报告；不得改用 `rm`、移动 source 或绕过 plan。
+新计划为空只跳过会话 prune-apply；已授权的冷数据阶段仍可继续。
+
+双周维护和冷数据流程按 [OPERATIONS](../../docs/zh/OPERATIONS.md#双周维护与冷数据下沉) 执行，
+复用正式 CLI，不重新生成上轮一次性脚本。detached runner 缺少真实退出码或终态 JSON 时，只读
+核对原日志，不能用 receipt/state 推断退出码、重发命令或继续删除。用途和完成状态由 AI 结合证据
+判断，代码检查路径范围、30 天整批冷度、当前引用、进程、源变化及 SHA-256。
+保留当前配置、automation 控制面、活跃工作与在线数据库；逻辑清空、移入 Trash 与物理空闲量分别报告。
 
 ## 禁止的捷径
 

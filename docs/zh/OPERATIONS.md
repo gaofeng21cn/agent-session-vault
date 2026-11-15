@@ -169,6 +169,20 @@ deep-verified snapshot 覆盖；存在未覆盖或已变化的历史 session 时
 不会加入 Tokscale projection。它们满足冷度、深度归档和恢复校验后可以独立裁剪；裁剪前后
 Tokscale dry-run 必须保持一致。
 
+构建 snapshot 时，发现的 Codex 文件先固定到本机专属 capture，再计算哈希和解析。capture 优先使用
+硬链接；来源文件系统无法链接到本机 staging 时，通过已打开的文件句柄复制，不创建符号链接。
+Codex 在运行中将已固定的会话从 `sessions` 移入 `archived_sessions`，不会使打包路径失效。
+若移动恰好发生在固定引用之前，只查找归档目录中同名的精确文件，并记录
+`relocated-during-capture` 警告。构建结束即移除 capture；manifest 哈希仍以实际入包内容为准，
+缺失任何预期成员都会使构建失败，不会静默遗漏。
+
+snapshot 构建失败时，命令返回终态 JSON：`status: "failed"`、
+`reason: "snapshot_build_failed"`、`error` 和精确的 `staging_root`，退出码非零。
+已有 cycle staging 不会被覆盖。保留 staging 中的不完整包属于诊断材料，尚未发布为 snapshot；
+移除该精确 staging 前，应先在成功归档中核验其内容覆盖。
+发布、深检、state 或 receipt 写入失败也返回结构化失败 JSON，包含失败阶段、已知 snapshot ID
+及 staging 状态。`receipt_path` 指向成功写入的 cycle 回执；进程退出仍以 detached runner 的真实退出码为准。
+
 `verified` cycle 在写入 verified state 和 receipt 前删除自己创建的精确 cycle staging，终态 JSON
 返回 `staging_cleanup: "removed"`。清理失败时返回 `partial`、
 `reason: "staging_cleanup_failed"`，剩余 staging 留作诊断。未完成全部来源验证的 cycle
@@ -214,7 +228,7 @@ Codex home。
 
 ## 本机裁剪
 
-裁剪是唯一的破坏性流程。先停止 Codex 写入，再生成并审阅计划，最后应用同一份计划：
+会话裁剪与下述冷数据清理是破坏性流程。先确保候选没有活跃写入，再生成并审阅计划，最后应用同一份计划：
 
 ```bash
 agent-session-vault archive prune-plan \
@@ -230,6 +244,64 @@ agent-session-vault archive prune-apply \
 因为 Tokscale 不读取它们。共享 hard link 和外部 hard link 会被拒绝，并记录 Tokscale 官方
 preview。执行时再次校验 plan digest、来源 metadata、checksum、archive snapshot、stable coverage，
 以及删除前后的 Tokscale parity。任一前提变化都必须重新生成计划，不得手工删除来源。
+
+## 双周维护与冷数据下沉
+
+已授权的本机调度使用一个正式入口，不在提示词中重新拼接会话阶段：
+
+```bash
+agent-session-vault ops archive-maintenance --json
+agent-session-vault ops archive-maintenance --status --json
+```
+
+首次调用预检 NAS 后，以本机 `~/.config/agent-session-vault/run-detached.py` 启动维护 runner；
+该脚本的维护源码是 [`scripts/run_detached.py`](../../scripts/run_detached.py)。每阶段独占预留启动记录，
+分别保留 PID、stdout、stderr、真实 `exit_code`。启动或 supervisor 错误另存，不伪造业务退出码。
+`--status` 只读，支持 `--run-dir <本轮目录>`，不会继续、重发或删除。未知终态、未结束 runner
+或尚未完成的冷数据阶段阻止新一轮启动；先核对原目录证据。
+
+维护 runner 只执行一次 `archive-cycle --no-due-only --deep`，验证成功后执行一次 prune-plan；
+把新计划独占保存到本轮 `prune-plan.json`，校验生成时间、ID 和 digest，再按此副本执行一次
+prune-apply。空计划只跳过 apply。每阶段重做 NAS 预检；任何失败或未验证终态都停止。
+它不调用 Tokscale submit，不自动刷新 stable 绕过保护，也不替代外部双周调度器。
+
+会话 runner 退出 `0/session_verified` 后，后续阶段均通过同一 detached 启动器各启动一次：
+
+```bash
+agent-session-vault ops cold-inventory --run-dir <本轮目录> --json
+agent-session-vault ops cold-plan --run-dir <本轮目录> --decisions <本轮目录>/decisions.json --json
+agent-session-vault ops cold-pack --run-dir <本轮目录> --json
+agent-session-vault ops cold-cleanup --run-dir <本轮目录> --json
+```
+
+inventory 只测量完整成果/会话/运行批次；用本轮时间滚动减 30 天，综合整批 mtime、ctime 和
+创建时间。近期根目录直接保留，避免因旧依赖包而遍历和裁掉近期工作。范围仅含 visualizations、
+generated_images、独立恢复/备份历史、RedCube workspaces、automation 历史批次、旧 standalone
+release 与 marketplace `.staging` 子批次；数据库、live sessions、统计输入和当前控制面不进入范围。
+所有类别（包括无候选）都有摘要。清单不跟随链接，跨卷、特殊文件和活动锁材料保留。
+
+AI 依据完成记录、当前指针、进程和当前工作判断材料用途，在同一本轮目录写入 decisions；
+格式见 [`config/codex-cold-decisions.example.json`](../../config/codex-cold-decisions.example.json)。
+每项须解释整批完成和当前引用检查，并引用持久证据。runtime 另须明确 `retired_runtime: true`。
+未选择或不能确认的项保留；空 `archive` 数组是正常无候选。代码检查实际范围、当前控制内容、
+包括不带扩展名 ID 的指针、进程与打开文件；资产引用搜索有命中或输入错误均保留该组。
+当前 CLI、current 指针和最近两个其他 release 保留；存在引用的其他版本也保留。
+
+plan 绑定本轮 inventory/decisions SHA-256，包含绝对源路径、整批边界、冷度、文件数、逻辑字节、
+逐文件 SHA-256 和元数据。pack/cleanup 使用本轮原始 runner 输出中的 plan SHA-256，不沿用旧计划。
+打包前后及移动前重新检查来源和当前引用。TAR 使用明确文件清单与 `--no-recursion --no-xattrs
+--no-mac-metadata --no-acls --no-fflags`，写入本轮独占文件，避免 macOS 压缩 stdout 的末尾填充。
+一遍解码核对成员结构、路径、内容 SHA-256 和硬链接逻辑内容，再真实恢复一个样本到本轮独立 staging。
+
+不可覆盖的包写到配置 archive 根的同级 `auxiliary/codex-home-archives/<run-id>/`，清单和回执写到
+`operations/space-optimization/<run-id>/`；无候选类别不创建空包。cleanup 再次验证 NAS 包、来源、
+证据和引用，移到同卷独占 `.Trash/codex-cold-<run-id>/`，核对全部内容后才清空精确集合。
+文件删除使用不跟随链接的目录描述符，目录只用 `rmdir`，不递归清空任意目录。变更、权限错误或未知
+状态立即停止，保留源、包、Trash 和逐项进度，不重试删除，也不清空其他用户 Trash。
+
+`space-before.json` 和 cleanup receipt 分别记录目录分配量、卷可用字节与只读数据库占用；
+逻辑清空量不等于 SSD 物理回收量。APFS 快照和同期写入影响卷净值，本流程不维护数据库或清理系统快照。
+恢复时将相应 TAR 解包到独立目录，按 `cold-plan.json` 的相对路径、字节和哈希核对，再决定按需取回。
 
 ## 只读归档审阅
 

@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 import agent_session_vault.archive_ops as archive_ops
+import agent_session_vault.archive_sources as archive_sources
 from agent_session_vault.archive_ops import archive_cycle, build_snapshot, init_backend, publish_snapshot, verify_snapshot
 from agent_session_vault.archive_prune import apply_prune_plan, build_prune_plan, load_prune_plan, write_prune_plan
 from agent_session_vault.archive_restore import build_restore_plan, restore_plan
@@ -122,7 +123,7 @@ def _current_machine_id(config) -> str:
     return scan_codex_sources(config).machine_id
 
 
-def test_explicit_file_tree_round_trip_is_separate_from_codex(tmp_path: Path) -> None:
+def test_explicit_file_tree_round_trip_is_separate_from_codex(tmp_path: Path, monkeypatch) -> None:
     config_path, source, _ = _config(tmp_path)
     config_path.write_text(config_path.read_text().replace(
         f'source_paths = ["{source}"]',
@@ -139,6 +140,11 @@ def test_explicit_file_tree_round_trip_is_separate_from_codex(tmp_path: Path) ->
     (source / "linked-directory").symlink_to(outside, target_is_directory=True)
     config = load_config(config_path)
     init_backend(config)
+
+    def reject_codex_capture(*args):
+        raise AssertionError("file_tree imports must not materialize a local Codex capture")
+
+    monkeypatch.setattr(archive_sources, "_capture_file", reject_codex_capture)
     built = build_snapshot(config, machine_id="machine-test")
     assert not built.snapshots[0].warnings
     publish_snapshot(config, built.staging_root)
@@ -247,6 +253,155 @@ def test_catalog_and_staging_restore_round_trip_selected_session(tmp_path: Path)
     assert "session-one" in restored_files[0].read_text(encoding="utf-8")
 
 
+def test_snapshot_preserves_session_moved_after_scan(tmp_path: Path, monkeypatch) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    live = source / "sessions/2026/08/19/one.jsonl"
+    archived = source / "archived_sessions/one.jsonl"
+    _write_session(live, "session-one", "original conversation")
+    content = live.read_bytes()
+    init_backend(config)
+    real_stage = archive_ops._stage_changed_files
+
+    def move_before_packing(scanned, previous, root):
+        live.rename(archived)
+        return real_stage(scanned, previous, root)
+
+    monkeypatch.setattr(archive_ops, "_stage_changed_files", move_before_packing)
+    result = archive_cycle(config, machine_id="machine-test", due_only=False)
+
+    assert result.status == "verified"
+    assert result.staging_cleanup == "removed"
+    assert not live.exists()
+    assert archived.read_bytes() == content
+    destination = tmp_path / "restore"
+    plan = build_restore_plan(config, destination=destination, session_id="session-one")
+    assert restore_plan(config, plan)["status"] == "verified"
+    assert next(destination.rglob("*.jsonl")).read_bytes() == content
+
+
+def test_snapshot_captures_session_archived_during_discovery(tmp_path: Path, monkeypatch) -> None:
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    live = source / "sessions/2026/08/19/one.jsonl"
+    archived = source / "archived_sessions/one.jsonl"
+    _write_session(live, "session-one", "original conversation")
+    init_backend(config)
+    real_capture = archive_sources._capture_file
+    moved = False
+
+    def move_before_capture(path, destination):
+        nonlocal moved
+        if path == live and not moved:
+            live.rename(archived)
+            moved = True
+        return real_capture(path, destination)
+
+    monkeypatch.setattr(archive_sources, "_capture_file", move_before_capture)
+    built = build_snapshot(config, machine_id="machine-test")
+
+    assert any(warning.startswith("relocated-during-capture:") for warning in built.snapshots[0].warnings)
+    assert {record.session_id for record in built.manifests[0].files} == {"session-one"}
+    publish_snapshot(config, built.staging_root)
+    assert verify_snapshot(config, built.snapshots[0].snapshot_id, deep=True)["status"] == "verified"
+
+
+def test_snapshot_capture_copies_when_hardlinks_are_unavailable(tmp_path: Path, monkeypatch) -> None:
+    import errno
+
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions/one.jsonl", "session-one", "conversation")
+    init_backend(config)
+
+    def no_hardlinks(*args, **kwargs):
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr(os, "link", no_hardlinks)
+    result = archive_cycle(config, machine_id="machine-test", due_only=False)
+    assert result.status == "verified"
+
+
+def test_snapshot_capture_rejects_symlink_replacement(tmp_path: Path, monkeypatch) -> None:
+    config_path, source, backend = _config(tmp_path)
+    config = load_config(config_path)
+    live = source / "sessions/2026/08/19/one.jsonl"
+    _write_session(live, "session-one", "conversation")
+    outside = tmp_path / "outside.jsonl"
+    _write_session(outside, "secret", "must not be followed")
+    init_backend(config)
+    real_capture = archive_sources._capture_file
+
+    def replace_before_capture(path, destination):
+        live.unlink()
+        live.symlink_to(outside)
+        return real_capture(path, destination)
+
+    monkeypatch.setattr(archive_sources, "_capture_file", replace_before_capture)
+    result = archive_cycle(config, machine_id="machine-test", due_only=False)
+    assert result.status == "failed"
+    assert "not a link" in result.error
+    assert not list((backend / "snapshots").rglob("COMMITTED"))
+
+
+def test_archive_cycle_returns_terminal_failure_without_publishing_incomplete_bundle(tmp_path: Path, monkeypatch, capsys) -> None:
+    from agent_session_vault.cli import main
+
+    config_path, source, backend = _config(tmp_path)
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions/old.jsonl", "session-old", "old")
+    init_backend(config)
+    state = config.paths.home / ".config/agent-session-vault/archive-cycle-state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text('{"last_verified_at":"2026-01-01T00:00:00Z"}\n')
+    before = state.read_bytes()
+
+    # Simulate a packer that exits successfully but omits a required member.
+    monkeypatch.setattr(archive_ops, "bundle_member_digests", lambda *args: {})
+    exit_code = main([
+        "--config", str(config_path), "ops", "archive-cycle", "--machine-id", "machine-test",
+        "--no-due-only", "--deep", "--json",
+    ])
+    result = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert result["status"] == "failed"
+    assert result["reason"] == "snapshot_build_failed"
+    assert result["staging_cleanup"] == "retained"
+    assert "missing packed archive member" in result["error"]
+    assert result["staging_root"] == str(config.archive.staging_root / result["cycle_id"])
+    assert list(Path(result["staging_root"]).rglob("*.tar.zst"))
+    assert state.read_bytes() == before
+    assert not list((backend / "snapshots").rglob("COMMITTED"))
+
+
+@pytest.mark.parametrize("packing_error", [
+    OSError("archive write failed"),
+    subprocess.CalledProcessError(1, ["bsdtar"]),
+    RuntimeError("truncated tar stream"),
+])
+def test_archive_cycle_reports_packing_errors_as_terminal_json(tmp_path: Path, monkeypatch, capsys, packing_error) -> None:
+    from agent_session_vault.cli import main
+
+    config_path, source, backend = _config(tmp_path)
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions/old.jsonl", "session-old", "old")
+    init_backend(config)
+
+    def fail_pack(*args):
+        raise packing_error
+
+    monkeypatch.setattr(archive_ops, "pack_paths", fail_pack)
+    exit_code = main(["--config", str(config_path), "ops", "archive-cycle", "--no-due-only", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert result["status"] == "failed"
+    assert type(packing_error).__name__ in result["error"]
+    assert result["staging_cleanup"] == "retained"
+    assert Path(result["staging_root"]).is_dir()
+    assert not list((backend / "snapshots").rglob("COMMITTED"))
+
+
 def test_staging_restore_reuses_hardlinked_codex_session_content(tmp_path: Path) -> None:
     config_path, source, _ = _config(tmp_path)
     config = load_config(config_path)
@@ -265,6 +420,27 @@ def test_staging_restore_reuses_hardlinked_codex_session_content(tmp_path: Path)
     restored_files = sorted(destination.rglob("*.jsonl"))
     assert len(restored_files) == 2
     assert restored_files[0].read_bytes() == restored_files[1].read_bytes()
+
+
+@pytest.mark.parametrize("phase", ["snapshot_publish", "snapshot_verify", "cycle_receipt_write"])
+def test_archive_cycle_reports_late_phase_failures_without_repeating_work(tmp_path, monkeypatch, phase):
+    config_path, source, _ = _config(tmp_path)
+    config = load_config(config_path)
+    _write_session(source / "archived_sessions/old.jsonl", "session-old", "old")
+    init_backend(config)
+    def fail(*args, **kwargs):
+        raise OSError("simulated NAS failure")
+    target = {"snapshot_publish": "publish_snapshot", "snapshot_verify": "verify_snapshot", "cycle_receipt_write": "receipt"}[phase]
+    monkeypatch.setattr(archive_ops, target, fail)
+    result = archive_cycle(config, machine_id="machine-test", due_only=False)
+    assert result.status == "failed" and result.reason == phase + "_failed"
+    assert "simulated NAS failure" in result.error
+    if phase == "cycle_receipt_write":
+        assert result.staging_cleanup == "removed" and not Path(result.staging_root).exists()
+    else:
+        assert Path(result.staging_root).exists()
+    if phase != "snapshot_publish":
+        assert result.snapshot_ids
 
 
 def test_missing_codex_source_is_reported_without_creating_a_snapshot(tmp_path: Path) -> None:
@@ -359,8 +535,9 @@ def test_archive_cycle_refuses_not_due_for_snapshot_that_fails_deep_verification
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="latest archive snapshot is not deeply verified"):
-        archive_cycle(config, machine_id="machine-test", due_only=True)
+    result = archive_cycle(config, machine_id="machine-test", due_only=True)
+    assert result.status == "failed" and result.reason == "archive_admission_failed"
+    assert "latest archive snapshot is not deeply verified" in result.error
 
 
 def test_archive_cycle_retains_staging_when_cycle_is_partial(tmp_path: Path) -> None:

@@ -1,0 +1,16 @@
+{
+  "schema_version": "codex-cold-decisions.v1",
+  "run_id": "REPLACE_WITH_CURRENT_RUN_ID",
+  "inventory_sha256": "REPLACE_WITH_CURRENT_INVENTORY_SHA256",
+  "archive": [
+    {
+      "source": "/absolute/local/.codex/automations/example/runs/completed-batch",
+      "completion": "The terminal receipt confirms this entire independent batch completed.",
+      "reference_review": "Current pointers, running processes and current work were reviewed; this batch has no current dependency.",
+      "evidence_paths": [
+        "/absolute/local/.codex/automations/example/runs/completed-batch/receipt.json"
+      ],
+      "retired_runtime": false
+    }
+  ]
+}

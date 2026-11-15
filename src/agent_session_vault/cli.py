@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 
 from .app_review import review_archive
 from .archive_catalog import query_catalog, rebuild_catalog
@@ -18,6 +19,7 @@ from .archive_ops import (
 )
 from .archive_prune import apply_prune_plan, build_prune_plan, load_prune_plan, prune_plan_payload, write_prune_plan
 from .archive_restore import build_restore_plan, load_restore_plan, restore_plan, write_restore_plan
+from .archive_maintenance import maintenance_status, run_sessions, start_maintenance
 from .config import load_config
 from .daily_ops import DEFAULT_CLIENTS, run_daily_tokscale
 from .fleet import sync_fleet
@@ -108,6 +110,22 @@ def build_parser() -> argparse.ArgumentParser:
     archive_cycle_parser.add_argument("--due-only", action=argparse.BooleanOptionalAction, default=True)
     archive_cycle_parser.add_argument("--deep", action=argparse.BooleanOptionalAction, default=True)
     archive_cycle_parser.add_argument("--json", action="store_true")
+    maintenance = ops_sub.add_parser("archive-maintenance", help="Launch scheduled archive/prune once, or reconcile it read-only")
+    maintenance.add_argument("--status", action="store_true", help="Only read existing runner evidence; never resume or relaunch")
+    maintenance.add_argument("--run-dir", type=Path)
+    maintenance.add_argument("--execute", action="store_true", help=argparse.SUPPRESS)
+    maintenance.add_argument("--json", action="store_true")
+    for name, help_text in (
+        ("cold-inventory", "Measure whole cold Codex batches for AI review"),
+        ("cold-plan", "Bind reviewed complete batches to a source manifest"),
+        ("cold-pack", "Pack and verify this run's reviewed cold batches"),
+        ("cold-cleanup", "Verify NAS coverage, move to dedicated Trash, then purge its exact files"),
+    ):
+        cold = ops_sub.add_parser(name, help=help_text)
+        cold.add_argument("--run-dir", type=Path, required=True)
+        if name == "cold-plan":
+            cold.add_argument("--decisions", type=Path, required=True)
+        cold.add_argument("--json", action="store_true")
 
     sync_parser = subparsers.add_parser("sync", help="Refresh managed projections")
     sync_sub = sync_parser.add_subparsers(dest="sync_command", required=True)
@@ -303,6 +321,38 @@ def main(argv: list[str] | None = None) -> int:
         payload = result.payload()
         _json_dump(payload) if args.json else print(payload)
         return 0 if result.status in {"verified", "not_due"} else 2
+
+    if args.command == "ops" and args.ops_command == "archive-maintenance":
+        try:
+            if args.status and args.execute:
+                raise ValueError("--status is read-only and cannot be combined with --execute")
+            if args.status:
+                payload = maintenance_status(config, args.run_dir)
+            elif args.execute and args.run_dir:
+                payload = run_sessions(config, args.run_dir)
+            elif args.execute or args.run_dir:
+                raise ValueError("--run-dir requires --status; execution is owned by the detached launcher")
+            else:
+                payload = start_maintenance(config)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+            _json_dump({"status": "failed", "error": f"{type(exc).__name__}: {exc}",
+                        "next": "read --status and existing logs; do not relaunch unknown work"})
+            return 2
+        _json_dump(payload) if args.json else print(payload)
+        return 0 if payload.get("status") in {"started", "session_verified", "no_launch_record"} or args.status else 2
+
+    if args.command == "ops" and args.ops_command.startswith("cold-"):
+        from .cold_archive import build_plan, cleanup, inventory, pack
+        try:
+            functions = {"cold-inventory": inventory, "cold-pack": pack, "cold-cleanup": cleanup}
+            payload = (build_plan(config, args.run_dir, args.decisions) if args.ops_command == "cold-plan"
+                       else functions[args.ops_command](config, args.run_dir))
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError, tarfile.TarError) as exc:
+            _json_dump({"status": "failed", "stage": args.ops_command, "error": f"{type(exc).__name__}: {exc}",
+                        "run_dir": str(args.run_dir), "next": "retain sources/packages/Trash and reconcile evidence; do not retry deletion"})
+            return 2
+        _json_dump(payload) if args.json else print(payload)
+        return 0
 
     if args.command == "sync" and args.sync_command == "local-codex":
         result = sync_local_codex_sources(

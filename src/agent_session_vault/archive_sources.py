@@ -28,6 +28,7 @@ class ScannedSource:
     source: ArchiveSource
     files: tuple[ScannedFile, ...]
     warnings: tuple[str, ...] = ()
+    capture_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -223,7 +224,39 @@ def _relative_file(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def _scan_source(config: VaultConfig, machine_id: str, item: ArchiveSourceConfig) -> ScannedSource | None:
+def _capture_file(path: Path, destination: Path) -> None:
+    """Pin the inode before scanning; renaming the live file cannot invalidate it."""
+    import errno
+    import os
+    import stat
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(path, destination, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP}:
+            raise
+        # A source on another filesystem cannot be hardlinked into local staging.
+        # Keep an open file descriptor across the copy, including concurrent renames.
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as source:
+            metadata = os.fstat(source.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError(f"archive source is not a regular file: {path}")
+            with destination.open("xb") as output:
+                shutil.copyfileobj(source, output)
+            os.chmod(destination, stat.S_IMODE(metadata.st_mode))
+            os.utime(destination, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    if not stat.S_ISREG(destination.lstat().st_mode):
+        raise ValueError(f"archive capture must be a regular file, not a link: {path}")
+
+
+def _scan_source(
+    config: VaultConfig,
+    machine_id: str,
+    item: ArchiveSourceConfig,
+    *,
+    capture_root: Path | None = None,
+) -> ScannedSource | None:
     root = _resolve_source_path(config, item.path)
     if not root.is_dir():
         return None
@@ -240,17 +273,31 @@ def _scan_source(config: VaultConfig, machine_id: str, item: ArchiveSourceConfig
     files: list[ScannedFile] = []
     warnings: list[str] = []
     seen: set[Path] = set()
+    captured = capture_root / source.source_id if capture_root is not None and item.kind != "file_tree" else None
     candidates = sorted(root.rglob("*"), key=str) if item.kind == "file_tree" else _iter_allowed_files(root)
     for path in candidates:
-        if path.is_symlink() or not path.is_file():
+        if path.is_symlink() or (captured is None and not path.is_file()):
             continue
         resolved = path.resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
-        before = path.stat()
-        digest = _sha256_file(path)
-        after = path.stat()
+        read_path = path
+        if captured is not None:
+            read_path = captured / _relative_file(root, path)
+            try:
+                _capture_file(path, read_path)
+            except FileNotFoundError:
+                # Codex archives by renaming sessions/<date>/<name> into this
+                # exact bucket. Capture its current bytes; never omit a member.
+                if item.kind == "file_tree" or path.relative_to(root).parts[0] != "sessions":
+                    raise
+                relocated = root / "archived_sessions" / path.name
+                _capture_file(relocated, read_path)
+                warnings.append(f"relocated-during-capture:{path}")
+        before = read_path.stat()
+        digest = _sha256_file(read_path)
+        after = read_path.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             warnings.append(f"unstable:{path}")
         relative = Path(relative_root) / _relative_file(root, path)
@@ -260,7 +307,7 @@ def _scan_source(config: VaultConfig, machine_id: str, item: ArchiveSourceConfig
         elif path.name == "session_index.jsonl":
             session_id, start_at, end_at, parse_status = "index", None, None, "index"
         else:
-            session_id, start_at, end_at, parse_status = _record_metadata(path)
+            session_id, start_at, end_at, parse_status = _record_metadata(read_path)
             if not session_id:
                 session_id = f"codex-{hashlib.sha256(relative.as_posix().encode('utf-8')).hexdigest()[:24]}"
         files.append(
@@ -278,7 +325,7 @@ def _scan_source(config: VaultConfig, machine_id: str, item: ArchiveSourceConfig
                 ),
             )
         )
-    return ScannedSource(source=source, files=tuple(files), warnings=tuple(sorted(set(warnings))))
+    return ScannedSource(source=source, files=tuple(files), warnings=tuple(sorted(set(warnings))), capture_root=captured)
 
 
 def scan_codex_sources(
@@ -286,12 +333,13 @@ def scan_codex_sources(
     *,
     machine_id: str | None = None,
     source_configs: tuple[ArchiveSourceConfig, ...] | None = None,
+    capture_root: Path | None = None,
 ) -> ArchiveScanResult:
     resolved_machine_id = machine_id or load_or_create_machine_id(config)
     sources: list[ScannedSource] = []
     missing: list[str] = []
     for item in source_configs or _default_source_configs(config):
-        scanned = _scan_source(config, resolved_machine_id, item)
+        scanned = _scan_source(config, resolved_machine_id, item, capture_root=capture_root)
         if scanned is None:
             missing.append(item.path)
             continue

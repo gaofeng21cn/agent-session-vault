@@ -134,9 +134,13 @@
       "src/agent_session_vault/tokscale.py",
       "src/agent_session_vault/views.py",
       "vault.py",
-      "assets/branding/agent-session-vault-logo.png"
+      "assets/branding/agent-session-vault-logo.png",
+      "src/agent_session_vault/archive_maintenance.py",
+      "src/agent_session_vault/cold_archive.py",
+      "scripts/run_detached.py",
+      "config/codex-cold-decisions.example.json"
     ],
-    "digest": "sha256:100cc77ce2c60edf969c7d0b9725eeb4e203222227a59999635e19c3ca2e2919"
+    "digest": "sha256:c94d1179b3de5b2099a7cbc27e767e79bb515a0a133e8a33e8aa178fdce0fb99"
   },
   "presentation": {
     "display_name_i18n": {

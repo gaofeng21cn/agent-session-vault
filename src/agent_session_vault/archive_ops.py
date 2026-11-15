@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import tempfile
 import uuid
 import fcntl
 
@@ -65,6 +67,9 @@ class ArchiveCycleResult:
     verifications: tuple[dict[str, object], ...]
     reason: str | None = None
     staging_cleanup: str | None = None
+    staging_root: str | None = None
+    error: str | None = None
+    receipt_path: str | None = None
 
     def payload(self) -> dict[str, object]:
         return {
@@ -75,6 +80,9 @@ class ArchiveCycleResult:
             "verifications": list(self.verifications),
             "reason": self.reason,
             "staging_cleanup": self.staging_cleanup,
+            "staging_root": self.staging_root,
+            "error": self.error,
+            "receipt_path": self.receipt_path,
         }
 
 
@@ -148,7 +156,7 @@ def _stage_changed_files(
     warnings: list[str] = []
     if member_paths:
         raw_bundle = root / "bundle.tar.zst"
-        pack_paths(Path(scanned.source.root_path), member_paths, raw_bundle)
+        pack_paths(scanned.capture_root or Path(scanned.source.root_path), member_paths, raw_bundle)
         digest = sha256_file(raw_bundle)
         bundle_id = f"bundle-{digest}"
         final_bundle = root / "bundles" / f"{bundle_id}.tar.zst"
@@ -162,8 +170,7 @@ def _stage_changed_files(
         for path, record in tuple(records.items()):
             actual = actual_members.get(record.member or "")
             if actual is None:
-                warnings.append(f"missing-packed-member:{record.path}")
-                continue
+                raise ValueError(f"missing packed archive member: {record.path}")
             actual_bytes, actual_sha256 = actual
             if (actual_bytes, actual_sha256) != (record.bytes, record.sha256):
                 warnings.append(f"changed-during-pack:{record.path}")
@@ -216,13 +223,33 @@ def build_snapshot(
     cycle_id: str | None = None,
     staging_root: Path | None = None,
 ) -> SnapshotBuildResult:
+    # Local hardlinks pin discovered files without copying their payload or
+    # requiring SMB hardlink support. Keep them only for this snapshot build.
+    with tempfile.TemporaryDirectory(prefix="asv-capture-") as captured:
+        return _build_captured_snapshot(
+            config,
+            machine_id=machine_id,
+            cycle_id=cycle_id,
+            staging_root=staging_root,
+            capture_root=Path(captured),
+        )
+
+
+def _build_captured_snapshot(
+    config: VaultConfig,
+    *,
+    machine_id: str | None,
+    cycle_id: str | None,
+    staging_root: Path | None,
+    capture_root: Path,
+) -> SnapshotBuildResult:
     backend = archive_backend(config)
     backend.ensure_ready()
-    scan = scan_codex_sources(config, machine_id=machine_id)
+    scan = scan_codex_sources(config, machine_id=machine_id, capture_root=capture_root)
     cycle = cycle_id or _cycle_id()
     cycle_staging_root = (staging_root or config.archive.staging_root).expanduser() / cycle
     if cycle_staging_root.exists():
-        shutil.rmtree(cycle_staging_root)
+        raise FileExistsError(f"archive cycle staging already exists: {cycle_staging_root}")
     cycle_staging_root.mkdir(parents=True, exist_ok=False)
     snapshots: list[ArchiveSnapshot] = []
     manifests: list[ArchiveManifest] = []
@@ -381,6 +408,12 @@ def archive_cycle(
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return ArchiveCycleResult("busy", resolved_machine_id, None, (), (), "archive_cycle_lock_held")
+        phase = "archive_admission"
+        cycle_id = None
+        cycle_staging = None
+        snapshot_ids = ()
+        verifications = ()
+        staging_cleanup = None
         try:
             resolved_machine_id = machine_id or _read_machine_id_for_cycle(config)
             state = _read_state(state_path)
@@ -397,7 +430,22 @@ def archive_cycle(
                     (),
                     "cadence_not_reached_and_archived_sessions_covered",
                 )
-            built = build_snapshot(config, machine_id=resolved_machine_id)
+            cycle_id = _cycle_id()
+            cycle_staging = config.archive.staging_root.expanduser() / cycle_id
+            try:
+                built = build_snapshot(config, machine_id=resolved_machine_id, cycle_id=cycle_id)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                return ArchiveCycleResult(
+                    "failed",
+                    resolved_machine_id,
+                    cycle_id,
+                    (),
+                    (),
+                    "snapshot_build_failed",
+                    "retained" if cycle_staging.exists() else "not_created",
+                    str(cycle_staging),
+                    f"{type(exc).__name__}: {exc}",
+                )
             if not built.snapshots:
                 return ArchiveCycleResult(
                     "pending",
@@ -418,12 +466,14 @@ def archive_cycle(
                     "source_changed_during_scan",
                     "retained",
                 )
+            phase = "snapshot_publish"
             published = publish_snapshot(config, built.staging_root)
+            snapshot_ids = tuple(item.snapshot.snapshot_id for item in published)
+            phase = "snapshot_verify"
             verifications = tuple(
                 verify_snapshot(config, item.snapshot.snapshot_id, deep=deep)
                 for item in published
             )
-            snapshot_ids = tuple(item.snapshot.snapshot_id for item in published)
             verified = bool(published) and all(item.get("status") == "verified" for item in verifications)
             status = "verified" if verified and not built.scan.missing_sources else "partial"
             reason = None
@@ -438,6 +488,7 @@ def archive_cycle(
                 else:
                     staging_cleanup = "removed"
             if status == "verified":
+                phase = "cycle_state_write"
                 _write_json(
                     state_path,
                     {
@@ -447,7 +498,8 @@ def archive_cycle(
                         "snapshot_ids": list(snapshot_ids),
                     },
                 )
-            receipt(
+            phase = "cycle_receipt_write"
+            recorded = receipt(
                 config,
                 "archive-cycle",
                 status,
@@ -469,6 +521,16 @@ def archive_cycle(
                 verifications,
                 reason,
                 staging_cleanup,
+                str(built.staging_root),
+                receipt_path=str(config.archive.root / "receipts" / resolved_machine_id / f"{recorded.operation_id}.json"),
+            )
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+            return ArchiveCycleResult(
+                "failed", resolved_machine_id, cycle_id, snapshot_ids, verifications,
+                f"{phase}_failed", staging_cleanup or (
+                    "retained" if cycle_staging is not None and cycle_staging.exists() else "not_created"),
+                str(cycle_staging) if cycle_staging is not None else None,
+                f"{type(exc).__name__}: {exc}",
             )
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

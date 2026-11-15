@@ -201,6 +201,25 @@ full-fidelity members and are not added to the Tokscale projection. They can be
 pruned after the same deep archive and restore checks when they are cold; the
 Tokscale dry-run must remain unchanged before and after the operation.
 
+During snapshot construction, discovered Codex files are pinned in a private local
+capture before hashing and parsing. A local capture uses hardlinks, with an
+open-descriptor copy for filesystems that cannot link to local staging; no
+symlinks are created. Codex can move a captured session from `sessions` to
+`archived_sessions` while the cycle continues. A move immediately before
+capture is resolved only to the exact archived filename and recorded as a
+`relocated-during-capture` warning. Captures are removed when construction ends;
+manifest hashes still describe the actual packed bytes. A missing packed member
+fails construction rather than being omitted.
+
+Snapshot construction failures return terminal JSON with `status: "failed"`,
+`reason: "snapshot_build_failed"`, `error`, and the exact `staging_root`, with a
+non-zero exit. Existing cycle staging is never overwritten. An incomplete
+bundle in retained staging is diagnostic material, not a published snapshot;
+verify its coverage in a successful archive before removing that exact staging.
+Publish, deep verification, state and receipt errors also return structured failure JSON
+with the failing phase, known snapshot IDs and staging state. `receipt_path` identifies
+the successfully written cycle receipt; only the detached runner records the real process exit code.
+
 A `verified` cycle removes the exact cycle staging directory it created before
 writing verified state and its receipt. The terminal JSON reports
 `staging_cleanup: "removed"`. A cleanup failure returns `partial` with
@@ -252,8 +271,8 @@ restored checksums; it does not merge files into a live Codex home.
 
 ## Local Pruning
 
-Pruning is the only destructive workflow. Stop Codex writers, create and
-review a plan, then apply that exact plan:
+Session pruning and the cold-data cleanup below are destructive workflows. Ensure
+candidate files have no active writers, create and review a plan, then apply that exact plan:
 
 ```bash
 agent-session-vault archive prune-plan \
@@ -272,6 +291,89 @@ rejects shared or external hard links and records an official Tokscale preview.
 Apply rechecks the plan digest, source metadata, checksums, archive snapshots,
 stable coverage, and Tokscale parity before and after deletion. If any
 prerequisite changes, generate a new plan; do not delete the source manually.
+
+## Biweekly Maintenance And Cold Archives
+
+Authorized local schedules use one entrypoint instead of reconstructing session stages:
+
+```bash
+agent-session-vault ops archive-maintenance --json
+agent-session-vault ops archive-maintenance --status --json
+```
+
+The first command checks NAS readiness and launches the maintenance runner through
+local `~/.config/agent-session-vault/run-detached.py`, maintained in
+[`scripts/run_detached.py`](../../scripts/run_detached.py). Every stage reserves one
+launch and records its own PID, stdout, stderr and actual `exit_code`. Startup and
+supervisor errors have separate evidence and never fabricate a business exit code.
+`--status`, optionally with `--run-dir <run-directory>`, is read-only; it does not
+resume, relaunch or delete. An unknown outcome, live runner or unfinished cold stage
+blocks a new maintenance run until the original evidence is reconciled.
+
+The runner invokes `archive-cycle --no-due-only --deep` once, then prune-plan only
+after verification. It exclusively captures the newly generated plan as the run's
+`prune-plan.json`, checks creation time, ID and digest, and applies that exact copy
+once. An empty plan skips only prune-apply. NAS preflight runs before each stage;
+any failure or unverified outcome stops the workflow. It never submits Tokscale,
+refreshes stable to bypass a guard, or replaces the external biweekly scheduler.
+
+After the session runner exits `0/session_verified`, launch each following stage
+once through the same detached launcher:
+
+```bash
+agent-session-vault ops cold-inventory --run-dir <run-directory> --json
+agent-session-vault ops cold-plan --run-dir <run-directory> --decisions <run-directory>/decisions.json --json
+agent-session-vault ops cold-pack --run-dir <run-directory> --json
+agent-session-vault ops cold-cleanup --run-dir <run-directory> --json
+```
+
+Inventory measures whole deliverables, session directories and run batches using
+the run time minus 30 days and the latest batch mtime, ctime or creation time. A
+recent root is retained without traversing old dependencies inside it. Scope is
+limited to visualizations, generated_images, independent recovery/backup history,
+RedCube workspaces, automation history batches, old standalone releases and
+marketplace `.staging` sub-batches. Databases, live sessions, analytics inputs and
+current controls are excluded. Every category has a summary, including empty ones.
+Scanning does not follow symlinks; cross-volume trees, special files and active-lock
+material are retained.
+
+AI reviews purpose, whole-batch completion, current pointers, processes and current
+work, then writes decisions in the persistent run directory. See
+[`config/codex-cold-decisions.example.json`](../../config/codex-cold-decisions.example.json).
+Each selected batch requires completion and reference explanations plus persistent
+evidence paths. Runtime batches additionally require `retired_runtime: true`.
+Unselected or uncertain material stays local; an empty `archive` list is normal.
+Code enforces actual scope, current control references (including extensionless
+IDs), processes and open files. Asset search hits or input errors retain the asset
+group. The actual CLI/current release and the two most recent other releases stay
+local, together with any other referenced release.
+
+The plan binds the run's inventory/decisions SHA-256 and records absolute sources,
+whole-batch boundaries, coldness, counts, logical bytes, per-file hashes and metadata.
+Pack and cleanup require the plan SHA-256 from this run's original runner output;
+old plans are not reused. Sources and references are rechecked before/after packing
+and before moving. TAR uses an explicit file list and `--no-recursion --no-xattrs
+--no-mac-metadata --no-acls --no-fflags`, writing to an exclusive per-run named file
+to avoid macOS compressed-stdout padding. One decode verifies paths, structural
+members, content hashes and logical hardlink contents, followed by an actual sample
+restore into independent run staging.
+
+Immutable packages go beside the configured archive root under
+`auxiliary/codex-home-archives/<run-id>/`; manifests and receipts go under
+`operations/space-optimization/<run-id>/`. Empty categories produce no packages.
+Cleanup checks NAS packages, source bytes, evidence and references again, moves to
+the same-volume exclusive `.Trash/codex-cold-<run-id>/`, verifies all moved content,
+then purges only the exact set. File deletion uses no-follow directory descriptors;
+directories use `rmdir`, never arbitrary recursive removal. Changes, permission
+errors or unknown outcomes stop immediately, retaining sources, packages, Trash and
+per-item progress. Deletion is not retried and other user Trash is untouched.
+
+`space-before.json` and the cleanup receipt record directory allocation, volume
+available bytes and read-only database sizes separately. Logical purged bytes are
+not physical SSD recovery: APFS snapshots and concurrent writes affect volume
+changes. This workflow does not maintain databases or remove system snapshots.
+Restore the relevant TAR into a separate directory and verify relative paths, bytes
+and hashes against `cold-plan.json` before deciding how to retrieve the material.
 
 ## Read-only archive review
 
