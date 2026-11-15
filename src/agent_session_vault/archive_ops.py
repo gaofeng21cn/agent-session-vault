@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import json
 import os
@@ -14,6 +14,7 @@ import fcntl
 from .archive import bundle_member_digests, pack_paths, sha256_file, verify_bundle_members
 from .archive_backend import FilesystemArchiveBackend, PublishedSnapshot, _manifest_from_payload, _snapshot_from_payload
 from .archive_catalog import write_catalog_segment
+from .archive_content import ArchiveContentIndex
 from .archive_model import (
     ArchiveBundle,
     ArchiveFileRecord,
@@ -35,6 +36,7 @@ class SnapshotBuildResult:
     manifests: tuple[ArchiveManifest, ...]
     staged_objects: dict[str, Path]
     scan: ArchiveScanResult
+    dedup: dict[str, int] = field(default_factory=dict)
 
     def payload(self) -> dict[str, object]:
         return {
@@ -55,6 +57,7 @@ class SnapshotBuildResult:
                 for snapshot in self.snapshots
             ],
             "missing_sources": list(self.scan.missing_sources),
+            "dedup": self.dedup,
         }
 
 
@@ -70,6 +73,7 @@ class ArchiveCycleResult:
     staging_root: str | None = None
     error: str | None = None
     receipt_path: str | None = None
+    dedup: dict[str, int] | None = None
 
     def payload(self) -> dict[str, object]:
         return {
@@ -83,6 +87,7 @@ class ArchiveCycleResult:
             "staging_root": self.staging_root,
             "error": self.error,
             "receipt_path": self.receipt_path,
+            "dedup": self.dedup,
         }
 
 
@@ -129,91 +134,85 @@ def _stage_changed_files(
     scanned,
     previous: ArchiveManifest | None,
     root: Path,
+    *,
+    content_index: ArchiveContentIndex | None = None,
 ) -> tuple[list[ArchiveFileRecord], list[ArchiveBundle], dict[str, Path], tuple[str, ...]]:
-    previous_by_path = {record.path: record for record in previous.files} if previous else {}
-    previous_bundles = {bundle.bundle_id: bundle for bundle in previous.bundles} if previous else {}
-    changed = [item for item in scanned.files if previous_by_path.get(item.record.path, None) is None or previous_by_path[item.record.path].sha256 != item.record.sha256]
-    member_paths: list[str] = []
+    index = content_index if content_index is not None else ArchiveContentIndex()
+    if content_index is None and previous:
+        previous_bundles = {bundle.bundle_id: bundle for bundle in previous.bundles}
+        for record in previous.files:
+            index.add(record, previous_bundles[record.bundle_id])
     records: dict[str, ArchiveFileRecord] = {}
-    for item in changed:
-        source_relative = item.source_path.relative_to(Path(scanned.source.root_path)).as_posix()
-        member = source_relative
-        member_paths.append(member)
-        records[item.record.path] = ArchiveFileRecord(
-            path=item.record.path,
-            session_id=item.record.session_id,
-            bytes=item.record.bytes,
-            sha256=item.record.sha256,
-            start_at=item.record.start_at,
-            end_at=item.record.end_at,
-            time_source=item.record.time_source,
-            parse_status=item.record.parse_status,
-            member=member,
-        )
+    bundles: dict[str, ArchiveBundle] = {}
+    pending: dict[tuple[int, str], list] = {}
+    for item in scanned.files:
+        location = index.find(item.record)
+        if location is not None:
+            records[item.record.path] = replace(
+                item.record, bundle_id=location.bundle.bundle_id, member=location.record.member,
+            )
+            bundles[location.bundle.bundle_id] = location.bundle
+        else:
+            pending.setdefault((item.record.bytes, item.record.sha256), []).append(item)
 
     staged_objects: dict[str, Path] = {}
-    new_bundles: list[ArchiveBundle] = []
     warnings: list[str] = []
-    if member_paths:
+    if pending:
+        representatives = [items[0] for items in pending.values()]
+        members = {
+            item.record.path: item.source_path.relative_to(Path(scanned.source.root_path)).as_posix()
+            for item in representatives
+        }
         raw_bundle = root / "bundle.tar.zst"
-        pack_paths(scanned.capture_root or Path(scanned.source.root_path), member_paths, raw_bundle)
+        pack_paths(scanned.capture_root or Path(scanned.source.root_path), list(members.values()), raw_bundle)
+        actual_members = bundle_member_digests(raw_bundle)
+        missing = set(members.values()) - set(actual_members)
+        if missing:
+            raise ValueError(f"missing packed archive member: {min(missing)}")
+        extra = set(actual_members) - set(members.values())
+        if extra:
+            raise ValueError(f"unexpected packed archive member: {min(extra)}")
+        packed: dict[str, ArchiveFileRecord] = {}
+        actual_keys: set[tuple[int, str]] = set()
+        for items in pending.values():
+            item = items[0]
+            record = item.record
+            member = members[record.path]
+            actual = actual_members[member]
+            if actual != (record.bytes, record.sha256):
+                warnings.append(f"changed-during-pack:{record.path}")
+                if len(items) > 1:
+                    raise ValueError(f"shared source content changed while packing: {record.path}")
+            actual_record = replace(record, bytes=actual[0], sha256=actual[1], member=member)
+            # A concurrently rewritten source can converge to a known file, or
+            # two writers can converge to the same bytes. Retain diagnostic
+            # staging and stop instead of publishing a redundant payload.
+            if actual in actual_keys or index.find(actual_record) is not None:
+                raise ValueError(f"source converged to existing content while packing: {record.path}")
+            actual_keys.add(actual)
+            packed[record.path] = actual_record
         digest = sha256_file(raw_bundle)
         bundle_id = f"bundle-{digest}"
         final_bundle = root / "bundles" / f"{bundle_id}.tar.zst"
         final_bundle.parent.mkdir(parents=True, exist_ok=True)
         raw_bundle.replace(final_bundle)
         staged_objects[bundle_id] = final_bundle
-        actual_members = bundle_member_digests(
-            final_bundle,
-            [record.member for record in records.values() if record.member],
+        bundle = ArchiveBundle(
+            bundle_id=bundle_id, object_path=f"objects/{digest}.tar.zst", sha256=digest,
+            bytes=final_bundle.stat().st_size,
+            source_bytes=sum(record.bytes for record in packed.values()), file_count=len(packed),
         )
-        for path, record in tuple(records.items()):
-            actual = actual_members.get(record.member or "")
-            if actual is None:
-                raise ValueError(f"missing packed archive member: {record.path}")
-            actual_bytes, actual_sha256 = actual
-            if (actual_bytes, actual_sha256) != (record.bytes, record.sha256):
-                warnings.append(f"changed-during-pack:{record.path}")
-                records[path] = ArchiveFileRecord(
-                    path=record.path,
-                    session_id=record.session_id,
-                    bytes=actual_bytes,
-                    sha256=actual_sha256,
-                    start_at=record.start_at,
-                    end_at=record.end_at,
-                    time_source=record.time_source,
-                    parse_status=record.parse_status,
-                    member=record.member,
-                )
-        new_bundles.append(
-            ArchiveBundle(
-                bundle_id=bundle_id,
-                object_path=f"objects/{digest}.tar.zst",
-                sha256=digest,
-                bytes=final_bundle.stat().st_size,
-                source_bytes=sum(record.bytes for record in records.values()),
-                file_count=len(records),
-            )
-        )
-        records = {
-            path: ArchiveFileRecord(
-                path=record.path,
-                session_id=record.session_id,
-                bytes=record.bytes,
-                sha256=record.sha256,
-                start_at=record.start_at,
-                end_at=record.end_at,
-                time_source=record.time_source,
-                parse_status=record.parse_status,
-                bundle_id=bundle_id,
-                member=record.member,
-            )
-            for path, record in records.items()
-        }
-
-    current_records = [records.get(item.record.path, previous_by_path.get(item.record.path, item.record)) for item in scanned.files]
-    bundles = tuple({bundle.bundle_id: bundle for bundle in (*previous_bundles.values(), *new_bundles)}.values())
-    return current_records, list(bundles), staged_objects, tuple(sorted(set(warnings)))
+        bundles[bundle_id] = bundle
+        for items in pending.values():
+            representative = items[0]
+            stored = replace(packed[representative.record.path], bundle_id=bundle_id)
+            index.add(stored, bundle)
+            records[stored.path] = stored
+            for alias in items[1:]:
+                records[alias.record.path] = replace(alias.record, bundle_id=bundle_id, member=stored.member)
+    # Old snapshots retain their own objects. A new manifest references only
+    # the bundles needed by its files, rather than inheriting all old bundles.
+    return [records[item.record.path] for item in scanned.files], list(bundles.values()), staged_objects, tuple(sorted(set(warnings)))
 
 
 def build_snapshot(
@@ -245,6 +244,7 @@ def _build_captured_snapshot(
 ) -> SnapshotBuildResult:
     backend = archive_backend(config)
     backend.ensure_ready()
+    content_index = ArchiveContentIndex.load(backend)
     scan = scan_codex_sources(config, machine_id=machine_id, capture_root=capture_root)
     cycle = cycle_id or _cycle_id()
     cycle_staging_root = (staging_root or config.archive.staging_root).expanduser() / cycle
@@ -255,7 +255,9 @@ def _build_captured_snapshot(
     manifests: list[ArchiveManifest] = []
     staged_objects: dict[str, Path] = {}
     for scanned in scan.sources:
-        previous = _latest_published_manifest(backend, scan.machine_id, scanned.source.source_id)
+        published = content_index.latest.get((scan.machine_id, scanned.source.source_id))
+        previous = (published.snapshot, next(manifest for manifest in published.manifests
+                                             if manifest.source.source_id == scanned.source.source_id)) if published else None
         snapshot_id = _snapshot_id(scanned.source.source_id)
         source_root = cycle_staging_root / scanned.source.source_id
         source_root.mkdir(parents=True, exist_ok=True)
@@ -263,6 +265,7 @@ def _build_captured_snapshot(
             scanned,
             previous[1] if previous else None,
             source_root,
+            content_index=content_index,
         )
         staged_objects.update(objects)
         warnings = tuple(sorted(set((*scanned.warnings, *pack_warnings))))
@@ -305,6 +308,22 @@ def _build_captured_snapshot(
             "missing_sources": list(scan.missing_sources),
         },
     )
+    new_bundles = {bundle.bundle_id: bundle for manifest in manifests for bundle in manifest.bundles
+                   if bundle.bundle_id in staged_objects}
+    all_files = [record for manifest in manifests for record in manifest.files]
+    packed_files = sum(bundle.file_count for bundle in new_bundles.values())
+    packed_bytes = sum(bundle.source_bytes for bundle in new_bundles.values())
+    historical_files = [record for record in all_files if record.bundle_id in content_index.published_bundle_ids]
+    dedup = {
+        "files_seen": len(all_files), "file_logical_bytes": sum(record.bytes for record in all_files),
+        "new_content_files": packed_files, "new_content_bytes": packed_bytes,
+        "new_objects": len(staged_objects), "new_archive_bytes": sum(bundle.bytes for bundle in new_bundles.values()),
+        "reused_files": len(all_files) - packed_files,
+        "reused_logical_bytes": sum(record.bytes for record in all_files) - packed_bytes,
+        "historical_reused_files": len(historical_files),
+        "same_cycle_reused_files": len(all_files) - len(historical_files) - packed_files,
+    }
+    _write_json(cycle_staging_root / "dedup.json", dedup)
     return SnapshotBuildResult(
         machine_id=scan.machine_id,
         cycle_id=cycle,
@@ -313,6 +332,7 @@ def _build_captured_snapshot(
         manifests=tuple(manifests),
         staged_objects=staged_objects,
         scan=scan,
+        dedup=dedup,
     )
 
 
@@ -325,6 +345,8 @@ def publish_snapshot(
     backend = archive_backend(config)
     backend.ensure_ready()
     result: list[PublishedSnapshot] = []
+    prepared = []
+    cycle_objects: dict[str, Path] = {}
     for source_dir in sorted(path for path in staging_root.iterdir() if path.is_dir()):
         snapshot_path = source_dir / "snapshot.json"
         manifest_path = source_dir / "manifest.json"
@@ -341,7 +363,15 @@ def publish_snapshot(
         }
         if verify_staged:
             _verify_staged_manifest(manifest, staged_objects)
-        published = backend.publish_snapshot(snapshot, (manifest,), staged_objects)
+        prepared.append((snapshot, manifest))
+        cycle_objects.update(staged_objects)
+    # A later source may reference content first packed by an earlier source.
+    # Publish every new object before committing any of the source snapshots,
+    # independent of source-ID/directory order.
+    for bundle_id, local_path in cycle_objects.items():
+        backend.publish_object(local_path, bundle_id.removeprefix("bundle-"))
+    for snapshot, manifest in prepared:
+        published = backend.publish_snapshot(snapshot, (manifest,), {})
         write_catalog_segment(backend, published)
         result.append(published)
     return result
@@ -511,6 +541,7 @@ def archive_cycle(
                     "verifications": list(verifications),
                     "staging_root": str(built.staging_root),
                     "staging_cleanup": staging_cleanup,
+                    "dedup": built.dedup,
                 },
             )
             return ArchiveCycleResult(
@@ -523,6 +554,7 @@ def archive_cycle(
                 staging_cleanup,
                 str(built.staging_root),
                 receipt_path=str(config.archive.root / "receipts" / resolved_machine_id / f"{recorded.operation_id}.json"),
+                dedup=built.dedup,
             )
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             return ArchiveCycleResult(

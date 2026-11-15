@@ -196,6 +196,8 @@ def build_parser() -> argparse.ArgumentParser:
     archive_review.add_argument("--receipt", type=Path)
     archive_review.add_argument("--expected-revision")
     archive_review.add_argument("--json", action="store_true")
+    content_status = archive_sub.add_parser("content-status", help="Read authenticated snapshot content reuse and legacy duplication")
+    content_status.add_argument("--json", action="store_true")
     return parser
 
 
@@ -420,6 +422,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "archive" and args.archive_command == "init":
         payload = init_backend(config)
+        _json_dump(payload) if args.json else print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "content-status":
+        from .archive_content import ArchiveContentIndex
+        try:
+            index = ArchiveContentIndex.load(archive_backend(config))
+            payload = {"status": "measured", "scope": "raw file contents in committed snapshots; logical bytes, not reclaimable compressed space",
+                       "object_content_deep_verified": False, **index.report()}
+        except (OSError, ValueError, RuntimeError) as exc:
+            _json_dump({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+            return 2
         _json_dump(payload) if args.json else print(payload)
         return 0
 

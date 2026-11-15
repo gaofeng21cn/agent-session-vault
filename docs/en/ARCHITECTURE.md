@@ -131,6 +131,21 @@ files. It identifies a source by stable machine identity and source root,
 stores immutable content-addressed objects, publishes snapshot manifests, and
 builds catalog segments for query and restore.
 
+File content identity is `(byte length, SHA-256)`, independently of source,
+session ID, and logical path. Each build reconstructs one in-memory content
+index from the authenticated metadata of all committed snapshots. It reuses
+existing bundle/member references across renames, sources and older revisions,
+and stores equal new files only once within the cycle. There is no separate
+mutable index database. A new manifest lists only its referenced bundles; old
+snapshots continue to own their historical references. All cycle objects are
+published before any source snapshot can reference them.
+
+This is exact file-byte deduplication. Changed revisions and different encoded
+representations remain separate byte-preserving artifacts; it is not chunk or
+semantic conversation deduplication. Existing immutable history is not rewritten
+or deleted. Object/member deep verification remains the deletion guard. Cycle
+receipts distinguish new content/archive bytes from reused logical file bytes.
+
 Restore plans are digest-protected and always use staging mode. Local pruning
 is a separate digest-protected plan that requires all of the following at plan
 and apply time:

@@ -129,9 +129,7 @@ class FilesystemArchiveBackend:
             checksums = {
                 "snapshot.json": sha256_file(temporary_root / "snapshot.json"),
                 "manifest.json": sha256_file(temporary_root / "manifest.json"),
-                "objects": {
-                    bundle_id: sha256 for bundle_id in staged_objects for sha256 in [bundle_id.removeprefix("bundle-")]
-                },
+                "objects": {bundle.bundle_id: bundle.sha256 for manifest in manifests for bundle in manifest.bundles},
             }
             self._write_json_atomic(temporary_root / "checksums.json", checksums)
             (temporary_root / COMMIT_MARKER_NAME).write_text(datetime.now(UTC).isoformat() + "\n", encoding="utf-8")
@@ -172,12 +170,8 @@ class FilesystemArchiveBackend:
         manifests = tuple(_manifest_from_payload(item) for item in manifests_raw if isinstance(item, dict))
         return PublishedSnapshot(snapshot_dir=snapshot_dir, snapshot=snapshot, manifests=manifests)
 
-    def verify_snapshot(self, snapshot_dir: Path, *, deep: bool = False) -> dict[str, object]:
-        published = self.load_snapshot(snapshot_dir)
-        checked_objects = 0
-        checked_files = 0
+    def _metadata_failures(self, snapshot_dir: Path, published: PublishedSnapshot) -> list[str]:
         failures: list[str] = []
-        metadata_ok = True
         try:
             snapshot_payload = self._read_json(snapshot_dir / "snapshot.json")
             manifest_payload = self._read_json(snapshot_dir / "manifest.json")
@@ -191,10 +185,28 @@ class FilesystemArchiveBackend:
                 failures.append("manifest_checksum_mismatch")
             if snapshot_payload.get("snapshot_id") != published.snapshot.snapshot_id:
                 failures.append("snapshot_identity_mismatch")
+            for manifest in published.manifests:
+                if manifest.snapshot_id != published.snapshot.snapshot_id:
+                    failures.append("manifest_snapshot_identity_mismatch")
         except (OSError, KeyError, TypeError, ValueError) as exc:
             failures.append(f"metadata_verification_error:{type(exc).__name__}")
-            metadata_ok = False
-        if not metadata_ok:
+        return failures
+
+    def load_verified_metadata(self, snapshot_dir: Path) -> PublishedSnapshot:
+        """Authenticate committed manifests without downloading archive objects."""
+        published = self.load_snapshot(snapshot_dir)
+        failures = self._metadata_failures(snapshot_dir, published)
+        if failures:
+            raise ArchiveBackendError(f"archive snapshot metadata failed: {snapshot_dir}: {failures}")
+        return published
+
+    def verify_snapshot(self, snapshot_dir: Path, *, deep: bool = False) -> dict[str, object]:
+        published = self.load_snapshot(snapshot_dir)
+        checked_objects = 0
+        checked_files = 0
+        checked_members = 0
+        failures = self._metadata_failures(snapshot_dir, published)
+        if failures:
             return {
                 "status": "failed",
                 "snapshot_id": published.snapshot.snapshot_id,
@@ -205,6 +217,10 @@ class FilesystemArchiveBackend:
                 "deep": deep,
             }
         for manifest in published.manifests:
+            bundle_ids = {bundle.bundle_id for bundle in manifest.bundles}
+            for record in manifest.files:
+                if record.bundle_id not in bundle_ids or not record.member:
+                    failures.append(f"invalid_member_reference:{record.path}")
             for bundle in manifest.bundles:
                 object_path = self.root / bundle.object_path
                 if not object_path.is_file():
@@ -216,13 +232,16 @@ class FilesystemArchiveBackend:
                     continue
                 if not deep:
                     continue
-                expected = {
-                    record.member: (record.bytes, record.sha256)
-                    for record in manifest.files
-                    if record.bundle_id == bundle.bundle_id and record.member
-                }
+                references = [record for record in manifest.files if record.bundle_id == bundle.bundle_id and record.member]
+                expected = {}
+                for record in references:
+                    value = (record.bytes, record.sha256)
+                    if record.member in expected and expected[record.member] != value:
+                        failures.append(f"member_metadata_conflict:{record.member}")
+                    expected[record.member] = value
                 checked, bundle_failures = verify_bundle_members(object_path, expected)
-                checked_files += checked
+                checked_members += checked
+                checked_files += len(references) if not bundle_failures else checked
                 failures.extend(bundle_failures)
         status = "verified" if not failures else "failed"
         return {
@@ -231,6 +250,7 @@ class FilesystemArchiveBackend:
             "snapshot_dir": str(snapshot_dir),
             "checked_objects": checked_objects,
             "checked_files": checked_files,
+            "checked_members": checked_members,
             "failures": failures,
             "deep": deep,
         }

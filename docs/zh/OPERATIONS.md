@@ -165,6 +165,36 @@ deep-verified snapshot 覆盖；存在未覆盖或已变化的历史 session 时
 执行深度校验并写入回执。它绝不裁剪本机来源。`not_due` 表示保底周期尚未到达且历史 session
 已全部覆盖，是成功的空操作；`partial` 需要检查，并返回非零退出码。
 
+文件入包前按全库“字节长度＋SHA-256”复用已有成员，来源、session ID 和路径不决定内容身份。
+会话从 `sessions` 移到 `archived_sessions`，或旧文件重新出现，只更新 manifest 的逻辑路径、
+来源与会话元数据，继续指向原包成员。本轮多份相同新文件只入包一份，恢复仍生成各自的原路径。
+内容索引每轮从全部已提交快照重建，并验证 snapshot/manifest checksum 和对象存在性/长度；
+staging、catalog、统计投影和未提交快照不构成复用依据。深检继续验证实际包与成员内容。
+旧包中的 TAR 硬链接恢复时在包内解析到真实内容，不跟随外部目标。
+
+重复运行固定来源或只改变路径时，`dedup.new_content_files`、`new_content_bytes`、
+`new_objects`、`new_archive_bytes` 均为 0。`reused_files` 与 `reused_logical_bytes` 是本轮
+逻辑文件复用量；`historical_reused_files` 和 `same_cycle_reused_files` 区分历史与本轮复用。
+这些值随 snapshot JSON、cycle stdout 和 receipt 保存，不能当成已释放的空间。
+新 manifest 只保留实际用到的 bundle 引用，避免深检不断继承已无本轮文件引用的历史包。
+历史快照和包仍完整保留，不自动做重打包或垃圾回收。
+定时维护在生成裁剪计划前检查复用统计字段齐全、非负且总量一致；缺失或异常立即停止后续阶段。
+
+续写后的新版本、不同内容的同 ID 会话，以及 `.jsonl`/`.jsonl.zst` 的不同原始字节仍会增加数据量。
+本流程保留其可恢复历史，不按 session ID 丢弃版本，也不做会改变原始字节的格式归一化。
+若写入中内容变化导致归并候选失效或收敛为已有内容，构建停止并保留诊断 staging，避免错误复用或
+把已知重复正式发布；不自动重发归档命令。
+
+只读核对全库内容复用与旧包重复：
+
+```bash
+agent-session-vault archive content-status --json
+```
+
+该命令验证已提交快照元数据、对象存在性和大小，报告内容身份、实际包成员位置与跨包重复逻辑字节；
+不会读取在线数据库、重建 catalog、解压深检全库或删除历史。跨包重复逻辑字节不等于可直接释放的
+NAS 压缩空间；对话内容是否语义重复也不能仅靠此数判断。
+
 `archived_sessions` 下的 Codex `.jsonl.zst` 会作为 opaque full-fidelity 成员纳入归档，
 不会加入 Tokscale projection。它们满足冷度、深度归档和恢复校验后可以独立裁剪；裁剪前后
 Tokscale dry-run 必须保持一致。

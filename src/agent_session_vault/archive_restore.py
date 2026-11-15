@@ -152,6 +152,7 @@ def restore_plan(config: VaultConfig, plan: RestorePlan) -> dict[str, object]:
                 backend.root / bundle.object_path,
                 str(record.member),
                 target,
+                expected=digest_key,
             )
             if (actual_bytes, actual_sha256) != digest_key:
                 target.unlink(missing_ok=True)

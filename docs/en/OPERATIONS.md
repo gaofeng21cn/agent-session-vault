@@ -196,6 +196,47 @@ means the fallback cadence has not elapsed and all historical sessions are
 covered; it is a successful no-op. `partial` requires inspection and returns a
 non-zero exit.
 
+Before packing, files reuse members across the archive by `(byte length, SHA-256)`;
+source, session ID and path do not define content identity. Moving a conversation
+from `sessions` to `archived_sessions`, or bringing back an older file, updates its
+logical path/source/session metadata while retaining the existing member reference.
+Equal new files in one cycle are packed once and restore to their individual paths.
+The in-memory index is rebuilt from all committed snapshots after checking snapshot/
+manifest checksums and object presence/length. Staging, catalog entries, projections
+and uncommitted snapshots are not reuse authority. Deep verification continues to
+check actual object and member bytes. Legacy TAR hardlinks are resolved to their
+content inside the package during restore, without following external targets.
+
+For repeated fixed sources or path-only changes, `dedup.new_content_files`,
+`new_content_bytes`, `new_objects` and `new_archive_bytes` are all zero.
+`reused_files` and `reused_logical_bytes` count logical file reuse;
+`historical_reused_files` and `same_cycle_reused_files` separate historical and
+same-cycle reuse. Snapshot JSON, cycle stdout and receipts preserve these counters;
+they are not reclaimed-space figures. New manifests include only referenced bundles,
+so deep verification does not inherit historical bundles with no current files.
+Old snapshots and objects remain intact; no automatic repacking or garbage collection runs.
+Scheduled maintenance checks that the reuse counters are present, nonnegative and
+consistent before creating any prune plan. Missing/invalid counters stop later stages.
+
+Appended revisions, different contents with the same session ID, and different raw
+`.jsonl`/`.jsonl.zst` representations can still add data. Recoverable history is kept
+without discarding revisions by ID or normalizing away original file bytes. If a
+concurrent write invalidates shared-content grouping or converges to known content,
+the build stops with diagnostic staging rather than publishing incorrect references
+or known redundancy. It does not automatically relaunch an archive command.
+
+Inspect archive-wide reuse and legacy duplication read-only:
+
+```bash
+agent-session-vault archive content-status --json
+```
+
+This checks committed metadata, object presence and sizes, and reports content
+identities, distinct bundle/member locations and cross-object redundant logical
+bytes. It does not read live databases, rebuild the catalog, deeply decode every
+object, or delete history. Redundant logical bytes are not directly reclaimable
+compressed NAS space and do not establish semantic conversation duplication.
+
 Codex `.jsonl.zst` files under `archived_sessions` are included as opaque
 full-fidelity members and are not added to the Tokscale projection. They can be
 pruned after the same deep archive and restore checks when they are cold; the

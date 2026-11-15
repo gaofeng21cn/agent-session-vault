@@ -14,6 +14,11 @@ from agent_session_vault import archive_maintenance as maintenance
 from agent_session_vault.archive_prune import PrunePlan, _plan_digest, prune_plan_payload, write_prune_plan
 
 
+def zero_dedup():
+    return {key: 0 for key in ("files_seen", "file_logical_bytes", "new_content_files", "new_content_bytes", "new_objects",
+                               "new_archive_bytes", "reused_files", "reused_logical_bytes", "historical_reused_files", "same_cycle_reused_files")}
+
+
 def stage(run_dir, name, payload, code=0):
     maintenance.write_json(run_dir / f"{name}.launch.json", {"command": [sys.executable, "-c", "pass"]})
     maintenance.write_json(run_dir / f"{name}.stdout.json", payload)
@@ -35,7 +40,7 @@ def test_sessions_create_new_immutable_plan_and_skip_only_empty_apply(environmen
     def execute(_, directory, name, arguments):
         calls.append((name, arguments))
         if name == "archive-cycle":
-            payload = {"status": "verified", "snapshot_ids": ["fresh-snapshot"]}
+            payload = {"status": "verified", "snapshot_ids": ["fresh-snapshot"], "dedup": zero_dedup()}
         elif name == "prune-plan":
             plan = empty_plan()
             write_prune_plan(plan, Path(arguments[-1]))
@@ -78,7 +83,7 @@ def test_stale_prune_plan_is_never_applied(environment, monkeypatch):
     monkeypatch.setattr(maintenance, "preflight", lambda _: {})
     def execute(_, directory, name, arguments):
         if name == "archive-cycle":
-            payload = {"status": "verified"}
+            payload = {"status": "verified", "dedup": zero_dedup()}
         else:
             assert name == "prune-plan"
             plan = empty_plan(datetime.now(UTC) - timedelta(days=1))
@@ -180,7 +185,7 @@ from datetime import UTC, datetime
 from dataclasses import replace
 from agent_session_vault.archive_prune import PrunePlan, _plan_digest, write_prune_plan, prune_plan_payload
 if "archive-cycle" in sys.argv:
-    print(json.dumps({{"status":"verified","snapshot_ids":["sandbox-snapshot"]}}))
+    print(json.dumps({{"status":"verified","snapshot_ids":["sandbox-snapshot"],"dedup":{zero_dedup()!r}}}))
 elif "prune-plan" in sys.argv:
     plan=PrunePlan("sandbox-plan",datetime.now(UTC).isoformat(),"sandbox-machine",30,"/stable","fingerprint",{{"tokens":42}},(),{{}},"")
     plan=replace(plan,plan_digest=_plan_digest(plan))
@@ -207,3 +212,18 @@ else:
     with pytest.raises(ValueError, match="incomplete"):
         maintenance.start_maintenance(config)
     assert len(list(run_dir.glob("archive-cycle.launch.json"))) == 1
+
+
+@pytest.mark.parametrize("dedup", [None, {"files_seen": 0}, {**zero_dedup(), "reused_files": 1}])
+def test_bad_dedup_counters_stop_before_any_plan(environment, monkeypatch, dedup):
+    config, run_dir = environment
+    monkeypatch.setattr(maintenance, "preflight", lambda _: {})
+    calls = []
+    def execute(_, directory, name, arguments):
+        calls.append(name)
+        stage(directory, name, {"status": "verified", "dedup": dedup})
+        return maintenance.stage_status(directory, name)
+    monkeypatch.setattr(maintenance, "_stage", execute)
+    with pytest.raises(ValueError, match="counters"):
+        maintenance.run_sessions(config, run_dir)
+    assert calls == ["archive-cycle"]

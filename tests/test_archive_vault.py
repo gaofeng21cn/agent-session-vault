@@ -263,9 +263,9 @@ def test_snapshot_preserves_session_moved_after_scan(tmp_path: Path, monkeypatch
     init_backend(config)
     real_stage = archive_ops._stage_changed_files
 
-    def move_before_packing(scanned, previous, root):
+    def move_before_packing(scanned, previous, root, **kwargs):
         live.rename(archived)
-        return real_stage(scanned, previous, root)
+        return real_stage(scanned, previous, root, **kwargs)
 
     monkeypatch.setattr(archive_ops, "_stage_changed_files", move_before_packing)
     result = archive_cycle(config, machine_id="machine-test", due_only=False)

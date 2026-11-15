@@ -6,6 +6,7 @@ import subprocess
 import hashlib
 import tempfile
 import posixpath
+import tarfile
 
 
 def _run(command: list[str]) -> None:
@@ -70,36 +71,77 @@ def restore_bundle(bundle_path: Path, destination: Path) -> None:
     _run(["bsdtar", "-xf", str(bundle_path), "-C", str(destination)])
 
 
-def restore_bundle_member(bundle_path: Path, member: str, destination: Path) -> tuple[int, str]:
-    """Restore one regular archive member without materializing its bundle."""
+def restore_bundle_member(
+    bundle_path: Path, member: str, destination: Path, *, expected: tuple[int, str] | None = None,
+) -> tuple[int, str]:
+    """Stream one member, resolving legacy TAR hardlinks inside the archive."""
     if not bundle_path.is_file():
         raise FileNotFoundError(f"bundle not found: {bundle_path}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.restore")
-    process = subprocess.Popen(
-        ["bsdtar", "--no-mac-metadata", "--options", "!mac-ext", "-xOf", str(bundle_path), "--", member],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    assert process.stdout is not None
-    hasher = hashlib.sha256()
-    total = 0
     try:
-        with temporary.open("wb") as output:
-            for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
-                total += len(chunk)
-                hasher.update(chunk)
-                output.write(chunk)
-        process.stdout.close()
-        if process.wait() != 0:
-            raise RuntimeError(f"cannot restore archive member: {member}")
-        temporary.replace(destination)
+        wanted = member
+        seen = set()
+        while True:
+            if not wanted or wanted.startswith("/") or ".." in wanted.split("/"):
+                raise ValueError(f"unsafe or cyclic archive member: {wanted}")
+            wanted = posixpath.normpath(wanted)
+            if wanted == "." or wanted in seen:
+                raise ValueError(f"unsafe or cyclic archive member: {wanted}")
+            seen.add(wanted)
+            process = subprocess.Popen(["zstd", "-dc", "--", str(bundle_path)], stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL)
+            assert process.stdout is not None
+            next_member = None
+            result = None
+            stop_early = False
+            try:
+                with tarfile.open(fileobj=process.stdout, mode="r|", bufsize=1024 * 1024) as archive:
+                    for entry in archive:
+                        if posixpath.normpath(entry.name) != wanted:
+                            continue
+                        if entry.islnk():
+                            next_member = entry.linkname
+                        elif entry.isreg():
+                            source = archive.extractfile(entry)
+                            assert source is not None
+                            hasher, total = hashlib.sha256(), 0
+                            with temporary.open("wb") as output:
+                                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                                    total += len(chunk)
+                                    hasher.update(chunk)
+                                    output.write(chunk)
+                            result = total, hasher.hexdigest()
+                        else:
+                            raise ValueError(f"archive member is not a regular file or hardlink: {wanted}")
+                        break
+                if expected is not None:
+                    if result is not None and result != expected:
+                        raise ValueError(f"restored member checksum mismatch: {member}")
+                    # A manifest-bound member has already passed its own hash.
+                    # Do not decode the remainder of a multi-GiB object just to
+                    # retrieve a small file. Internal hardlinks resolve on the
+                    # next pass and must eventually match the same expectation.
+                    stop_early = result is not None or next_member is not None
+                if not stop_early:
+                    for _ in iter(lambda: process.stdout.read(1024 * 1024), b""):
+                        pass
+            finally:
+                process.stdout.close()
+                if stop_early and process.poll() is None:
+                    process.terminate()
+                code = process.wait()
+            if code != 0 and not stop_early:
+                raise RuntimeError(f"cannot decode archive member: {wanted}")
+            if result is not None:
+                temporary.replace(destination)
+                return result
+            if next_member is None:
+                raise FileNotFoundError(f"archive member not found: {wanted}")
+            wanted = next_member
     except Exception:
         temporary.unlink(missing_ok=True)
-        process.stdout.close()
-        process.wait()
         raise
-    return total, hasher.hexdigest()
 
 
 def _tar_text(value: bytes) -> str:

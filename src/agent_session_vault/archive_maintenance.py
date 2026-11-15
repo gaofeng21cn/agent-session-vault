@@ -123,10 +123,25 @@ def require_stage(run_dir: Path, name: str, expected_status: str | None) -> dict
     return payload
 
 
+def require_dedup_report(payload: dict) -> dict:
+    counters = payload.get("dedup")
+    keys = ("files_seen", "file_logical_bytes", "new_content_files", "new_content_bytes", "new_objects",
+            "new_archive_bytes", "reused_files", "reused_logical_bytes", "historical_reused_files", "same_cycle_reused_files")
+    if not isinstance(counters, dict) or any(type(counters.get(key)) is not int or counters[key] < 0 for key in keys):
+        raise ValueError("archive cycle lacks valid content-reuse counters; stop before pruning")
+    if (counters["files_seen"] != counters["new_content_files"] + counters["reused_files"]
+            or counters["file_logical_bytes"] != counters["new_content_bytes"] + counters["reused_logical_bytes"]
+            or counters["reused_files"] != counters["historical_reused_files"] + counters["same_cycle_reused_files"]
+            or (counters["new_objects"] == 0) != (counters["new_archive_bytes"] == 0)
+            or (counters["new_objects"] == 0) != (counters["new_content_files"] == 0)):
+        raise ValueError("archive content-reuse counters are inconsistent; stop before pruning")
+    return counters
+
+
 def session_gate(config: VaultConfig, run_dir: Path) -> dict:
     run_directory(config, run_dir)
     require_stage(run_dir, "archive-maintenance", "session_verified")
-    require_stage(run_dir, "archive-cycle", "verified")
+    require_dedup_report(require_stage(run_dir, "archive-cycle", "verified"))
     stdout = require_stage(run_dir, "prune-plan", None)
     plan_path = run_dir / "prune-plan.json"
     plan = load_prune_plan(plan_path)
@@ -176,7 +191,7 @@ def run_sessions(config: VaultConfig, run_dir: Path) -> dict:
     before = metrics(config.paths.home / ".codex")
     write_json(run_dir / "space-before.json", before)
     cycle = _stage(config, run_dir, "archive-cycle", ["ops", "archive-cycle", "--no-due-only", "--deep"])
-    require_stage(run_dir, "archive-cycle", "verified")
+    dedup = require_dedup_report(require_stage(run_dir, "archive-cycle", "verified"))
     current_plan = local_root(config) / "prune-plans/current.json"
     current_plan.parent.mkdir(parents=True, exist_ok=True)
     started = datetime.now(UTC)
@@ -205,6 +220,7 @@ def run_sessions(config: VaultConfig, run_dir: Path) -> dict:
                "tokscale_before": plan.tokscale_preview,
                "tokscale_after": applied.get("tokscale_preview") if applied else None,
                "space_before": before,
+               "dedup": dedup,
                "next": "cold-inventory; review whole batches, then cold-plan/cold-pack/cold-cleanup"}
     write_json(run_dir / "session-result.json", payload)
     return payload
