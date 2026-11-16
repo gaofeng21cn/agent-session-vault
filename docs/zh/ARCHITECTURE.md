@@ -56,6 +56,9 @@ Fleet 投影任务 -------> 导入投影 + 受管本机 extras
   Antigravity 更名后仍作为独立 client 保留。
 - Antigravity IDE 通过与 submit 相同的当前 Tokscale 包执行官方 `antigravity sync`
   RPC；Vault 只投影生成的 usage cache，IDE language server 不可用时保留旧 cache。
+  如果官方 RPC 明确报告 `trajectory not found`，Vault 只处理同一批已确认失效且已陈旧的
+  本地 brain、conversation 和索引候选：移动到带 manifest 的可恢复 quarantine，并最多
+  重试一次官方同步；近期或无法证明陈旧的会话保持不动。
 - OpenClaw 投影支持当前逐 agent SQLite（含 WAL、zstd 压缩事件及数据库内删除/冷归档）、
   旧 JSONL、`.zst`/`.gz` 压缩历史和 agent 自有 Codex rollout。SQLite 通过只读快照读取，
   仅保留模型元数据与用量事件，排除凭据、对话正文和工具输出；统计缓存保留客户端删除的

@@ -68,7 +68,11 @@ not a selectable view: the product exposes one managed Tokscale projection.
 - Antigravity IDE usage is refreshed through the official Tokscale
   `antigravity sync` RPC path using the same current package as submit. Vault
   projects the resulting usage-only cache and retains the previous cache when
-  the IDE language server is unavailable.
+  the IDE language server is unavailable. When the official RPC explicitly
+  reports `trajectory not found`, Vault only handles the same confirmed stale
+  local brain, conversation, and index candidates: it moves them into a
+  recoverable quarantine with a manifest and retries the official sync once;
+  recent or unproven sessions remain untouched.
 - OpenClaw projection supports current per-agent SQLite (including WAL,
   zstd transcript rows, and database-held deleted/cold archives), legacy JSONL,
   compressed `.zst`/`.gz` history, and agent-owned Codex rollouts. SQLite is

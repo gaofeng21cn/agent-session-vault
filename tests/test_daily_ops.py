@@ -188,6 +188,50 @@ def test_daily_tokscale_new_version_checks_help_and_preview(tmp_path: Path, monk
     assert any("--dry-run" in command for command in calls)
 
 
+def test_daily_tokscale_repairs_stale_antigravity_once_before_single_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    run_root = tmp_path / "ops"
+    _write_cached_contract(run_root)
+    _install_fleet_fake(monkeypatch, tmp_path)
+    calls: list[list[str]] = []
+    antigravity_attempts = 0
+
+    def fake_run(command, *, env, log_path, timeout_seconds, on_pid):
+        nonlocal antigravity_attempts
+        calls.append(command)
+        if command[:3] == ["npm", "view", "tokscale"]:
+            output = "4.5.2\n"
+        elif "antigravity" in command:
+            antigravity_attempts += 1
+            output = (
+                "Warning: failed to fetch Antigravity metadata for session tempmediaStorage: "
+                "trajectory not found\n"
+                if antigravity_attempts == 1
+                else "Antigravity sync\ndetected connections: 1\n"
+            )
+        else:
+            output = STATS_OUTPUT + "\nSuccessfully submitted!\nView your profile: https://tokscale.ai/u/test\n"
+        log_path.write_text(output, encoding="utf-8")
+        return CommandResult(returncode=0, output=output, duration_seconds=0.1, pid=4321)
+
+    monkeypatch.setattr("agent_session_vault.daily_ops._run_logged_command", fake_run)
+    monkeypatch.setattr(
+        "agent_session_vault.daily_ops.repair_stale_sessions",
+        lambda home, output: {"status": "applied"} if "trajectory not found" in output else {"status": "not_needed"},
+    )
+
+    result = run_daily_tokscale(config, run_root=run_root)
+
+    assert result.exit_code == 0
+    assert antigravity_attempts == 2
+    assert len([command for command in calls if "submit" in command]) == 1
+    assert result.payload["source_sync"]["antigravity"]["attempts"][-1]["log"].endswith(
+        "antigravity-sync-retry.log"
+    )
+
+
 def test_daily_tokscale_preserves_submit_when_stable_mirror_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

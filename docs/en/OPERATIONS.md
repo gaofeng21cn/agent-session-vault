@@ -115,7 +115,11 @@ This is a real external submission. Run it only when submission is intended.
 Before projection, the runner uses that current package to refresh Antigravity
 IDE's official RPC cache on each available node. An unavailable Antigravity
 language server is reported as `skipped_unavailable` and does not discard the
-previous cache. ZCode SQLite is snapshotted and converted to usage-only JSONL;
+previous cache. When the official log explicitly reports `trajectory not found`,
+the runner moves confirmed stale local candidates into a recoverable quarantine
+with a manifest and retries the official sync once; recent or unproven sessions
+are left in place. The receipt records the repair and retry evidence under
+`source_sync.antigravity.repair` and `attempts`. ZCode SQLite is snapshotted and converted to usage-only JSONL;
 conversation content is not copied from the database.
 It uses a process lock and writes `current.json`, per-run logs, and a terminal
 `receipt.json` below the configured file's `ops/daily-tokscale` directory unless

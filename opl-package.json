@@ -125,6 +125,7 @@
       "src/agent_session_vault/archive_sources.py",
       "src/agent_session_vault/cli.py",
       "src/agent_session_vault/config.py",
+      "src/agent_session_vault/antigravity.py",
       "src/agent_session_vault/daily_ops.py",
       "src/agent_session_vault/fleet.py",
       "src/agent_session_vault/local_codex.py",
@@ -142,7 +143,7 @@
       "scripts/run_detached.py",
       "config/codex-cold-decisions.example.json"
     ],
-    "digest": "sha256:cddb34e1809e343861e0f311b76a7eca0ef9c3fd07cd45fd2c1da84862a1957b"
+    "digest": "sha256:a339ede4900464d5ed7643881ac794073523c13df63ea0bee0566893bb92f25b"
   },
   "presentation": {
     "display_name_i18n": {

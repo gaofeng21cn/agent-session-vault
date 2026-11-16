@@ -105,6 +105,9 @@ agent-session-vault ops daily-tokscale --mirror-stable --json
 
 投影前，runner 会使用同一个当前 Tokscale 包在每个可用节点刷新 Antigravity IDE 官方 RPC
 cache。Antigravity language server 不可用时记为 `skipped_unavailable`，但不会丢弃旧 cache。
+如果官方日志明确报告 `trajectory not found`，runner 会把已确认且已陈旧的本地候选移入
+带 manifest 的可恢复 quarantine，最多重试一次官方同步；近期或无法证明陈旧的会话不会移动。
+回执中的 `source_sync.antigravity.repair` 和 `attempts` 记录修复与重试证据。
 ZCode SQLite 会先生成一致快照，再转为只含用量的 JSONL；不会从数据库复制对话正文。
 
 只有 `status: confirmed` 加本次回执的统计值才能证明本轮确认完成。`already_running`、

@@ -14,6 +14,19 @@ import sqlite3
 import subprocess
 
 from . import openclaw
+from .antigravity import (
+    STALE_SESSION_MIN_AGE_SECONDS,
+    _SESSION_ID_RE,
+    _SESSION_WARNING_RE,
+    _entry_is_stale,
+    _is_stale,
+    _tree_is_stale,
+    _parse_timestamp,
+    _sha256,
+    _write_json_atomically,
+    repair_stale_sessions,
+    stale_session_ids,
+)
 from .openclaw import (
     OPENCLAW_PROJECTION_VERSION, openclaw_projection_files, openclaw_project_record,
     openclaw_is_codex_rollout, openclaw_read_text,
@@ -822,6 +835,9 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
+import tempfile
+
+UTC = timezone.utc
 
 PROJECTION_ROOTS_MANIFEST_NAME = "roots-manifest.json"
 PROJECTION_INVENTORY_NAME = "inventory.json"
@@ -832,6 +848,8 @@ CODEX_SYSTEM_INJECTED_PREFIXES = (
     "<system-reminder>",
     "<user_instructions>",
 )
+
+# ANTIGRAVITY_REPAIR_SOURCE
 
 
 def _write_bytes_if_changed(path, payload):
@@ -947,6 +965,18 @@ def _sync_antigravity_cache(package, source_home, state_dir):
             check=False,
         )
         output = completed.stdout + completed.stderr
+        repair = repair_stale_sessions(source_home, output)
+        if repair["status"] == "applied":
+            retry = subprocess.run(
+                ["npx", "-y", package, "antigravity", "sync"],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            output = retry.stdout + retry.stderr
+            completed = retry
         match = re.search(r"detected connections:\\s*([\\d,]+)", output)
         connections = int(match.group(1).replace(",", "")) if match else 0
         status = "synced" if completed.returncode == 0 and connections > 0 else "skipped_unavailable"
@@ -1631,6 +1661,27 @@ def main():
 if __name__ == "__main__":
     raise SystemExit(main())
 """
+    repair_source = "\n\n".join(
+        [
+            f"STALE_SESSION_MIN_AGE_SECONDS = {STALE_SESSION_MIN_AGE_SECONDS!r}",
+            f"_SESSION_ID_RE = re.compile({_SESSION_ID_RE.pattern!r})",
+            f"_SESSION_WARNING_RE = re.compile({_SESSION_WARNING_RE.pattern!r}, re.IGNORECASE)",
+            *(
+                inspect.getsource(function)
+                for function in (
+                    _parse_timestamp,
+                    _is_stale,
+                    _tree_is_stale,
+                    _entry_is_stale,
+                    stale_session_ids,
+                    _write_json_atomically,
+                    _sha256,
+                    repair_stale_sessions,
+                )
+            ),
+        ]
+    )
+    helper = helper.replace("# ANTIGRAVITY_REPAIR_SOURCE", repair_source, 1)
     shared = inspect.getsource(openclaw).replace("from __future__ import annotations", "")
     return helper.replace("import tarfile", "import tarfile\n" + shared, 1)
 

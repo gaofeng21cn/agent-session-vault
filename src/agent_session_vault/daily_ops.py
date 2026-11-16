@@ -12,6 +12,7 @@ import subprocess
 import time
 from typing import Callable
 
+from .antigravity import repair_stale_sessions
 from .config import VaultConfig
 from .fleet import sync_fleet
 from .projection import (
@@ -286,6 +287,14 @@ def _antigravity_sync_status(result: CommandResult) -> str:
     return "synced" if result.returncode == 0 and connections > 0 else "skipped_unavailable"
 
 
+def _antigravity_attempt_payload(result: CommandResult, log_path: Path) -> dict[str, object]:
+    return {
+        "exit_code": result.returncode,
+        "duration_seconds": result.duration_seconds,
+        "log": str(log_path),
+    }
+
+
 def run_daily_tokscale(
     config: VaultConfig,
     *,
@@ -397,6 +406,7 @@ def run_daily_tokscale(
             package_override=package,
             config_dir=str(antigravity_config_root(config)),
         )
+        antigravity_log = run_dir / "antigravity-sync.log"
         antigravity_sync = run_command(
             antigravity_invocation.command,
             env=antigravity_invocation.env,
@@ -404,14 +414,33 @@ def run_daily_tokscale(
             phase="antigravity_sync",
             timeout_seconds=120,
         )
-        antigravity_status = _antigravity_sync_status(antigravity_sync)
+        antigravity_repair = repair_stale_sessions(config.paths.home, antigravity_sync.output)
+        antigravity_attempts = [_antigravity_attempt_payload(antigravity_sync, antigravity_log)]
+        final_antigravity_sync = antigravity_sync
+        final_antigravity_log = antigravity_log
+        if antigravity_repair["status"] == "applied":
+            retry_log = run_dir / "antigravity-sync-retry.log"
+            final_antigravity_sync = run_command(
+                antigravity_invocation.command,
+                env=antigravity_invocation.env,
+                log_name="antigravity-sync-retry.log",
+                phase="antigravity_sync_retry",
+                timeout_seconds=120,
+            )
+            final_antigravity_log = retry_log
+            antigravity_attempts.append(
+                _antigravity_attempt_payload(final_antigravity_sync, retry_log)
+            )
+        antigravity_status = _antigravity_sync_status(final_antigravity_sync)
         payload["source_sync"] = {
             "antigravity": {
                 "status": antigravity_status,
-                "exit_code": antigravity_sync.returncode,
-                "duration_seconds": antigravity_sync.duration_seconds,
+                "exit_code": final_antigravity_sync.returncode,
+                "duration_seconds": final_antigravity_sync.duration_seconds,
                 "cache_root": str(antigravity_cache_root(config)),
-                "log": str(run_dir / "antigravity-sync.log"),
+                "log": str(final_antigravity_log),
+                "attempts": antigravity_attempts,
+                "repair": antigravity_repair,
             }
         }
 
