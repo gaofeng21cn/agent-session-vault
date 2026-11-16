@@ -116,6 +116,7 @@
       "src/agent_session_vault/archive.py",
       "src/agent_session_vault/archive_backend.py",
       "src/agent_session_vault/archive_catalog.py",
+      "src/agent_session_vault/archive_compact.py",
       "src/agent_session_vault/archive_content.py",
       "src/agent_session_vault/archive_model.py",
       "src/agent_session_vault/archive_ops.py",
@@ -141,7 +142,7 @@
       "scripts/run_detached.py",
       "config/codex-cold-decisions.example.json"
     ],
-    "digest": "sha256:abed0abd2542d8ff6872f481aecbd9bb17553a56382919bd767e17417d12d277"
+    "digest": "sha256:be39ba1ed35e8cf3b6353c8eda8247a59a32a83bbe96c69837c1ed755fc31032"
   },
   "presentation": {
     "display_name_i18n": {

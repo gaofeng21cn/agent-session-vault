@@ -198,6 +198,18 @@ def build_parser() -> argparse.ArgumentParser:
     archive_review.add_argument("--json", action="store_true")
     content_status = archive_sub.add_parser("content-status", help="Read authenticated snapshot content reuse and legacy duplication")
     content_status.add_argument("--json", action="store_true")
+    compact_plan = archive_sub.add_parser("compact-plan", help="Plan an explicit byte-preserving archive storage migration")
+    compact_plan.add_argument("--run-dir", type=Path, required=True)
+    compact_plan.add_argument("--json", action="store_true")
+    for name in ("compact-apply", "compact-status", "compact-recovery-plan", "compact-recover"):
+        command = archive_sub.add_parser(name, help={
+            "compact-apply": "Repack, verify, switch and retire once",
+            "compact-status": "Read existing migration evidence; never resume",
+            "compact-recovery-plan": "Authenticate reusable packs after a known legacy-noise rejection",
+            "compact-recover": "Execute one verified recovery phase without reissuing the failed apply",
+        }[name])
+        command.add_argument("--plan", type=Path, required=True)
+        command.add_argument("--json", action="store_true")
     return parser
 
 
@@ -417,6 +429,23 @@ def main(argv: list[str] | None = None) -> int:
                 for item in result.results
             ],
         }
+        _json_dump(payload) if args.json else print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command.startswith("compact-"):
+        from .archive_compact import compact_apply, compact_plan, compact_recovery_plan, compact_status
+        try:
+            if args.archive_command == "compact-plan":
+                payload = compact_plan(config, args.run_dir)
+            elif args.archive_command == "compact-recover":
+                payload = compact_apply(config, args.plan, recovery_path=args.plan.parent / "recovery-plan.json")
+            else:
+                payload = {"compact-apply": compact_apply, "compact-status": compact_status,
+                           "compact-recovery-plan": compact_recovery_plan}[args.archive_command](config, args.plan)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError) as exc:
+            _json_dump({"status": "failed", "error": f"{type(exc).__name__}: {exc}",
+                        "reconcile_only": True})
+            return 2
         _json_dump(payload) if args.json else print(payload)
         return 0
 

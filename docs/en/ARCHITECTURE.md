@@ -142,9 +142,30 @@ published before any source snapshot can reference them.
 
 This is exact file-byte deduplication. Changed revisions and different encoded
 representations remain separate byte-preserving artifacts; it is not chunk or
-semantic conversation deduplication. Existing immutable history is not rewritten
-or deleted. Object/member deep verification remains the deletion guard. Cycle
+semantic conversation deduplication. Ordinary archive cycles do not rewrite or
+delete existing history. Object/member deep verification remains the deletion guard. Cycle
 receipts distinguish new content/archive bytes from reused logical file bytes.
+
+Explicit storage compaction belongs to `archive compact-plan/compact-apply`. It
+migrates physical representation while preserving vault identity, snapshot IDs,
+sources, times, parents, warnings, paths, revisions and every original file byte.
+Only bundle/member addresses and their checksums change. Candidates retain the
+archive-v1 format and target 512 MiB of logical data per bundle; an oversized file
+gets its own bundle. Each equal file content is stored once. Source objects stream
+through the repacker, and each candidate object is deeply verified once. Legacy
+TAR hardlinks are validated against target contents; outputs contain explicit
+regular members without links, xattrs or AppleDouble. Equal logical-history
+digests, member sets, SHA-256 values, logical sizes and a staging restore sample
+gate the same-NAS generation rename. Verified original metadata remains in a
+TAR.zst. Only after post-switch coverage checks and another NAS preflight can the
+exact original container inventory be removed. Net savings include new bundles
+and metadata-backup overhead.
+
+The local archive-cycle lock and a persistent maintenance fence outside the root
+prevent concurrent maintenance. Archive writes, pruning and restore refuse to run
+with a fence present. Failure retains the fence, candidate, remaining original
+data and progress evidence for read-only reconciliation. Compaction neither
+changes scheduling nor automatically resumes or claims a new live snapshot.
 
 Restore plans are digest-protected and always use staging mode. Local pruning
 is a separate digest-protected plan that requires all of the following at plan

@@ -297,6 +297,7 @@ def build_prune_plan(
 ) -> PrunePlan:
     now = (now or _utc_now()).astimezone(UTC)
     backend = archive_backend(config)
+    backend.ensure_writable()
     backend.ensure_ready()
     stable_root, imports_fingerprint = _stable_imports_fingerprint(config)
     projection_files = _load_projection_files(config)
@@ -455,6 +456,7 @@ def apply_prune_plan(
     *,
     preview_runner: Callable[[VaultConfig], dict[str, object]] = _tokscale_preview,
 ) -> dict[str, object]:
+    archive_backend(config).ensure_writable()
     if plan.plan_digest != _plan_digest(plan):
         raise ValueError("prune plan digest mismatch")
     stable_root, imports_fingerprint = _stable_imports_fingerprint(config)
@@ -466,6 +468,7 @@ def apply_prune_plan(
         raise ValueError("Tokscale dry-run changed; generate a new prune plan")
     for entry in plan.entries:
         _verify_entry(entry)
+    archive_backend(config).ensure_writable()
     deleted: list[str] = []
     deleted_bytes = 0
     try:

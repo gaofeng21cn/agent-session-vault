@@ -32,6 +32,7 @@ def entries_for_manifest(manifest: ArchiveManifest) -> tuple[CatalogEntry, ...]:
 
 
 def write_catalog_segment(backend: FilesystemArchiveBackend, published: PublishedSnapshot) -> list[Path]:
+    backend.ensure_writable()
     paths: list[Path] = []
     for manifest in published.manifests:
         entries = [entry.to_payload() for entry in entries_for_manifest(manifest)]

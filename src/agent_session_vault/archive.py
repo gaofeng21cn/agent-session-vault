@@ -48,7 +48,11 @@ def pack_paths(source: Path, relative_paths: list[str], bundle_path: Path) -> No
         _run(
             [
                 "bsdtar",
+                "--no-recursion",
+                "--no-xattrs",
                 "--no-mac-metadata",
+                "--no-acls",
+                "--no-fflags",
                 "--zstd",
                 "-cf",
                 str(bundle_path),

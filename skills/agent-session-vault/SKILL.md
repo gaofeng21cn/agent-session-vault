@@ -38,6 +38,7 @@ OPL Fleet 是节点、网络、准入、任务投放和产物传输的唯一来�
 | 正式每日统计提交 | `ops daily-tokscale --mirror-stable --json` | 只有用户明确要求提交时执行 |
 | 创建或验证完整 Codex 快照 | `ops archive-cycle --due-only --deep --json` | 写 archive；不删除本机会话 |
 | 查看全库文件内容复用和历史重复 | `archive content-status --json` | 只读已提交快照元数据和对象状态，不等于全库深检或语义去重 |
+| 显式整理 NAS 存量 | `archive compact-plan --run-dir <唯一目录> --json` → `archive compact-apply --plan <plan.json> --json`；`compact-status --plan` 只读 | 仅在用户授权存量优化后执行；同格式候选、完整历史校验、切换后精确退役；每命令 detached 一次 |
 | 已授权双周维护 | `ops archive-maintenance --json`；`--status --json` 只读核对 | 各阶段只启动一次；含严格保护的会话裁剪 |
 | 冷数据完整批次下沉 | `ops cold-inventory` → AI 用途审阅 → `ops cold-plan` → `ops cold-pack` → `ops cold-cleanup`，均带本轮 `--run-dir`、`--json` | 仅限明确空间优化授权；先核验 TAR 与恢复样本，再清空本轮专属 Trash |
 | 恢复 analytics stable 层 | `storage restore-stable --dest-root <staging> --json` | 只写独立目标 |
@@ -70,7 +71,11 @@ Tokscale 只读取 Vault 准备的一份受管 projection 和 managed extras，�
 完整归档按“字节长度＋SHA-256”跨已提交快照复用原成员，换路径或重复运行固定来源不新增内容包；
 本轮相同新文件只保存一份，各逻辑路径和分支照常恢复。回执 `dedup` 分开记录新增内容/压缩包与
 复用逻辑字节，复用量不是磁盘释放量。真实变化、压缩表示和旧版本仍保留原字节，不能声称 NAS
-全库已经语义去重；旧重复包不能直接删除，必须保留现有历史恢复引用。
+全库已经语义去重。旧重复包由显式存量迁移重新映射全部历史恢复引用后才能退役；不得直接删包。
+迁移保留 snapshot ID、所有版本和原字节，旧恢复计划仍可使用。maintenance fence 存在时只读
+核对原 runner、progress 和真实 exit_code；不移除 fence 绕过保护，不补跑未知终态任务。
+只有已知的切换前旧包噪声拒绝，才可按 OPERATIONS 的 `compact-recovery-plan` → `compact-recover`
+独立恢复阶段核验并复用原候选；各阶段 detached 一次，原失败退出码始终保留。
 
 恢复只允许 staging。不得手工把恢复文件复制进 `~/.codex`，不得合并
 `session_index.jsonl`。

@@ -95,8 +95,9 @@ def load_restore_plan(path: Path) -> RestorePlan:
 
 
 def restore_plan(config: VaultConfig, plan: RestorePlan) -> dict[str, object]:
-    destination = Path(plan.destination).expanduser()
     backend = FilesystemArchiveBackend(config.archive.root)
+    backend.ensure_writable()
+    destination = Path(plan.destination).expanduser()
     backend.ensure_ready()
     snapshots = {path.name: backend.load_snapshot(path) for path in backend.iter_snapshot_dirs()}
     records_by_entry: dict[tuple[str, str], tuple[CatalogEntry, ArchiveFileRecord, ArchiveBundle]] = {}

@@ -44,6 +44,7 @@ class FilesystemArchiveBackend:
         return self.root / ROOT_MARKER_NAME
 
     def initialize(self, vault_id: str | None = None) -> dict[str, object]:
+        self.ensure_writable()
         if self.root.exists() and self.root.is_symlink():
             raise ArchiveBackendError(f"archive root must not be a symlink: {self.root}")
         self.root.mkdir(parents=True, exist_ok=True)
@@ -78,7 +79,16 @@ class FilesystemArchiveBackend:
             raise ValueError(f"invalid object sha256: {sha256}")
         return self.root / "objects" / f"{sha256}.tar.zst"
 
+    @property
+    def maintenance_path(self) -> Path:
+        return self.root.with_name(f".{self.root.name}.maintenance.json")
+
+    def ensure_writable(self) -> None:
+        if self.maintenance_path.exists() or self.maintenance_path.is_symlink():
+            raise ArchiveBackendError(f"archive maintenance in progress; reconcile its recorded runner: {self.maintenance_path}")
+
     def publish_object(self, local_path: Path, sha256: str) -> Path:
+        self.ensure_writable()
         self.ensure_ready()
         source = local_path.expanduser()
         if not source.is_file():
@@ -105,6 +115,7 @@ class FilesystemArchiveBackend:
         manifests: tuple[ArchiveManifest, ...],
         staged_objects: dict[str, Path],
     ) -> PublishedSnapshot:
+        self.ensure_writable()
         self.ensure_ready()
         for bundle_id, local_path in staged_objects.items():
             sha256 = bundle_id.removeprefix("bundle-")

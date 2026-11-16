@@ -180,6 +180,47 @@ staging、catalog、统计投影和未提交快照不构成复用依据。深检
 历史快照和包仍完整保留，不自动做重打包或垃圾回收。
 定时维护在生成裁剪计划前检查复用统计字段齐全、非负且总量一致；缺失或异常立即停止后续阶段。
 
+### 显式整理已有归档
+
+用户授权存量优化后，使用一次性迁移入口，不加入双周或每日调度。先读原运行证据并通过已配置的
+NAS preflight；为本轮在本机配置目录的 `ops/archive-compaction/<唯一ID>` 创建持久日志目录。
+以下两个写命令分别用现有 `run-detached.py` 启动一次，name 分别为 `compact-plan`、
+`compact-apply`；使用安装后的绝对 CLI 路径，按顺序等待 stdout 终态 JSON 和真实 exit_code：
+
+```sh
+agent-session-vault archive compact-plan --run-dir <本轮日志目录> --json
+agent-session-vault archive compact-apply --plan <本轮日志目录>/plan.json --json
+agent-session-vault archive compact-status --plan <本轮日志目录>/plan.json --json
+```
+
+plan 退出 0/planned 后才启动 apply。计划绑定当前身份、精确源清单/签名、元数据 SHA-256、
+全部历史逻辑摘要和容量预算；来源发生变化即停止。apply 在同 NAS
+`operations/archive-compaction/<唯一ID>/candidate` 中流式重打包，保存每种原文件内容一份，
+默认按 512 MiB 逻辑字节分包。每个输出包逐项深检一次、核对全部快照逻辑摘要并真实恢复样本后，
+保存验证回执和旧元数据包，再切换回原 archive 路径。逻辑历史、旧恢复计划、配置和 live 文件不变。
+切换后再次核对内容覆盖与 NAS preflight，精确删除本轮 retired 中的旧容器；无实测容量收益则
+保留原库并停止。报告区分旧容器删除量、新包开销、净减量和 NAS 卷实际可用量。
+
+NAS 本轮目录保留 `plan.json`、`journal.jsonl`、`progress.json`、`verification.json`、
+`original-metadata.tar.zst` 和成功时的 `result.json`；实际恢复样本在本轮本机日志目录内。
+`compact-status` 只读取已有证据和 detached runner 状态，不续跑。中断或异常保留维护 fence、
+候选和剩余原数据；没有真实 exit_code 时不得依据 result/receipt 宣称命令成功，不得重发 apply
+或重试失败删除。只有切换第二次 rename 明确失败且路径状态无歧义时，原 runner 执行一次回滚。
+正常周期遇到 maintenance fence 必须停止并报告原运行路径，不能绕过。辅助冷数据历史包和 stable
+统计恢复副本不属于该迁移集合。
+
+旧包中未列入 manifest 的 `._*` 只有在 AppleDouble magic/version、条目范围、Finder/xattr 类型、
+空 resource fork 与对应的已索引原文件全部核实后，才能作为元数据噪声排除；文件名前缀不构成依据。
+排除清单保留路径、SHA-256 和逻辑字节。新文件列表打包入口同样禁用 xattrs、ACL、fflags、Mac
+metadata 和隐式目录递归，防止后续继续生成噪声。
+
+若原 apply 以真实退出码 2 明确停在旧包噪声识别、仍在切换前且源库未变，修复后可独立执行
+`compact-recovery-plan --plan <原plan.json> --json`，核验已有候选包和原进程终态；其退出 0/verified
+后才运行一次 `compact-recover --plan <原plan.json> --json`。这两阶段也分别 detached 一次并使用
+同名唯一日志；不重发原 apply。恢复计划绑定源签名、原 stdout/退出码、fence 和每个已验证候选成员，
+复用成品包和已验证来源；未完成 fragment 单独保管，只在全部新库覆盖成功后精确清理。
+未知退出、其他失败、已切换或已有 recovery intent 都不允许该入口继续，保留原证据。
+
 续写后的新版本、不同内容的同 ID 会话，以及 `.jsonl`/`.jsonl.zst` 的不同原始字节仍会增加数据量。
 本流程保留其可恢复历史，不按 session ID 丢弃版本，也不做会改变原始字节的格式归一化。
 若写入中内容变化导致归并候选失效或收敛为已有内容，构建停止并保留诊断 staging，避免错误复用或

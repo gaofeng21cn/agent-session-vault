@@ -222,6 +222,7 @@ def build_snapshot(
     cycle_id: str | None = None,
     staging_root: Path | None = None,
 ) -> SnapshotBuildResult:
+    archive_backend(config).ensure_writable()
     # Local hardlinks pin discovered files without copying their payload or
     # requiring SMB hardlink support. Keep them only for this snapshot build.
     with tempfile.TemporaryDirectory(prefix="asv-capture-") as captured:
@@ -343,6 +344,7 @@ def publish_snapshot(
     verify_staged: bool = False,
 ) -> list[PublishedSnapshot]:
     backend = archive_backend(config)
+    backend.ensure_writable()
     backend.ensure_ready()
     result: list[PublishedSnapshot] = []
     prepared = []
@@ -405,6 +407,7 @@ def init_backend(config: VaultConfig) -> dict[str, object]:
 
 
 def receipt(config: VaultConfig, operation: str, status: str, *, machine_id: str, source_id: str | None = None, snapshot_id: str | None = None, details: dict[str, object] | None = None) -> ArchiveReceipt:
+    archive_backend(config).ensure_writable()
     now = utc_now()
     item = ArchiveReceipt(
         operation_id=f"op-{uuid.uuid4().hex}",
@@ -429,6 +432,8 @@ def archive_cycle(
     due_only: bool = True,
     deep: bool = True,
 ) -> ArchiveCycleResult:
+    if archive_backend(config).maintenance_path.exists():
+        return ArchiveCycleResult("busy", machine_id or "unknown", None, (), (), "archive_maintenance_in_progress")
     resolved_machine_id = machine_id or "unknown"
     state_path = config.paths.home.expanduser() / ".config" / "agent-session-vault" / "archive-cycle-state.json"
     lock_path = state_path.with_name("archive-cycle.lock")

@@ -218,6 +218,65 @@ Old snapshots and objects remain intact; no automatic repacking or garbage colle
 Scheduled maintenance checks that the reuse counters are present, nonnegative and
 consistent before creating any prune plan. Missing/invalid counters stop later stages.
 
+### Explicit compaction of existing archives
+
+After user authorization for existing-storage optimization, use the one-shot
+migration rather than adding it to biweekly or daily schedules. Reconcile previous
+runner evidence and pass the configured NAS preflight, then create a durable local
+log directory under `ops/archive-compaction/<unique-ID>` in the configuration
+directory. Launch each write command exactly once through `run-detached.py`, named
+`compact-plan` and `compact-apply`, using the installed absolute CLI path. Wait for
+terminal stdout JSON and the real exit_code in order:
+
+```sh
+agent-session-vault archive compact-plan --run-dir <run-log-dir> --json
+agent-session-vault archive compact-apply --plan <run-log-dir>/plan.json --json
+agent-session-vault archive compact-status --plan <run-log-dir>/plan.json --json
+```
+
+Only plan exit 0/planned admits apply. The plan binds current identity, exact source
+inventory/signatures, metadata SHA-256, all logical-history digests and workspace
+budget; source drift stops migration. Apply streams into same-NAS
+`operations/archive-compaction/<unique-ID>/candidate`, storing each file content
+once in bundles targeting 512 MiB of logical data. After one deep member check per
+output bundle, complete history equivalence and an actual restore sample, it saves
+verification evidence and original metadata before switching back to the original
+archive path. Logical history, old restore plans, configuration and live files are
+preserved. Post-switch coverage and another NAS preflight gate exact removal of
+this run's retired containers. No measured storage saving stops with the original
+archive retained. Report removed containers, new bundle costs, net reduction and
+actual NAS-volume availability separately.
+
+The NAS run directory retains `plan.json`, `journal.jsonl`, `progress.json`,
+`verification.json`, `original-metadata.tar.zst` and, on success, `result.json`.
+Actual restore samples stay inside the local run log directory. `compact-status`
+only reads existing evidence and detached-runner state; it never resumes work.
+Interruption/failure retains the maintenance fence, candidate and remaining source.
+Without the real exit_code, result/receipt files cannot prove command success;
+never reissue apply or retry failed deletion. Only an unambiguously failed second
+rename allows one rollback by the original runner. Scheduled cycles encountering
+the maintenance fence must stop and report its original run, without bypassing it.
+Auxiliary cold-data packages and stable analytics are outside this migration.
+
+An unmanifested `._*` qualifies as metadata noise only after checking AppleDouble
+magic/version, entry bounds, Finder/xattr entry types, an empty resource fork and
+the corresponding indexed original. The prefix alone is insufficient. Exclusion
+evidence retains paths, SHA-256 and logical bytes. Explicit file-list packing also
+disables xattrs, ACLs, fflags, Mac metadata and implicit directory recursion to avoid
+generating new noise.
+
+If the original apply genuinely exited 2 at legacy-noise recognition, before any
+switch and with the original archive unchanged, a corrected implementation may
+run `compact-recovery-plan --plan <original-plan.json> --json` as a separate phase
+to authenticate existing packs and the original terminal evidence. Only its real
+exit 0/verified admits one `compact-recover --plan <original-plan.json> --json`.
+Both stages launch detached once with their own matching log names, without
+reissuing apply. Recovery binds source signatures, original stdout/exit, fence and
+every verified candidate member, reusing completed packs and authenticated source
+progress. Unfinished fragments remain in separate custody until successful full
+coverage permits their exact cleanup. Unknown exits, other failures, an existing
+switch or recovery intent prohibit this entrypoint and retain the evidence.
+
 Appended revisions, different contents with the same session ID, and different raw
 `.jsonl`/`.jsonl.zst` representations can still add data. Recoverable history is kept
 without discarding revisions by ID or normalizing away original file bytes. If a
