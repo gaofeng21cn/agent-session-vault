@@ -22,6 +22,7 @@ from .archive_content import ArchiveContentIndex
 from .archive_maintenance import local_root, no_links, preflight, read_json, stage_status, write_json
 from .archive_model import ArchiveBundle, payload_sha256, utc_now, validate_relative_path
 from .config import VaultConfig
+from .storage import filesystem_capacity
 
 
 SCHEMA = "archive.compaction-plan.v1"
@@ -124,7 +125,7 @@ def compact_plan(config: VaultConfig, run_dir: Path) -> dict:
     if objects != {name for name in inventory["files"] if name.startswith("objects/")}:
         raise ValueError("unreferenced or missing objects require explicit reconciliation")
     old_bytes = sum(inventory["files"][name]["bytes"] for name in objects)
-    available = shutil.disk_usage(root).free
+    available = filesystem_capacity(root)["available_bytes"]
     # Incompressible contents, TAR headers/padding, and the metadata backup fit.
     required = int(sum(size for size, _ in index.locations) * 1.02) + 1024**3
     if available < required:
@@ -560,7 +561,7 @@ def compact_apply(config: VaultConfig, plan_path: Path, *, recovery_path: Path |
         _unchanged(root, plan["inventory"])
         if backend.ensure_ready() != plan["marker"] or _logical_digest(backend) != plan["history"]:
             raise ValueError("source identity/history changed since plan")
-        if shutil.disk_usage(root).free < plan["required_workspace_bytes"]:
+        if filesystem_capacity(root)["available_bytes"] < plan["required_workspace_bytes"]:
             raise ValueError("NAS workspace is no longer sufficient")
         if recovery is None:
             work.mkdir(parents=True, exist_ok=False)
@@ -582,7 +583,7 @@ def compact_apply(config: VaultConfig, plan_path: Path, *, recovery_path: Path |
 
         writer = None
         try:
-            before_available = shutil.disk_usage(root).free
+            before_available = filesystem_capacity(root)["available_bytes"]
             candidate_path, retired = work / "candidate", work / "retired"
             marker = {**plan["marker"], "storage_generation": plan["run_id"]}
             if recovery is None:
@@ -689,7 +690,7 @@ def compact_apply(config: VaultConfig, plan_path: Path, *, recovery_path: Path |
                       "reused_candidate_objects": len(recovery["packs"]) if recovery else 0,
                       "removed_failed_fragment_bytes": fragment_bytes,
                       "net_object_and_metadata_reduction_bytes": plan["old_object_bytes"] - new_bytes - metadata["bytes"],
-                      "nas_available_before": before_available, "nas_available_after": shutil.disk_usage(root).free,
+                      "nas_available_before": before_available, "nas_available_after": filesystem_capacity(root)["available_bytes"],
                       "restore_sample": str(destination), "receipt_path": str(work / "result.json")}
             write_json(work / "result.json", result)
             write_json(plan_path.parent / "result.json", result)

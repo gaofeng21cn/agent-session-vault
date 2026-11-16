@@ -517,9 +517,11 @@ def pack(config: VaultConfig, run_dir: Path) -> dict:
 
 
 def metrics(root: Path) -> dict:
+    from .storage import filesystem_capacity
     result = {"measured_at": datetime.now(UTC).isoformat()}
-    filesystem = os.statvfs(root)
-    result["volume_available_bytes"] = filesystem.f_bavail * filesystem.f_frsize
+    capacity = filesystem_capacity(root)
+    result["volume_available_bytes"] = capacity["available_bytes"]
+    result["volume_measurement_method"] = capacity["method"]
     usage = subprocess.run(["/usr/bin/du", "-sk", str(root)], capture_output=True, text=True, timeout=120)
     result["codex_allocated_bytes"] = int(usage.stdout.split()[0]) * 1024 if usage.returncode == 0 else None
     result["databases"] = [{"path": str(path), "bytes": path.stat().st_size}

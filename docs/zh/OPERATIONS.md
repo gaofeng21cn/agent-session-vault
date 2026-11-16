@@ -201,6 +201,11 @@ plan 退出 0/planned 后才启动 apply。计划绑定当前身份、精确源�
 切换后再次核对内容覆盖与 NAS preflight，精确删除本轮 retired 中的旧容器；无实测容量收益则
 保留原库并停止。报告区分旧容器删除量、新包开销、净减量和 NAS 卷实际可用量。
 
+macOS 的 `statvfs` 在大容量 SMB 卷上可能每 4 TiB 回绕。容量预算与冷数据度量统一使用原生
+`df -kP` 的完整字节计数，避免错误的空间不足判断；不输出可能含临时登录标识的挂载源。
+旧回执保持原值并在报告中标明测量限制。目录减量、文件 unlink 和 NAS 服务器最终物理回收
+分别报告；没有可靠的同口径前值或服务器端证据时，物理回收字节记为未确认。
+
 NAS 本轮目录保留 `plan.json`、`journal.jsonl`、`progress.json`、`verification.json`、
 `original-metadata.tar.zst` 和成功时的 `result.json`；实际恢复样本在本轮本机日志目录内。
 `compact-status` 只读取已有证据和 detached runner 状态，不续跑。中断或异常保留维护 fence、

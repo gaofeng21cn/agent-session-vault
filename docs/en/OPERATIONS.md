@@ -247,6 +247,14 @@ this run's retired containers. No measured storage saving stops with the origina
 archive retained. Report removed containers, new bundle costs, net reduction and
 actual NAS-volume availability separately.
 
+On macOS, `statvfs` can wrap large SMB counters every 4 TiB. Workspace admission
+and cold-data metrics use native `df -kP` counters to avoid false insufficient-space
+decisions, without exposing mount sources that may include temporary login IDs.
+Keep original receipt values and annotate their measurement limits. Report directory
+reduction, unlink and final server-side physical reclamation separately. Without a
+reliable comparable baseline or server evidence, physical reclaimed bytes remain
+unconfirmed.
+
 The NAS run directory retains `plan.json`, `journal.jsonl`, `progress.json`,
 `verification.json`, `original-metadata.tar.zst` and, on success, `result.json`.
 Actual restore samples stay inside the local run log directory. `compact-status`

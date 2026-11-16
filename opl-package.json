@@ -142,7 +142,7 @@
       "scripts/run_detached.py",
       "config/codex-cold-decisions.example.json"
     ],
-    "digest": "sha256:be39ba1ed35e8cf3b6353c8eda8247a59a32a83bbe96c69837c1ed755fc31032"
+    "digest": "sha256:cddb34e1809e343861e0f311b76a7eca0ef9c3fd07cd45fd2c1da84862a1957b"
   },
   "presentation": {
     "display_name_i18n": {

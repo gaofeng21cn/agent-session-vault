@@ -1,10 +1,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
 
 from .config import VaultConfig
 from .views import discover_home_project_codex_roots, discover_project_codex_roots
+
+
+def filesystem_capacity(path: Path) -> dict[str, int | str]:
+    """Darwin statvfs can wrap SMB counters at 2**32 KiB; use native df there."""
+    if sys.platform != "darwin":
+        usage = shutil.disk_usage(path)
+        return {"method": "disk_usage", "total_bytes": usage.total, "used_bytes": usage.used,
+                "available_bytes": usage.free}
+    result = subprocess.run(["/bin/df", "-kP", str(path)], capture_output=True, text=True,
+                            timeout=30, env={**os.environ, "LC_ALL": "C"})
+    if result.returncode != 0:
+        # SMB mount source can contain temporary credentials; never echo df output.
+        raise ValueError(f"native filesystem capacity failed (exit {result.returncode})")
+    rows = result.stdout.splitlines()
+    match = re.fullmatch(r".+?\s+(\d+)\s+(\d+)\s+(\d+)\s+\d+%\s+.+", rows[-1]) if rows else None
+    if match is None:
+        raise ValueError("native filesystem capacity has no valid numeric row")
+    total, used, available = (int(value) * 1024 for value in match.groups())
+    if not total or min(used, available) < 0 or available > total:
+        raise ValueError("native filesystem capacity counters are invalid")
+    return {"method": "df-kP", "total_bytes": total, "used_bytes": used, "available_bytes": available}
 
 
 @dataclass(frozen=True)
