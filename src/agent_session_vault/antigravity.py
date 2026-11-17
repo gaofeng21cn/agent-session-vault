@@ -188,6 +188,10 @@ def repair_stale_sessions(
     for session_id in session_ids:
         for root in roots:
             brain_path = root / "brain" / session_id
+            if brain_path.is_symlink():
+                result["deferred"].append({"path": str(brain_path), "reason": "symlink"})
+                deferred_session_ids.add(session_id)
+                continue
             if brain_path.exists():
                 empty = brain_path.is_dir() and not brain_path.is_symlink() and not any(brain_path.iterdir())
                 if empty or _tree_is_stale(brain_path, current, minimum_age_seconds):
@@ -199,6 +203,10 @@ def repair_stale_sessions(
             conversation_root = root / "conversations"
             for suffix in (".pb", ".db"):
                 conversation_path = conversation_root / f"{session_id}{suffix}"
+                if conversation_path.is_symlink():
+                    result["deferred"].append({"path": str(conversation_path), "reason": "symlink"})
+                    deferred_session_ids.add(session_id)
+                    continue
                 if not conversation_path.exists():
                     continue
                 if not _is_stale(conversation_path, current, minimum_age_seconds):

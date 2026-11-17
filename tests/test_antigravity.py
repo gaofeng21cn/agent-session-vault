@@ -134,3 +134,19 @@ def test_repair_stale_sessions_defers_old_directory_with_recent_file(tmp_path: P
 
     assert result["status"] == "deferred"
     assert child.is_file()
+
+
+def test_repair_stale_sessions_defers_symlink_and_keeps_index(tmp_path: Path) -> None:
+    source_home = tmp_path / "home"
+    conversations = source_home / ".gemini" / "antigravity-ide" / "conversations"
+    conversations.mkdir(parents=True)
+    target = tmp_path / "target.pb"
+    target.write_bytes(b"session")
+    link = conversations / f"{SESSION_ID}.pb"
+    link.symlink_to(target)
+
+    result = repair_stale_sessions(source_home, _warning(), now=datetime(2026, 11, 17, tzinfo=UTC))
+
+    assert result["status"] == "deferred"
+    assert link.is_symlink()
+    assert any(item["reason"] == "symlink" for item in result["deferred"])
