@@ -170,18 +170,29 @@ def test_codex_snapshot_publish_and_deep_verify_reuses_unchanged_objects(tmp_pat
     first = build_snapshot(config, machine_id="machine-test")
     published_first = publish_snapshot(config, first.staging_root)
     assert len(published_first) == 1
+    assert published_first[0].snapshot.restic_snapshot_id
     first_snapshot_id = first.snapshots[0].snapshot_id
     assert verify_snapshot(config, first_snapshot_id, deep=True)["status"] == "verified"
 
-    first_objects = sorted((backend / "objects").glob("*.tar.zst"))
-    assert len(first_objects) == 1
+    blobs_after_first = len(list((backend / "repo" / "data").iterdir()))
+    assert blobs_after_first == 2
 
+    # Unchanged repeat adds zero new content blobs.
+    repeat = archive_cycle(config, machine_id="machine-test", due_only=False, deep=True)
+    assert repeat.status == "verified"
+    assert repeat.dedup is not None
+    assert repeat.dedup["new_content_files"] == 0
+    assert repeat.dedup["new_objects"] == 0
+    assert repeat.dedup["reused_files"] == 2
+    assert len(list((backend / "repo" / "data").iterdir())) == blobs_after_first
+
+    # Changing one file adds only one new blob while reusing the unchanged file.
     _write_session(source / "sessions" / "2026" / "08" / "19" / "one.jsonl", "session-one", "changed")
     second = build_snapshot(config, machine_id="machine-test")
     publish_snapshot(config, second.staging_root)
     second_snapshot_id = second.snapshots[0].snapshot_id
     assert verify_snapshot(config, second_snapshot_id, deep=True)["status"] == "verified"
-    assert len(list((backend / "objects").glob("*.tar.zst"))) == 2
+    assert len(list((backend / "repo" / "data").iterdir())) == 3
 
 
 def test_codex_snapshot_includes_and_parses_zstd_session(tmp_path: Path) -> None:
@@ -261,13 +272,13 @@ def test_snapshot_preserves_session_moved_after_scan(tmp_path: Path, monkeypatch
     _write_session(live, "session-one", "original conversation")
     content = live.read_bytes()
     init_backend(config)
-    real_stage = archive_ops._stage_changed_files
+    real_materialize = archive_ops._materialize_staged_payload
 
-    def move_before_packing(scanned, previous, root, **kwargs):
+    def move_before_materialize(capture_root, payload_root, members):
         live.rename(archived)
-        return real_stage(scanned, previous, root, **kwargs)
+        return real_materialize(capture_root, payload_root, members)
 
-    monkeypatch.setattr(archive_ops, "_stage_changed_files", move_before_packing)
+    monkeypatch.setattr(archive_ops, "_materialize_staged_payload", move_before_materialize)
     result = archive_cycle(config, machine_id="machine-test", due_only=False)
 
     assert result.status == "verified"
@@ -344,7 +355,7 @@ def test_snapshot_capture_rejects_symlink_replacement(tmp_path: Path, monkeypatc
     assert not list((backend / "snapshots").rglob("COMMITTED"))
 
 
-def test_archive_cycle_returns_terminal_failure_without_publishing_incomplete_bundle(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_archive_cycle_returns_terminal_failure_without_publishing_incomplete_snapshot(tmp_path: Path, monkeypatch, capsys) -> None:
     from agent_session_vault.cli import main
 
     config_path, source, backend = _config(tmp_path)
@@ -352,12 +363,15 @@ def test_archive_cycle_returns_terminal_failure_without_publishing_incomplete_bu
     _write_session(source / "archived_sessions/old.jsonl", "session-old", "old")
     init_backend(config)
     state = config.paths.home / ".config/agent-session-vault/archive-cycle-state.json"
-    state.parent.mkdir(parents=True)
+    state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text('{"last_verified_at":"2026-01-01T00:00:00Z"}\n')
     before = state.read_bytes()
 
-    # Simulate a packer that exits successfully but omits a required member.
-    monkeypatch.setattr(archive_ops, "bundle_member_digests", lambda *args: {})
+    # Simulate a staging materialization failure before publish.
+    def fail_materialize(*args, **kwargs):
+        raise ValueError("missing staged archive member")
+
+    monkeypatch.setattr(archive_ops, "_materialize_staged_payload", fail_materialize)
     exit_code = main([
         "--config", str(config_path), "ops", "archive-cycle", "--machine-id", "machine-test",
         "--no-due-only", "--deep", "--json",
@@ -368,35 +382,36 @@ def test_archive_cycle_returns_terminal_failure_without_publishing_incomplete_bu
     assert result["status"] == "failed"
     assert result["reason"] == "snapshot_build_failed"
     assert result["staging_cleanup"] == "retained"
-    assert "missing packed archive member" in result["error"]
+    assert "missing staged archive member" in result["error"]
     assert result["staging_root"] == str(config.archive.staging_root / result["cycle_id"])
-    assert list(Path(result["staging_root"]).rglob("*.tar.zst"))
     assert state.read_bytes() == before
     assert not list((backend / "snapshots").rglob("COMMITTED"))
 
 
-@pytest.mark.parametrize("packing_error", [
+@pytest.mark.parametrize("backup_error", [
     OSError("archive write failed"),
-    subprocess.CalledProcessError(1, ["bsdtar"]),
-    RuntimeError("truncated tar stream"),
+    subprocess.CalledProcessError(1, ["restic"]),
+    RuntimeError("restic backup failed"),
 ])
-def test_archive_cycle_reports_packing_errors_as_terminal_json(tmp_path: Path, monkeypatch, capsys, packing_error) -> None:
+def test_archive_cycle_reports_backup_errors_as_terminal_json(tmp_path: Path, monkeypatch, capsys, backup_error) -> None:
     from agent_session_vault.cli import main
+    from agent_session_vault.archive_backend import ResticArchiveBackend
 
     config_path, source, backend = _config(tmp_path)
     config = load_config(config_path)
     _write_session(source / "archived_sessions/old.jsonl", "session-old", "old")
     init_backend(config)
 
-    def fail_pack(*args):
-        raise packing_error
+    def fail_backup(*args, **kwargs):
+        raise backup_error
 
-    monkeypatch.setattr(archive_ops, "pack_paths", fail_pack)
+    monkeypatch.setattr(ResticArchiveBackend, "backup_source", fail_backup)
     exit_code = main(["--config", str(config_path), "ops", "archive-cycle", "--no-due-only", "--json"])
     result = json.loads(capsys.readouterr().out)
     assert exit_code == 2
     assert result["status"] == "failed"
-    assert type(packing_error).__name__ in result["error"]
+    assert result["reason"] == "snapshot_publish_failed"
+    assert type(backup_error).__name__ in result["error"]
     assert result["staging_cleanup"] == "retained"
     assert Path(result["staging_root"]).is_dir()
     assert not list((backend / "snapshots").rglob("COMMITTED"))

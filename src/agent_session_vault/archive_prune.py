@@ -11,14 +11,13 @@ from typing import Callable
 import uuid
 
 from .archive import sha256_file
-from .archive_backend import FilesystemArchiveBackend
+from .archive_backend import ResticArchiveBackend
 from .archive_model import ArchiveManifest, ArchiveSnapshot, payload_sha256
 from .archive_ops import archive_backend, receipt
 from .archive_sources import scan_codex_sources
 from .config import VaultConfig
 from .daily_ops import _parse_tokscale_stats
-from .stable import default_stable_root
-from .stable_pack import snapshot_directory
+from .stable import default_stable_root, snapshot_directory
 from .tokscale import build_tokscale_invocation
 
 
@@ -108,7 +107,7 @@ def _parse_time(value: str | None) -> datetime | None:
 
 
 def _latest_manifest(
-    backend: FilesystemArchiveBackend,
+    backend: ResticArchiveBackend,
     source_id: str,
 ) -> tuple[ArchiveSnapshot, ArchiveManifest] | None:
     candidates: list[tuple[str, ArchiveSnapshot, ArchiveManifest]] = []

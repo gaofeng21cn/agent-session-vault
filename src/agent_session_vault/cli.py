@@ -32,7 +32,6 @@ from .stable import (
     restore_stable_layer,
     stable_mirror_payload,
 )
-from .stable_pack import DEFAULT_SHARD_TARGET_BYTES
 from .storage import summarize_storage
 from .tokscale import build_tokscale_invocation
 from .views import build_tokscale_view
@@ -66,11 +65,6 @@ def build_parser() -> argparse.ArgumentParser:
     storage_mirror.add_argument("--dest-root", type=Path, default=None)
     storage_mirror.add_argument("--include-live-sessions", action="store_true")
     storage_mirror.add_argument("--dry-run", action="store_true")
-    storage_mirror.add_argument(
-        "--shard-target-mib",
-        type=int,
-        default=DEFAULT_SHARD_TARGET_BYTES // (1024 * 1024),
-    )
     storage_mirror.add_argument("--json", action="store_true")
     storage_restore = storage_sub.add_parser("restore-stable", help="Restore a verified stable layer")
     storage_restore.add_argument("--stable-root", type=Path, default=None)
@@ -196,20 +190,20 @@ def build_parser() -> argparse.ArgumentParser:
     archive_review.add_argument("--receipt", type=Path)
     archive_review.add_argument("--expected-revision")
     archive_review.add_argument("--json", action="store_true")
-    content_status = archive_sub.add_parser("content-status", help="Read authenticated snapshot content reuse and legacy duplication")
+    content_status = archive_sub.add_parser("content-status", help="Read restic repository deduplication and storage statistics")
     content_status.add_argument("--json", action="store_true")
-    compact_plan = archive_sub.add_parser("compact-plan", help="Plan an explicit byte-preserving archive storage migration")
-    compact_plan.add_argument("--run-dir", type=Path, required=True)
-    compact_plan.add_argument("--json", action="store_true")
-    for name in ("compact-apply", "compact-status", "compact-recovery-plan", "compact-recover"):
-        command = archive_sub.add_parser(name, help={
-            "compact-apply": "Repack, verify, switch and retire once",
-            "compact-status": "Read existing migration evidence; never resume",
-            "compact-recovery-plan": "Authenticate reusable packs after a known legacy-noise rejection",
-            "compact-recover": "Execute one verified recovery phase without reissuing the failed apply",
-        }[name])
-        command.add_argument("--plan", type=Path, required=True)
-        command.add_argument("--json", action="store_true")
+    legacy_status = archive_sub.add_parser("legacy-status", help="Inspect archive format and detect legacy archive-v1 roots read-only")
+    legacy_status.add_argument("--json", action="store_true")
+    compact = archive_sub.add_parser("compact", help="Compact and verify the restic archive repository (prune or forget --prune)")
+    compact.add_argument("--keep-last", type=int, default=None)
+    compact.add_argument("--keep-daily", type=int, default=None)
+    compact.add_argument("--keep-weekly", type=int, default=None)
+    compact.add_argument("--keep-monthly", type=int, default=None)
+    compact.add_argument("--dry-run", action="store_true")
+    compact.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True)
+    compact.add_argument("--repack-small", action="store_true")
+    compact.add_argument("--machine-id", default=None)
+    compact.add_argument("--json", action="store_true")
     return parser
 
 
@@ -240,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
                     for item in config.archive.source_paths
                 ],
                 "require_quiescent_for_prune": config.archive.require_quiescent_for_prune,
+                "password_file": str(config.archive.password_file),
             },
         }
         _json_dump(payload) if args.json else print(payload)
@@ -268,7 +263,6 @@ def main(argv: list[str] | None = None) -> int:
             stable_root=args.dest_root,
             dry_run=args.dry_run,
             include_live_sessions=args.include_live_sessions,
-            shard_target_bytes=args.shard_target_mib * 1024 * 1024,
         )
         payload = stable_mirror_payload(result)
         _json_dump(payload) if args.json else print(payload)
@@ -279,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             args.stable_root or default_stable_root(config),
             args.dest_root,
             labels=set(args.labels) if args.labels else None,
+            password_file=config.archive.password_file,
         )
         _json_dump(payload) if args.json else print(payload)
         return 0
@@ -432,19 +427,31 @@ def main(argv: list[str] | None = None) -> int:
         _json_dump(payload) if args.json else print(payload)
         return 0
 
-    if args.command == "archive" and args.archive_command.startswith("compact-"):
-        from .archive_compact import compact_apply, compact_plan, compact_recovery_plan, compact_status
+    if args.command == "archive" and args.archive_command == "compact":
+        from .archive_compact import compact_archive
         try:
-            if args.archive_command == "compact-plan":
-                payload = compact_plan(config, args.run_dir)
-            elif args.archive_command == "compact-recover":
-                payload = compact_apply(config, args.plan, recovery_path=args.plan.parent / "recovery-plan.json")
-            else:
-                payload = {"compact-apply": compact_apply, "compact-status": compact_status,
-                           "compact-recovery-plan": compact_recovery_plan}[args.archive_command](config, args.plan)
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError) as exc:
-            _json_dump({"status": "failed", "error": f"{type(exc).__name__}: {exc}",
-                        "reconcile_only": True})
+            payload = compact_archive(
+                config,
+                keep_last=args.keep_last,
+                keep_daily=args.keep_daily,
+                keep_weekly=args.keep_weekly,
+                keep_monthly=args.keep_monthly,
+                dry_run=args.dry_run,
+                verify=args.verify,
+                repack_small=args.repack_small,
+                machine_id=args.machine_id,
+            )
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+            _json_dump({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+            return 2
+        _json_dump(payload) if args.json else print(payload)
+        return 0
+
+    if args.command == "archive" and args.archive_command == "legacy-status":
+        try:
+            payload = archive_backend(config).inspect_legacy()
+        except (OSError, ValueError, RuntimeError) as exc:
+            _json_dump({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
             return 2
         _json_dump(payload) if args.json else print(payload)
         return 0
@@ -455,11 +462,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "archive" and args.archive_command == "content-status":
-        from .archive_content import ArchiveContentIndex
         try:
-            index = ArchiveContentIndex.load(archive_backend(config))
-            payload = {"status": "measured", "scope": "raw file contents in committed snapshots; logical bytes, not reclaimable compressed space",
-                       "object_content_deep_verified": False, **index.report()}
+            payload = archive_backend(config).content_status()
         except (OSError, ValueError, RuntimeError) as exc:
             _json_dump({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
             return 2
@@ -483,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
                     "source_id": item.snapshot.source.source_id,
                     "snapshot_dir": str(item.snapshot_dir),
                     "manifest_sha256": item.snapshot.manifest_sha256,
+                    "restic_snapshot_id": item.snapshot.restic_snapshot_id,
                 }
                 for item in published
             ],

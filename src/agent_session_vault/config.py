@@ -23,6 +23,7 @@ ARCHIVE_KEYS = {
     "machine_id_path",
     "source_paths",
     "require_quiescent_for_prune",
+    "password_file",
 }
 ARCHIVE_SOURCE_KEYS = {"path", "kind", "label"}
 
@@ -53,6 +54,7 @@ class ArchiveConfig:
     machine_id_path: Path
     source_paths: tuple[ArchiveSourceConfig, ...]
     require_quiescent_for_prune: bool
+    password_file: Path = Path.home() / ".config" / "agent-session-vault" / "restic-password"
 
 
 @dataclass(frozen=True)
@@ -160,6 +162,11 @@ def load_config(config_path: Path | None = None) -> VaultConfig:
         home / ".config" / "agent-session-vault" / "machine-id",
         "archive.machine_id_path",
     )
+    password_file = _path_value(
+        archive_raw.get("password_file"),
+        home / ".config" / "agent-session-vault" / "restic-password",
+        "archive.password_file",
+    )
 
     source_paths_value = archive_raw.get("source_paths")
     if source_paths_value is None:
@@ -219,5 +226,6 @@ def load_config(config_path: Path | None = None) -> VaultConfig:
                 True,
                 "archive.require_quiescent_for_prune",
             ),
+            password_file=password_file,
         ),
     )

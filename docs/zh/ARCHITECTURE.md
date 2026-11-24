@@ -95,40 +95,35 @@ Fleet 投影任务 -------> 导入投影 + 受管本机 extras
 
 ## Stable Analytics
 
-stable 层把投影 imports 和受管 extras 打包成有索引的 zstd shard，并复制 Vault 配置和 Tokscale
-custom pricing。每次成功 mirror 都生成 verified manifest；restore 会拒绝缺失或未验证的 manifest，
-并且只写到独立目标。
+stable 层把投影 imports、受管 extras、Vault 配置和 Tokscale custom pricing 统一备份到加密去重的
+`restic` 仓库（`<stable_root>/repo`）。每次成功 mirror 都生成 verified manifest，绑定每项的
+`source_manifest_fingerprint` 与 `restic_snapshot_id`；restore 会拒绝缺失、未验证或旧版
+`tar-zstd-shards-v1` manifest，并且只写到独立目标。
 
 该层保护统计连续性。可选 live-session profile 只是显式迁移副本，仍与日常 Tokscale 输入和
 可检索 Codex archive 分离。
 
 ## 完整归档
 
-archive 只扫描已配置的 Codex source 和允许的 session/index 文件。它用稳定 machine identity
-与 source root 标识来源，保存 immutable content-addressed object，发布 snapshot manifest，
-并构建用于查询和恢复的 catalog segment。
+archive 只扫描已配置的 Codex source（或显式 `file_tree` source）与允许的 session/index 文件。
+它用稳定 machine identity 与 source root 标识来源，把全部文件内容存入单一 `restic` 仓库
+（`<archive.root>/repo`），由 `restic` 原生提供内容分块去重（CDC）、zstd 压缩、认证加密与并发锁；
+Vault 侧发布绑定 `restic_snapshot_id` 的已校验 snapshot manifest，并生成 catalog segment
+支持快速离线查询与 staging 恢复。
 
-文件内容身份是“字节长度＋SHA-256”，与来源、会话 ID 和逻辑路径分离。每轮从全库已提交
-快照的已校验元数据重建一个内存内容索引；换路径、跨来源和回到旧版本都复用已有 bundle/member，
-本轮相同的新文件也只保存一份，不维护另一套可变索引数据库。新 manifest 只列实际引用的包，
-历史快照保留自己的引用；本轮全部新对象发布后，才提交任何可能引用它们的来源快照。
+普通归档周期不重写或删除已有历史。深度校验同时验证已提交 manifest checksum、`restic ls` 成员
+存在性与字节长度，以及 `restic check --read-data` 数据包完整性。cycle 回执分别记录逻辑文件复用
+与 `restic` 新增数据块统计。
 
-这是精确文件字节去重。变化版本和不同编码表示仍分别保留原字节，不是内容块或语义对话去重。
-普通归档不重写或删除已有历史，深度对象/成员验证仍是裁剪前提。cycle 回执分别报告新增内容、
-新增压缩包和复用逻辑文件字节。
+显式仓库整理与保留策略由 `archive compact` 持有，直接委托 `restic prune`（或在提供保留参数时
+执行 `restic forget --prune`），随后运行 `restic check --read-data` 并写入不可变回执。
 
-显式存量整理由 `archive compact-plan/compact-apply` 持有。它是一次存储表示迁移：同一 vault
-身份、snapshot ID、来源、时间、父子关系、警告、路径、版本和全部原文件字节保持不变，只更新
-bundle/member 引用及相应 checksum。候选代际使用同一 archive-v1 格式，按默认 512 MiB
-逻辑字节分包（超大单文件独立成包），每份相同文件内容只保存一次。源对象流式读入，每个候选
-对象仅做一次完整深检；旧 TAR 内部硬链接按目标内容验证，输出只写明确的普通成员，不含链接、
-扩展属性或 AppleDouble。所有历史逻辑摘要、成员集合、SHA-256、逻辑字节和 staging 恢复样本
-通过后，同 NAS rename 切换整个代际。原元数据以核验过的 TAR.zst 保留；原容器仅在切换后核对
-覆盖并再次通过 NAS 预检后，按精确清单删除。净减量包含新包及元数据备份开销。
+存量 NAS 上已有的旧版 `agent-session-vault-archive-v1` 仓库可通过 `archive legacy-status --json`
+只读检测。所有写、初始化、校验、恢复、压缩和裁剪命令遇到旧版 `archive-v1` 都会 fail-closed 拒绝
+原地改动，确保操作者可另建 `restic-v2` 归档根并只读保留旧版 v1 数据直至覆盖核验完成。
 
-本机 archive-cycle 锁和库根外的持久 maintenance fence 防止同时维护。fence 存在时，归档
-写入、裁剪和恢复拒绝执行；失败时保留 fence、候选、未删除的原数据和进度证据，只读对账。
-该迁移不改变调度，不自动续跑，不以整理存量冒充新增 live 快照。
+本机 archive-cycle 锁和库根外的持久 maintenance fence 防止同时维护。fence 存在时，归档写入、
+裁剪、整理和恢复均拒绝执行。
 
 恢复计划带 digest，并且始终使用 staging mode。本机裁剪是另一份带 digest 的计划；生成和执行
 时都必须同时满足：

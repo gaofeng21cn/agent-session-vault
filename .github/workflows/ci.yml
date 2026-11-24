@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install restic and zstd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y restic zstd
+          restic version
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Lint with ruff
+        run: ruff check .
+      - name: Run full test suite (unit + real restic integration)
+        run: python -m pytest -v

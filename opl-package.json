@@ -117,7 +117,6 @@
       "src/agent_session_vault/archive_backend.py",
       "src/agent_session_vault/archive_catalog.py",
       "src/agent_session_vault/archive_compact.py",
-      "src/agent_session_vault/archive_content.py",
       "src/agent_session_vault/archive_model.py",
       "src/agent_session_vault/archive_ops.py",
       "src/agent_session_vault/archive_prune.py",
@@ -131,8 +130,8 @@
       "src/agent_session_vault/local_codex.py",
       "src/agent_session_vault/openclaw.py",
       "src/agent_session_vault/projection.py",
+      "src/agent_session_vault/restic.py",
       "src/agent_session_vault/stable.py",
-      "src/agent_session_vault/stable_pack.py",
       "src/agent_session_vault/storage.py",
       "src/agent_session_vault/tokscale.py",
       "src/agent_session_vault/views.py",
@@ -143,7 +142,7 @@
       "scripts/run_detached.py",
       "config/codex-cold-decisions.example.json"
     ],
-    "digest": "sha256:534e4a85a24c69b26db032b6064e63dfd07bdef0b301dc34f1d8a618b66124e4"
+    "digest": "sha256:68859ec47385354f70c1f9587b50e968d5f5efbb96a4898797efb0a5b20846f2"
   },
   "presentation": {
     "display_name_i18n": {

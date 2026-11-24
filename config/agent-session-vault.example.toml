@@ -15,6 +15,7 @@ cadence_days = 14
 cold_age_days = 30
 staging_root = "~/.cache/agent-session-vault/archive-staging"
 machine_id_path = "~/.config/agent-session-vault/machine-id"
+password_file = "~/.config/agent-session-vault/restic-password"
 require_quiescent_for_prune = true
 
 # Leave empty to use ~/.codex plus discovered workspace .codex roots.

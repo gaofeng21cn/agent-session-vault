@@ -119,10 +119,12 @@ location does not make them a live client root.
 
 ## Stable Analytics
 
-The stable layer packages projection imports and managed extras into indexed
-zstd shards and copies the Vault configuration and Tokscale custom pricing.
-Every successful mirror has a verified manifest. Restore refuses missing or
-unverified manifests and writes only below a separate destination.
+The stable layer backs up projection imports, managed extras, Vault
+configuration, and Tokscale custom pricing into an encrypted, deduplicated
+`restic` repository (`<stable_root>/repo`). Every successful mirror writes a
+verified manifest binding each item's `source_manifest_fingerprint` and
+`restic_snapshot_id`. Restore refuses missing, unverified, or legacy
+`tar-zstd-shards-v1` manifests and writes only below a separate destination.
 
 This layer protects analytics continuity. Its optional live-session profile is
 an explicit migration copy and remains separate from both routine Tokscale
@@ -130,46 +132,34 @@ inputs and the searchable Codex archive.
 
 ## Full-Fidelity Archive
 
-The archive scans only configured Codex sources and allowed session/index
-files. It identifies a source by stable machine identity and source root,
-stores immutable content-addressed objects, publishes snapshot manifests, and
-builds catalog segments for query and restore.
+The archive scans only configured Codex sources (or explicit `file_tree`
+sources) and allowed session/index files. It identifies a source by stable
+machine identity and source root, stores all payloads inside a single `restic`
+repository (`<archive.root>/repo`) with content-defined chunk deduplication,
+zstd compression, authenticated encryption, and native repository locking,
+publishes authenticated snapshot manifests binding each `restic_snapshot_id`,
+and builds catalog segments for fast offline query and staging restore.
 
-File content identity is `(byte length, SHA-256)`, independently of source,
-session ID, and logical path. Each build reconstructs one in-memory content
-index from the authenticated metadata of all committed snapshots. It reuses
-existing bundle/member references across renames, sources and older revisions,
-and stores equal new files only once within the cycle. There is no separate
-mutable index database. A new manifest lists only its referenced bundles; old
-snapshots continue to own their historical references. All cycle objects are
-published before any source snapshot can reference them.
+Ordinary archive cycles do not rewrite or delete existing history. Deep
+verification checks committed manifest checksums, `restic ls` member presence
+and byte lengths, and `restic check --read-data` packfile integrity. Cycle
+receipts report logical file reuse alongside `restic` data blob growth.
 
-This is exact file-byte deduplication. Changed revisions and different encoded
-representations remain separate byte-preserving artifacts; it is not chunk or
-semantic conversation deduplication. Ordinary archive cycles do not rewrite or
-delete existing history. Object/member deep verification remains the deletion guard. Cycle
-receipts distinguish new content/archive bytes from reused logical file bytes.
+Explicit repository compaction and retention belong to `archive compact`, which
+delegates to `restic prune` (or `restic forget --prune` when retention flags
+are provided) followed by `restic check --read-data` and writes an immutable
+owner receipt.
 
-Explicit storage compaction belongs to `archive compact-plan/compact-apply`. It
-migrates physical representation while preserving vault identity, snapshot IDs,
-sources, times, parents, warnings, paths, revisions and every original file byte.
-Only bundle/member addresses and their checksums change. Candidates retain the
-archive-v1 format and target 512 MiB of logical data per bundle; an oversized file
-gets its own bundle. Each equal file content is stored once. Source objects stream
-through the repacker, and each candidate object is deeply verified once. Legacy
-TAR hardlinks are validated against target contents; outputs contain explicit
-regular members without links, xattrs or AppleDouble. Equal logical-history
-digests, member sets, SHA-256 values, logical sizes and a staging restore sample
-gate the same-NAS generation rename. Verified original metadata remains in a
-TAR.zst. Only after post-switch coverage checks and another NAS preflight can the
-exact original container inventory be removed. Net savings include new bundles
-and metadata-backup overhead.
+Existing NAS repositories created in the retired `agent-session-vault-archive-v1`
+format are detected read-only via `archive legacy-status --json`. All write,
+init, verify, restore, compact, and prune commands fail closed without mutating
+or locking a legacy `archive-v1` directory so operators can initialize a fresh
+`restic-v2` root and retain legacy v1 archives read-only until coverage is
+verified.
 
 The local archive-cycle lock and a persistent maintenance fence outside the root
-prevent concurrent maintenance. Archive writes, pruning and restore refuse to run
-with a fence present. Failure retains the fence, candidate, remaining original
-data and progress evidence for read-only reconciliation. Compaction neither
-changes scheduling nor automatically resumes or claims a new live snapshot.
+prevent concurrent maintenance. Archive writes, pruning, compaction, and
+restore refuse to run with a fence present.
 
 Restore plans are digest-protected and always use staging mode. Local pruning
 is a separate digest-protected plan that requires all of the following at plan

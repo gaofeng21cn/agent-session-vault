@@ -9,7 +9,8 @@
 - 可读取的本机配置
 - 用于跨机投影任务的 OPL Fleet
 - Tokscale 所需的 `npm` 与 `npx`
-- stable 打包和完整归档所需的 `bsdtar` 与 `zstd`
+- 去重加密的 stable 恢复副本与完整归档所需的 `restic`
+- 辅助冷数据批次打包及 `.jsonl.zst` 解析所需的 `bsdtar` 与 `zstd`
 - 执行归档前已挂载且可写的 archive root
 
 如需使用非默认配置文件，把 `--config <path>` 放在顶层命令之前。
@@ -164,103 +165,65 @@ agent-session-vault ops archive-cycle --due-only --deep --json
 deep-verified snapshot 覆盖；存在未覆盖或已变化的历史 session 时立即执行，不等待
 `cadence_days`。全部历史 session 已覆盖时，`cadence_days` 才作为保底周期。
 
-归档周期会扫描配置的 Codex 来源、创建增量不可变对象、发布 snapshot、重建 catalog segment、
-执行深度校验并写入回执。它绝不裁剪本机来源。`not_due` 表示保底周期尚未到达且历史 session
-已全部覆盖，是成功的空操作；`partial` 需要检查，并返回非零退出码。
+归档周期会扫描配置的 Codex 来源、将固定后的文件备份至 `restic` 仓库（`<archive.root>/repo`）、
+提交带校验的 snapshot manifest、生成 catalog segment、执行深度校验（`restic ls` +
+`restic check --read-data`）并写入回执。它绝不裁剪本机来源。`not_due` 表示保底周期尚未到达且历史
+session 已全部覆盖，是成功的空操作；`partial` 需要检查，并返回非零退出码。
 
-文件入包前按全库“字节长度＋SHA-256”复用已有成员，来源、session ID 和路径不决定内容身份。
-会话从 `sessions` 移到 `archived_sessions`，或旧文件重新出现，只更新 manifest 的逻辑路径、
-来源与会话元数据，继续指向原包成员。本轮多份相同新文件只入包一份，恢复仍生成各自的原路径。
-内容索引每轮从全部已提交快照重建，并验证 snapshot/manifest checksum 和对象存在性/长度；
-staging、catalog、统计投影和未提交快照不构成复用依据。深检继续验证实际包与成员内容。
-旧包中的 TAR 硬链接恢复时在包内解析到真实内容，不跟随外部目标。
+`restic` 原生提供内容分块去重（CDC）、zstd 压缩、认证加密与并发锁。会话从 `sessions` 移到
+`archived_sessions`，或重复运行固定来源时，不新增数据块；回执同时报告逻辑文件复用统计
+（`reused_files`、`reused_logical_bytes`、`historical_reused_files`、`same_cycle_reused_files`）
+与 `restic` 实际块增量（`restic_data_blobs`、`restic_data_added_packed`）。定时维护在生成裁剪计划前
+检查复用统计字段齐全、非负且总量一致。
 
-重复运行固定来源或只改变路径时，`dedup.new_content_files`、`new_content_bytes`、
-`new_objects`、`new_archive_bytes` 均为 0。`reused_files` 与 `reused_logical_bytes` 是本轮
-逻辑文件复用量；`historical_reused_files` 和 `same_cycle_reused_files` 区分历史与本轮复用。
-这些值随 snapshot JSON、cycle stdout 和 receipt 保存，不能当成已释放的空间。
-新 manifest 只保留实际用到的 bundle 引用，避免深检不断继承已无本轮文件引用的历史包。
-历史快照和包仍完整保留，不自动做重打包或垃圾回收。
-定时维护在生成裁剪计划前检查复用统计字段齐全、非负且总量一致；缺失或异常立即停止后续阶段。
+### 仓库整理与保留策略
 
-### 显式整理已有归档
+经用户授权进行存储优化时，使用 `archive compact` 直接调用 `restic prune` 或
+`restic forget --prune` 并随后执行 `restic check --read-data`：
 
-用户授权存量优化后，使用一次性迁移入口，不加入双周或每日调度。先读原运行证据并通过已配置的
-NAS preflight；为本轮在本机配置目录的 `ops/archive-compaction/<唯一ID>` 创建持久日志目录。
-以下两个写命令分别用现有 `run-detached.py` 启动一次，name 分别为 `compact-plan`、
-`compact-apply`；使用安装后的绝对 CLI 路径，按顺序等待 stdout 终态 JSON 和真实 exit_code：
-
-```sh
-agent-session-vault archive compact-plan --run-dir <本轮日志目录> --json
-agent-session-vault archive compact-apply --plan <本轮日志目录>/plan.json --json
-agent-session-vault archive compact-status --plan <本轮日志目录>/plan.json --json
+```bash
+agent-session-vault archive compact --dry-run --json
+agent-session-vault archive compact --json
+agent-session-vault archive compact --keep-last 8 --json
 ```
 
-plan 退出 0/planned 后才启动 apply。计划绑定当前身份、精确源清单/签名、元数据 SHA-256、
-全部历史逻辑摘要和容量预算；来源发生变化即停止。apply 在同 NAS
-`operations/archive-compaction/<唯一ID>/candidate` 中流式重打包，保存每种原文件内容一份，
-默认按 512 MiB 逻辑字节分包。每个输出包逐项深检一次、核对全部快照逻辑摘要并真实恢复样本后，
-保存验证回执和旧元数据包，再切换回原 archive 路径。逻辑历史、旧恢复计划、配置和 live 文件不变。
-切换后再次核对内容覆盖与 NAS preflight，精确删除本轮 retired 中的旧容器；无实测容量收益则
-保留原库并停止。报告区分旧容器删除量、新包开销、净减量和 NAS 卷实际可用量。
+提供保留参数（`--keep-last`、`--keep-daily`、`--keep-weekly`、`--keep-monthly`）时，按主机与
+`source:<source_id>` 标签维度分别应用保留策略并 prune、深检，最后写入不可变回执。
 
-macOS 的 `statvfs` 在大容量 SMB 卷上可能每 4 TiB 回绕。容量预算与冷数据度量统一使用原生
-`df -kP` 的完整字节计数，避免错误的空间不足判断；不输出可能含临时登录标识的挂载源。
-旧回执保持原值并在报告中标明测量限制。目录减量、文件 unlink 和 NAS 服务器最终物理回收
-分别报告；没有可靠的同口径前值或服务器端证据时，物理回收字节记为未确认。
+### 旧版 `archive-v1` 只读检测
 
-NAS 本轮目录保留 `plan.json`、`journal.jsonl`、`progress.json`、`verification.json`、
-`original-metadata.tar.zst` 和成功时的 `result.json`；实际恢复样本在本轮本机日志目录内。
-`compact-status` 只读取已有证据和 detached runner 状态，不续跑。中断或异常保留维护 fence、
-候选和剩余原数据；没有真实 exit_code 时不得依据 result/receipt 宣称命令成功，不得重发 apply
-或重试失败删除。只有切换第二次 rename 明确失败且路径状态无歧义时，原 runner 执行一次回滚。
-正常周期遇到 maintenance fence 必须停止并报告原运行路径，不能绕过。辅助冷数据历史包和 stable
-统计恢复副本不属于该迁移集合。
+存量 NAS 上使用已退役 `agent-session-vault-archive-v1` 格式的归档根可通过以下命令只读检测，
+不会修改或加锁原目录：
 
-旧包中未列入 manifest 的 `._*` 只有在 AppleDouble magic/version、条目范围、Finder/xattr 类型、
-空 resource fork 与对应的已索引原文件全部核实后，才能作为元数据噪声排除；文件名前缀不构成依据。
-排除清单保留路径、SHA-256 和逻辑字节。新文件列表打包入口同样禁用 xattrs、ACL、fflags、Mac
-metadata 和隐式目录递归，防止后续继续生成噪声。
+```bash
+agent-session-vault archive legacy-status --json
+```
 
-若原 apply 以真实退出码 2 明确停在旧包噪声识别、仍在切换前且源库未变，修复后可独立执行
-`compact-recovery-plan --plan <原plan.json> --json`，核验已有候选包和原进程终态；其退出 0/verified
-后才运行一次 `compact-recover --plan <原plan.json> --json`。这两阶段也分别 detached 一次并使用
-同名唯一日志；不重发原 apply。恢复计划绑定源签名、原 stdout/退出码、fence 和每个已验证候选成员，
-复用成品包和已验证来源；未完成 fragment 单独保管，只在全部新库覆盖成功后精确清理。
-未知退出、其他失败、已切换或已有 recovery intent 都不允许该入口继续，保留原证据。
+所有写、初始化、校验、恢复、整理和裁剪命令遇到旧版 `archive-v1` 都会 fail-closed 拒绝修改。
+请为 `restic-v2` 配置新的 `[archive].root`，运行 `archive init` 与
+`ops archive-cycle --no-due-only --deep`，在覆盖核验完成前只读保留旧版 v1 目录。
 
-续写后的新版本、不同内容的同 ID 会话，以及 `.jsonl`/`.jsonl.zst` 的不同原始字节仍会增加数据量。
-本流程保留其可恢复历史，不按 session ID 丢弃版本，也不做会改变原始字节的格式归一化。
-若写入中内容变化导致归并候选失效或收敛为已有内容，构建停止并保留诊断 staging，避免错误复用或
-把已知重复正式发布；不自动重发归档命令。
-
-只读核对全库内容复用与旧包重复：
+只读查看 `restic` 仓库去重与存储统计：
 
 ```bash
 agent-session-vault archive content-status --json
 ```
 
-该命令验证已提交快照元数据、对象存在性和大小，报告内容身份、实际包成员位置与跨包重复逻辑字节；
-不会读取在线数据库、重建 catalog、解压深检全库或删除历史。跨包重复逻辑字节不等于可直接释放的
-NAS 压缩空间；对话内容是否语义重复也不能仅靠此数判断。
+该命令验证已提交快照元数据并查询 `restic snapshots` 与 `restic stats`（`raw-data` 与
+`restore-size`），不修改仓库状态。
 
 `archived_sessions` 下的 Codex `.jsonl.zst` 会作为 opaque full-fidelity 成员纳入归档，
 不会加入 Tokscale projection。它们满足冷度、深度归档和恢复校验后可以独立裁剪；裁剪前后
 Tokscale dry-run 必须保持一致。
 
-构建 snapshot 时，发现的 Codex 文件先固定到本机专属 capture，再计算哈希和解析。capture 优先使用
-硬链接；来源文件系统无法链接到本机 staging 时，通过已打开的文件句柄复制，不创建符号链接。
-Codex 在运行中将已固定的会话从 `sessions` 移入 `archived_sessions`，不会使打包路径失效。
-若移动恰好发生在固定引用之前，只查找归档目录中同名的精确文件，并记录
-`relocated-during-capture` 警告。构建结束即移除 capture；manifest 哈希仍以实际入包内容为准，
-缺失任何预期成员都会使构建失败，不会静默遗漏。
+构建 snapshot 时，发现的 Codex 文件先在临时私密 capture 中固定 inode 再计算哈希和解析，随后写入
+独立 staging payload 副本并立即释放临时硬链接，确保本机源文件的 `st_nlink` 不被长期占用。
+capture 优先使用硬链接，跨文件系统时退回打开文件句柄复制，不创建符号链接。若移动恰好发生在固定
+引用之前，只查找归档目录中同名的精确文件，并记录 `relocated-during-capture` 警告。
 
-snapshot 构建失败时，命令返回终态 JSON：`status: "failed"`、
-`reason: "snapshot_build_failed"`、`error` 和精确的 `staging_root`，退出码非零。
-已有 cycle staging 不会被覆盖。保留 staging 中的不完整包属于诊断材料，尚未发布为 snapshot；
-移除该精确 staging 前，应先在成功归档中核验其内容覆盖。
-发布、深检、state 或 receipt 写入失败也返回结构化失败 JSON，包含失败阶段、已知 snapshot ID
-及 staging 状态。`receipt_path` 指向成功写入的 cycle 回执；进程退出仍以 detached runner 的真实退出码为准。
+snapshot 构建、发布、深检、state 或 receipt 写入失败均返回结构化终态 JSON（含 `status: "failed"`、
+失败阶段 `reason`、`error` 和精确 `staging_root`）及非零退出码。已有 cycle staging 不会被覆盖。
+`receipt_path` 指向成功写入的 cycle 回执；进程退出仍以 detached runner 的真实退出码为准。
 
 `verified` cycle 在写入 verified state 和 receipt 前删除自己创建的精确 cycle staging，终态 JSON
 返回 `staging_cleanup: "removed"`。清理失败时返回 `partial`、

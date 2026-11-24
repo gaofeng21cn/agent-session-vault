@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-import errno
 import json
 from pathlib import Path
 import shutil
 
-import agent_session_vault.stable_pack as stable_pack
+import pytest
+
 from agent_session_vault.cli import main
 from agent_session_vault.config import load_config
 from agent_session_vault.stable import (
+    LEGACY_STABLE_ARCHIVE_FORMAT,
+    STABLE_ARCHIVE_FORMAT,
     default_stable_root,
     migration_plan_payload,
     mirror_stable_layer,
     restore_stable_layer,
     stable_mirror_payload,
+    stable_repo_path,
 )
 
 
@@ -48,7 +51,6 @@ stable_root = "{stable}"
 
 def test_default_stable_root_uses_configured_path(tmp_path: Path) -> None:
     config = load_config(_write_config(tmp_path))
-
     assert default_stable_root(config) == tmp_path / "OneDrive" / "agent-session-vault" / "stable"
 
 
@@ -59,38 +61,30 @@ def test_mirror_stable_layer_plans_imports_extras_and_config(tmp_path: Path) -> 
     payload = stable_mirror_payload(result)
 
     assert payload["dry_run"] is True
-    destinations = {item["label"]: item["destination"] for item in payload["items"]}
-    assert destinations["imports"].endswith("/stable/packs/imports")
-    assert destinations["local_workspace_extras"].endswith("/stable/packs/local-workspace-extras")
-    assert destinations["config"].endswith("/stable/config/config.toml")
-    assert destinations["tokscale_custom_pricing"].endswith("/stable/config/tokscale/custom-pricing.json")
+    assert payload["mirror_semantics"] == "restic-source-covered"
+    assert {item["label"] for item in payload["items"]} == {
+        "imports",
+        "local_workspace_extras",
+        "config",
+        "tokscale_custom_pricing",
+    }
     assert {item["status"] for item in payload["items"]} == {"planned"}
-    assert payload["mirror_semantics"] == "packed-source-covered"
+    assert not stable_repo_path(default_stable_root(config)).exists()
 
 
-def test_mirror_stable_layer_packs_directories_and_copies_config(tmp_path: Path) -> None:
+def test_mirror_stable_layer_backs_up_to_restic_repo(tmp_path: Path) -> None:
     config = load_config(_write_config(tmp_path))
 
     result = mirror_stable_layer(config)
     payload = stable_mirror_payload(result)
 
     stable_root = default_stable_root(config)
-    assert list((stable_root / "packs" / "imports").glob("pack-*.tar.zst"))
-    assert list((stable_root / "packs" / "local-workspace-extras").glob("pack-*.tar.zst"))
-    assert (default_stable_root(config) / "config" / "config.toml").read_text(encoding="utf-8") == config.config_path.read_text(
-        encoding="utf-8"
-    )
-    assert (default_stable_root(config) / "config" / "tokscale" / "custom-pricing.json").read_text(
-        encoding="utf-8"
-    ) == (config.paths.projection_home / ".config" / "tokscale" / "custom-pricing.json").read_text(
-        encoding="utf-8"
-    )
+    assert (stable_repo_path(stable_root) / "config").is_file()
     assert payload["manifest_path"].endswith("/stable/stable-layer-manifest.json")
     assert {item["status"] for item in payload["items"]} == {"mirrored"}
     assert {item["coverage_status"] for item in payload["items"]} == {"verified"}
-    assert {item["archive_format"] for item in payload["items"] if item["kind"] == "directory"} == {
-        "tar-zstd-shards-v1"
-    }
+    assert {item["archive_format"] for item in payload["items"]} == {STABLE_ARCHIVE_FORMAT}
+    assert all(isinstance(item["restic_snapshot_id"], str) and item["restic_snapshot_id"] for item in payload["items"])
     assert payload["status"] == "verified"
 
 
@@ -125,7 +119,7 @@ def test_migration_profile_includes_live_sessions_and_reports_readiness(tmp_path
     assert stale["readiness"]["full_fidelity_restore_ready"] is False
 
 
-def test_stable_mirror_repacks_changed_source_and_restores_updated_bytes(tmp_path: Path) -> None:
+def test_stable_mirror_updates_changed_source_and_restores_updated_bytes(tmp_path: Path) -> None:
     config = load_config(_write_config(tmp_path))
     first = mirror_stable_layer(config)
     source_file = config.paths.import_root / "machine-a" / ".raw" / "codex" / "one.jsonl"
@@ -140,143 +134,35 @@ def test_stable_mirror_repacks_changed_source_and_restores_updated_bytes(tmp_pat
     assert second.status == "verified"
     assert destination_file.read_text(encoding="utf-8") == "updated-content"
     assert restored["restored_files"] == 1
-    assert not any((default_stable_root(config) / ".asv-replaced").rglob("*"))
 
 
-def test_stable_mirror_reuses_verified_packs(tmp_path: Path) -> None:
+def test_stable_mirror_reuses_verified_restic_snapshots(tmp_path: Path) -> None:
     config = load_config(_write_config(tmp_path))
     first = mirror_stable_layer(config)
-    packs = sorted((default_stable_root(config) / "packs").rglob("pack-*.tar.zst"))
-    first_pack_state = [(path.name, path.stat().st_mtime_ns) for path in packs]
+    first_snaps = {item.label: item.restic_snapshot_id for item in first.items}
+
     second = mirror_stable_layer(config)
+    second_snaps = {item.label: item.restic_snapshot_id for item in second.items}
 
     assert first.status == "verified"
     assert second.status == "verified"
-    assert [(path.name, path.stat().st_mtime_ns) for path in packs] == first_pack_state
+    assert second_snaps == first_snaps
     assert {item.transfer_status for item in second.items} == {"reused_verified"}
 
 
-def test_stable_mirror_uses_local_index_cache_when_cloud_index_times_out(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_stable_mirror_repairs_missing_restic_snapshot(tmp_path: Path) -> None:
     config = load_config(_write_config(tmp_path))
     first = mirror_stable_layer(config)
-    stable_root = default_stable_root(config)
-    extras_index = stable_root / "packs" / "local-workspace-extras" / "index.json"
-    real_load_index = stable_pack._load_index
-
-    def load_index(path: Path):
-        if path == extras_index:
-            raise TimeoutError(errno.ETIMEDOUT, "Operation timed out")
-        return real_load_index(path)
-
-    def unexpected_pack(*args, **kwargs):
-        raise AssertionError("unchanged cached mirror must not repack")
-
-    monkeypatch.setattr(stable_pack, "_load_index", load_index)
-    monkeypatch.setattr(stable_pack, "pack_paths", unexpected_pack)
+    imports_snap = next(item.restic_snapshot_id for item in first.items if item.label == "imports")
+    assert imports_snap is not None
+    (stable_repo_path(default_stable_root(config)) / "snapshots" / f"{imports_snap}.json").unlink()
 
     second = mirror_stable_layer(config)
-    extras_result = next(item for item in second.items if item.label == "local_workspace_extras")
+    imports_after = next(item for item in second.items if item.label == "imports")
 
-    assert first.status == "verified"
     assert second.status == "verified"
-    assert extras_result.transfer_status == "reused_verified"
-    assert extras_result.index_source == "local_cache"
-
-
-def test_stable_mirror_rebuilds_locally_without_reading_dataless_pack(
-    tmp_path: Path, monkeypatch
-) -> None:
-    config = load_config(_write_config(tmp_path))
-    first = mirror_stable_layer(config)
-    stable_root = default_stable_root(config)
-    extras_pack_root = stable_root / "packs" / "local-workspace-extras"
-    extras_index = extras_pack_root / "index.json"
-    cache_root = config.paths.home / ".config" / "agent-session-vault" / "stable-pack-index-cache"
-    for cache_index in cache_root.rglob("index.json"):
-        payload = json.loads(cache_index.read_text(encoding="utf-8"))
-        if payload.get("source") == str(config.paths.local_workspace_extras):
-            cache_index.unlink()
-
-    real_load_index = stable_pack._load_index
-    real_pack_paths = stable_pack.pack_paths
-    real_sha256_file = stable_pack.sha256_file
-    staged_paths: list[Path] = []
-
-    def load_index(path: Path):
-        if path == extras_index:
-            raise TimeoutError(errno.ETIMEDOUT, "Operation timed out")
-        return real_load_index(path)
-
-    def pack_paths(source: Path, relative_paths: list[str], bundle_path: Path) -> None:
-        staged_paths.append(bundle_path)
-        real_pack_paths(source, relative_paths, bundle_path)
-
-    def sha256_file(path: Path) -> str:
-        if extras_pack_root in path.parents:
-            raise AssertionError("existing cloud packs must not be hydrated")
-        return real_sha256_file(path)
-
-    monkeypatch.setattr(stable_pack, "_load_index", load_index)
-    monkeypatch.setattr(stable_pack, "pack_paths", pack_paths)
-    monkeypatch.setattr(stable_pack, "sha256_file", sha256_file)
-
-    second = mirror_stable_layer(config)
-    extras_result = next(item for item in second.items if item.label == "local_workspace_extras")
-
-    assert first.status == "verified"
-    assert second.status == "verified"
-    assert extras_result.index_source == "rebuilt_after_destination_error"
-    assert extras_result.transfer_status == "packed"
-    assert staged_paths
-    assert all(stable_root not in path.parents for path in staged_paths)
-    assert any(cache_root.rglob("index.json"))
-
-
-def test_stable_mirror_repairs_missing_pack_after_manifest_reuse(tmp_path: Path) -> None:
-    config = load_config(_write_config(tmp_path))
-    first = mirror_stable_layer(config)
-    imports_pack_root = default_stable_root(config) / "packs" / "imports"
-    missing_pack = next(imports_pack_root.glob("pack-*.tar.zst"))
-    missing_pack.unlink()
-
-    second = mirror_stable_layer(config)
-    repaired_packs = list(imports_pack_root.glob("pack-*.tar.zst"))
-
-    assert first.status == "verified"
-    assert second.status == "verified"
-    assert repaired_packs
-    assert next(item for item in second.items if item.label == "imports").transfer_status == "packed"
-
-
-def test_stable_mirror_rewrites_only_the_changed_shard(tmp_path: Path) -> None:
-    config = load_config(_write_config(tmp_path))
-    source_root = config.paths.import_root
-    for index in range(8):
-        (source_root / f"{index:02d}.jsonl").write_text("x" * 600, encoding="utf-8")
-
-    first = mirror_stable_layer(config, shard_target_bytes=1024)
-    pack_root = default_stable_root(config) / "packs" / "imports"
-    first_archives = {path.name for path in pack_root.glob("pack-*.tar.zst")}
-    index_payload = json.loads((pack_root / "index.json").read_text(encoding="utf-8"))
-    changed_relative = "00.jsonl"
-    changed_shard = index_payload["files"][changed_relative]["shard"]
-    unchanged_archives = {
-        payload["archive_path"]
-        for shard, payload in index_payload["shards"].items()
-        if shard != changed_shard
-    }
-
-    (source_root / changed_relative).write_text("changed", encoding="utf-8")
-    second = mirror_stable_layer(config, shard_target_bytes=1024)
-    second_archives = {path.name for path in pack_root.glob("pack-*.tar.zst")}
-
-    assert first.status == "verified"
-    assert second.status == "verified"
-    assert unchanged_archives.issubset(first_archives & second_archives)
-    assert len(first_archives - second_archives) == 1
-    assert len(second_archives - first_archives) == 1
+    assert imports_after.transfer_status == "backed_up"
+    assert imports_after.restic_snapshot_id != imports_snap
 
 
 def test_restore_stable_layer_round_trip_all_analytics_items(tmp_path: Path) -> None:
@@ -306,6 +192,38 @@ def test_restore_stable_layer_round_trip_all_analytics_items(tmp_path: Path) -> 
     assert (
         restore_root / "tokscale" / "projection-home" / ".config" / "tokscale" / "custom-pricing.json"
     ).is_file()
+
+
+def test_restore_stable_layer_refuses_legacy_tar_shards_and_existing_target(tmp_path: Path) -> None:
+    legacy_root = tmp_path / "legacy-stable"
+    legacy_root.mkdir()
+    (legacy_root / "stable-layer-manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "verified",
+                "items": [
+                    {
+                        "label": "imports",
+                        "kind": "directory",
+                        "source_exists": True,
+                        "archive_format": LEGACY_STABLE_ARCHIVE_FORMAT,
+                        "restore_relative_path": "tokscale/imports",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="legacy tar-zstd-shards-v1"):
+        restore_stable_layer(legacy_root, tmp_path / "out")
+
+    config = load_config(_write_config(tmp_path))
+    assert mirror_stable_layer(config).status == "verified"
+    existing_dest = tmp_path / "existing-dest"
+    (existing_dest / "config" / "config.toml").parent.mkdir(parents=True)
+    (existing_dest / "config" / "config.toml").write_text("do not overwrite", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        restore_stable_layer(default_stable_root(config), existing_dest, labels={"config"})
 
 
 def test_cli_mirror_and_restore_stable_round_trip(tmp_path: Path, capsys) -> None:

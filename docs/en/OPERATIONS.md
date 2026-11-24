@@ -11,7 +11,8 @@ and destructive-operation boundaries. Configuration fields are defined in
 - a readable local configuration
 - OPL Fleet for cross-machine projection jobs
 - `npm` and `npx` for Tokscale
-- `bsdtar` and `zstd` for packed stable storage and full archives
+- `restic` for deduplicated, encrypted stable storage and full-fidelity archives
+- `bsdtar` and `zstd` for auxiliary cold-batch packages and `.jsonl.zst` inspection
 - a mounted, writable archive root before archive operations
 
 Use `--config <path>` before the top-level command when a non-default file is
@@ -193,144 +194,83 @@ historical session triggers a cycle immediately without waiting for
 `cadence_days`. The cadence is only the fallback interval when all historical
 sessions are covered.
 
-The cycle scans configured Codex sources, creates incremental immutable
-objects, publishes snapshots, rebuilds catalog segments, performs deep
-verification, and writes receipts. It never prunes local sources. `not_due`
-means the fallback cadence has not elapsed and all historical sessions are
-covered; it is a successful no-op. `partial` requires inspection and returns a
-non-zero exit.
+The cycle scans configured Codex sources, backs up pinned files into the
+`restic` repository (`<archive.root>/repo`), commits authenticated snapshot
+manifests, writes catalog segments, performs deep verification (`restic ls` +
+`restic check --read-data`), and writes receipts. It never prunes local
+sources. `not_due` means the fallback cadence has not elapsed and all
+historical sessions are covered; it is a successful no-op. `partial` requires
+inspection and returns a non-zero exit.
 
-Before packing, files reuse members across the archive by `(byte length, SHA-256)`;
-source, session ID and path do not define content identity. Moving a conversation
-from `sessions` to `archived_sessions`, or bringing back an older file, updates its
-logical path/source/session metadata while retaining the existing member reference.
-Equal new files in one cycle are packed once and restore to their individual paths.
-The in-memory index is rebuilt from all committed snapshots after checking snapshot/
-manifest checksums and object presence/length. Staging, catalog entries, projections
-and uncommitted snapshots are not reuse authority. Deep verification continues to
-check actual object and member bytes. Legacy TAR hardlinks are resolved to their
-content inside the package during restore, without following external targets.
+`restic` provides content-defined chunk deduplication, zstd compression,
+authenticated encryption, and native repository locking. Moving a conversation
+from `sessions` to `archived_sessions`, or repeating fixed sources, adds zero
+new data blobs; cycle receipts report both logical file reuse (`reused_files`,
+`reused_logical_bytes`, `historical_reused_files`, `same_cycle_reused_files`)
+and `restic` blob telemetry (`restic_data_blobs`, `restic_data_added_packed`).
+Scheduled maintenance checks that the reuse counters are present, nonnegative
+and consistent before creating any prune plan.
 
-For repeated fixed sources or path-only changes, `dedup.new_content_files`,
-`new_content_bytes`, `new_objects` and `new_archive_bytes` are all zero.
-`reused_files` and `reused_logical_bytes` count logical file reuse;
-`historical_reused_files` and `same_cycle_reused_files` separate historical and
-same-cycle reuse. Snapshot JSON, cycle stdout and receipts preserve these counters;
-they are not reclaimed-space figures. New manifests include only referenced bundles,
-so deep verification does not inherit historical bundles with no current files.
-Old snapshots and objects remain intact; no automatic repacking or garbage collection runs.
-Scheduled maintenance checks that the reuse counters are present, nonnegative and
-consistent before creating any prune plan. Missing/invalid counters stop later stages.
+### Repository compaction and retention
 
-### Explicit compaction of existing archives
+After user authorization for storage optimization, run `archive compact` to
+delegate compaction or retention directly to `restic prune` /
+`restic forget --prune` followed by `restic check --read-data`:
 
-After user authorization for existing-storage optimization, use the one-shot
-migration rather than adding it to biweekly or daily schedules. Reconcile previous
-runner evidence and pass the configured NAS preflight, then create a durable local
-log directory under `ops/archive-compaction/<unique-ID>` in the configuration
-directory. Launch each write command exactly once through `run-detached.py`, named
-`compact-plan` and `compact-apply`, using the installed absolute CLI path. Wait for
-terminal stdout JSON and the real exit_code in order:
-
-```sh
-agent-session-vault archive compact-plan --run-dir <run-log-dir> --json
-agent-session-vault archive compact-apply --plan <run-log-dir>/plan.json --json
-agent-session-vault archive compact-status --plan <run-log-dir>/plan.json --json
+```bash
+agent-session-vault archive compact --dry-run --json
+agent-session-vault archive compact --json
+agent-session-vault archive compact --keep-last 8 --json
 ```
 
-Only plan exit 0/planned admits apply. The plan binds current identity, exact source
-inventory/signatures, metadata SHA-256, all logical-history digests and workspace
-budget; source drift stops migration. Apply streams into same-NAS
-`operations/archive-compaction/<unique-ID>/candidate`, storing each file content
-once in bundles targeting 512 MiB of logical data. After one deep member check per
-output bundle, complete history equivalence and an actual restore sample, it saves
-verification evidence and original metadata before switching back to the original
-archive path. Logical history, old restore plans, configuration and live files are
-preserved. Post-switch coverage and another NAS preflight gate exact removal of
-this run's retired containers. No measured storage saving stops with the original
-archive retained. Report removed containers, new bundle costs, net reduction and
-actual NAS-volume availability separately.
+When retention flags (`--keep-last`, `--keep-daily`, `--keep-weekly`,
+`--keep-monthly`) are provided, retention is evaluated per host and per
+`source:<source_id>` tag, then pruned and deep-verified (`restic check --read-data`)
+before writing an immutable owner receipt.
 
-On macOS, `statvfs` can wrap large SMB counters every 4 TiB. Workspace admission
-and cold-data metrics use native `df -kP` counters to avoid false insufficient-space
-decisions, without exposing mount sources that may include temporary login IDs.
-Keep original receipt values and annotate their measurement limits. Report directory
-reduction, unlink and final server-side physical reclamation separately. Without a
-reliable comparable baseline or server evidence, physical reclaimed bytes remain
-unconfirmed.
+### Legacy `archive-v1` detection
 
-The NAS run directory retains `plan.json`, `journal.jsonl`, `progress.json`,
-`verification.json`, `original-metadata.tar.zst` and, on success, `result.json`.
-Actual restore samples stay inside the local run log directory. `compact-status`
-only reads existing evidence and detached-runner state; it never resumes work.
-Interruption/failure retains the maintenance fence, candidate and remaining source.
-Without the real exit_code, result/receipt files cannot prove command success;
-never reissue apply or retry failed deletion. Only an unambiguously failed second
-rename allows one rollback by the original runner. Scheduled cycles encountering
-the maintenance fence must stop and report its original run, without bypassing it.
-Auxiliary cold-data packages and stable analytics are outside this migration.
+Existing NAS repositories created with the retired `agent-session-vault-archive-v1`
+layout are detected read-only without mutating or locking the directory:
 
-An unmanifested `._*` qualifies as metadata noise only after checking AppleDouble
-magic/version, entry bounds, Finder/xattr entry types, an empty resource fork and
-the corresponding indexed original. The prefix alone is insufficient. Exclusion
-evidence retains paths, SHA-256 and logical bytes. Explicit file-list packing also
-disables xattrs, ACLs, fflags, Mac metadata and implicit directory recursion to avoid
-generating new noise.
+```bash
+agent-session-vault archive legacy-status --json
+```
 
-If the original apply genuinely exited 2 at legacy-noise recognition, before any
-switch and with the original archive unchanged, a corrected implementation may
-run `compact-recovery-plan --plan <original-plan.json> --json` as a separate phase
-to authenticate existing packs and the original terminal evidence. Only its real
-exit 0/verified admits one `compact-recover --plan <original-plan.json> --json`.
-Both stages launch detached once with their own matching log names, without
-reissuing apply. Recovery binds source signatures, original stdout/exit, fence and
-every verified candidate member, reusing completed packs and authenticated source
-progress. Unfinished fragments remain in separate custody until successful full
-coverage permits their exact cleanup. Unknown exits, other failures, an existing
-switch or recovery intent prohibit this entrypoint and retain the evidence.
+All write, init, verify, restore, compact, and prune commands refuse to touch a
+legacy `archive-v1` root. Configure a fresh `[archive].root` for `restic-v2`,
+run `archive init` and `ops archive-cycle --no-due-only --deep`, and retain the
+legacy v1 directory read-only until coverage is verified.
 
-Appended revisions, different contents with the same session ID, and different raw
-`.jsonl`/`.jsonl.zst` representations can still add data. Recoverable history is kept
-without discarding revisions by ID or normalizing away original file bytes. If a
-concurrent write invalidates shared-content grouping or converges to known content,
-the build stops with diagnostic staging rather than publishing incorrect references
-or known redundancy. It does not automatically relaunch an archive command.
-
-Inspect archive-wide reuse and legacy duplication read-only:
+Inspect repository-wide deduplication and storage statistics read-only:
 
 ```bash
 agent-session-vault archive content-status --json
 ```
 
-This checks committed metadata, object presence and sizes, and reports content
-identities, distinct bundle/member locations and cross-object redundant logical
-bytes. It does not read live databases, rebuild the catalog, deeply decode every
-object, or delete history. Redundant logical bytes are not directly reclaimable
-compressed NAS space and do not establish semantic conversation duplication.
+This authenticates committed snapshot metadata and queries `restic snapshots`
+and `restic stats` (`raw-data` and `restore-size`) without modifying repository
+state.
 
-Codex `.jsonl.zst` files under `archived_sessions` are included as opaque
+`archived_sessions` Codex `.jsonl.zst` files are included as opaque
 full-fidelity members and are not added to the Tokscale projection. They can be
 pruned after the same deep archive and restore checks when they are cold; the
 Tokscale dry-run must remain unchanged before and after the operation.
 
-During snapshot construction, discovered Codex files are pinned in a private local
-capture before hashing and parsing. A local capture uses hardlinks, with an
-open-descriptor copy for filesystems that cannot link to local staging; no
-symlinks are created. Codex can move a captured session from `sessions` to
+During snapshot construction, discovered Codex files are pinned in a temporary
+private capture before hashing, parsing, and staging an independent payload copy
+so live source hardlink counts (`st_nlink`) are never held open after build. A
+capture uses hardlinks with an open-descriptor copy fallback when cross-device;
+no symlinks are created. Codex can move a captured session from `sessions` to
 `archived_sessions` while the cycle continues. A move immediately before
 capture is resolved only to the exact archived filename and recorded as a
-`relocated-during-capture` warning. Captures are removed when construction ends;
-manifest hashes still describe the actual packed bytes. A missing packed member
-fails construction rather than being omitted.
+`relocated-during-capture` warning.
 
-Snapshot construction failures return terminal JSON with `status: "failed"`,
-`reason: "snapshot_build_failed"`, `error`, and the exact `staging_root`, with a
-non-zero exit. Existing cycle staging is never overwritten. An incomplete
-bundle in retained staging is diagnostic material, not a published snapshot;
-verify its coverage in a successful archive before removing that exact staging.
-Publish, deep verification, state and receipt errors also return structured failure JSON
-with the failing phase, known snapshot IDs and staging state. `receipt_path` identifies
-the successfully written cycle receipt; only the detached runner records the real process exit code.
+Snapshot construction or publish failures return terminal JSON with
+`status: "failed"`, failing phase `reason`, `error`, and the exact
+`staging_root`, with a non-zero exit. Existing cycle staging is never
+overwritten. `receipt_path` identifies the successfully written cycle receipt;
+only the detached runner records the real process exit code.
 
 A `verified` cycle removes the exact cycle staging directory it created before
 writing verified state and its receipt. The terminal JSON reports

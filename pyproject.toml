@@ -25,6 +25,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "restic_integration: end-to-end tests invoking the real restic binary",
+]
 
 [tool.ruff]
 target-version = "py312"

@@ -106,8 +106,9 @@ operations guide before using them.
   removes old files.
 - The stable layer is a restore copy for analytics continuity, not a routine
   runtime input.
-- Full-fidelity archives are immutable snapshot objects with catalog, deep
-  verification, staging restore, and guarded local pruning.
+- Full-fidelity archives and stable analytics copies use `restic` for
+  deduplicated, encrypted snapshots with catalog, deep verification
+  (`restic check --read-data`), staging restore, and guarded local pruning.
 - Cloud-synced or NAS directories are storage locations, not live client roots.
 
 ## Documentation
