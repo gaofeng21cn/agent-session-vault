@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import replace
 from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import uuid
 
-from .archive import restore_bundle_member
-from .archive_backend import FilesystemArchiveBackend
+from .archive import sha256_file
+from .archive_backend import _member_from_record
 from .archive_catalog import query_catalog
-from .archive_model import ArchiveBundle, ArchiveFileRecord, CatalogEntry, RestorePlan, payload_sha256, validate_relative_path
+from .archive_model import ArchiveFileRecord, CatalogEntry, RestorePlan, payload_sha256, validate_relative_path
+from .archive_ops import archive_backend
 from .config import VaultConfig
 
 
@@ -95,71 +98,64 @@ def load_restore_plan(path: Path) -> RestorePlan:
 
 
 def restore_plan(config: VaultConfig, plan: RestorePlan) -> dict[str, object]:
-    backend = FilesystemArchiveBackend(config.archive.root)
+    backend = archive_backend(config)
     backend.ensure_writable()
-    destination = Path(plan.destination).expanduser()
     backend.ensure_ready()
-    snapshots = {path.name: backend.load_snapshot(path) for path in backend.iter_snapshot_dirs()}
-    records_by_entry: dict[tuple[str, str], tuple[CatalogEntry, ArchiveFileRecord, ArchiveBundle]] = {}
+    destination = Path(plan.destination).expanduser()
+    snapshots = {path.name: backend.load_verified_metadata(path) for path in backend.iter_snapshot_dirs()}
+
+    grouped: dict[str, list[tuple[CatalogEntry, ArchiveFileRecord, str, Path]]] = defaultdict(list)
     for entry in plan.entries:
         published = snapshots.get(entry.snapshot_id)
         if published is None:
             raise ValueError(f"snapshot referenced by restore plan is missing: {entry.snapshot_id}")
-        record = next(
+        restic_id = published.snapshot.restic_snapshot_id
+        if not restic_id:
+            raise ValueError(f"snapshot has no restic snapshot binding: {entry.snapshot_id}")
+        matched = next(
             (
-                record
+                (manifest, record)
                 for manifest in published.manifests
                 for record in manifest.files
                 if record.path == entry.path
             ),
             None,
         )
-        if record is None or not record.bundle_id or not record.member:
-            raise ValueError(f"restore entry has no bundle member: {entry.path}")
-        bundle = next(
-            (
-                bundle
-                for manifest in published.manifests
-                for bundle in manifest.bundles
-                if bundle.bundle_id == record.bundle_id
-            ),
-            None,
-        )
-        if bundle is None:
-            raise ValueError(f"restore bundle is missing from manifest: {record.bundle_id}")
-        records_by_entry[(entry.snapshot_id, entry.path)] = (entry, record, bundle)
-    restored: list[dict[str, object]] = []
-    destination.mkdir(parents=True, exist_ok=True)
-    restored_by_digest: dict[tuple[int, str], Path] = {}
-    ordered = sorted(
-        records_by_entry.values(),
-        key=lambda item: (0 if str(item[1].member).startswith("sessions/") else 1, item[0].path),
-    )
-    for entry, record, bundle in ordered:
-        member = Path(str(record.member))
-        if member.is_absolute() or ".." in member.parts:
-            raise ValueError(f"unsafe restore member: {record.member}")
+        if matched is None:
+            raise ValueError(f"restore entry is missing from snapshot manifest: {entry.path}")
+        manifest, record = matched
+        member = validate_relative_path(record.member or _member_from_record(manifest.source, record))
         relative = Path(validate_relative_path(entry.path))
         target = destination / relative
         if target.exists() and plan.collision_policy == "error":
             raise FileExistsError(target)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        digest_key = (entry.bytes, entry.sha256)
-        source = restored_by_digest.get(digest_key)
-        if source is not None:
-            shutil.copy2(source, target)
-        else:
-            actual_bytes, actual_sha256 = restore_bundle_member(
-                backend.root / bundle.object_path,
-                str(record.member),
-                target,
-                expected=digest_key,
-            )
-            if (actual_bytes, actual_sha256) != digest_key:
-                target.unlink(missing_ok=True)
-                raise ValueError(f"restored member checksum mismatch: {entry.path}")
-            restored_by_digest[digest_key] = target
-        restored.append({"path": entry.path, "destination": str(target), "sha256": entry.sha256})
+        grouped[restic_id].append((entry, record, member, target))
+
+    restored: list[dict[str, object]] = []
+    destination.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="asv-restic-restore-") as staging_dir:
+        staging_root = Path(staging_dir)
+        for index, (restic_id, items) in enumerate(sorted(grouped.items())):
+            batch_root = staging_root / f"batch-{index}"
+            members = tuple(sorted({member for _, _, member, _ in items}))
+            backend.restore_entries(restic_id, members, batch_root)
+            for entry, _, member, target in items:
+                extracted = batch_root / Path(member)
+                if not extracted.is_file() or extracted.is_symlink():
+                    raise ValueError(f"restored restic member is missing or not a regular file: {member}")
+                actual = (extracted.stat().st_size, sha256_file(extracted))
+                if actual != (entry.bytes, entry.sha256):
+                    raise ValueError(f"restored member checksum mismatch: {entry.path}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_name(f".{target.name}.{os.getpid()}.restore")
+                try:
+                    shutil.copy2(extracted, temporary)
+                    temporary.replace(target)
+                except Exception:
+                    temporary.unlink(missing_ok=True)
+                    raise
+                restored.append({"path": entry.path, "destination": str(target), "sha256": entry.sha256})
+
     return {
         "status": "verified",
         "plan_id": plan.plan_id,

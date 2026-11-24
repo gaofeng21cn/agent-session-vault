@@ -37,8 +37,9 @@ OPL Fleet 是节点、网络、准入、任务投放和产物传输的唯一来�
 | 预览 Tokscale 提交 | `tokscale exec -- submit -c codex,gemini,openclaw,antigravity,zcode --dry-run` | 运行官方 preview，不提交 |
 | 正式每日统计提交 | `ops daily-tokscale --mirror-stable --json` | 只有用户明确要求提交时执行 |
 | 创建或验证完整 Codex 快照 | `ops archive-cycle --due-only --deep --json` | 写 archive；不删除本机会话 |
-| 查看全库文件内容复用和历史重复 | `archive content-status --json` | 只读已提交快照元数据和对象状态，不等于全库深检或语义去重 |
-| 显式整理 NAS 存量 | `archive compact-plan --run-dir <唯一目录> --json` → `archive compact-apply --plan <plan.json> --json`；`compact-status --plan` 只读 | 仅在用户授权存量优化后执行；同格式候选、完整历史校验、切换后精确退役；每命令 detached 一次 |
+| 查看 `restic` 仓库去重与存储统计 | `archive content-status --json` | 只读已提交快照元数据与 `restic stats`，不修改仓库 |
+| 只读检测旧版 `archive-v1` 存量仓库 | `archive legacy-status --json` | 纯只读；不写入、不加锁，供迁移前盘点 |
+| 显式整理或按策略裁剪 `restic` 归档仓库 | `archive compact [--dry-run] [--keep-last N] --json` | 仅在用户授权后执行；调用 `restic prune` / `forget --prune` + `check --read-data` |
 | 已授权双周维护 | `ops archive-maintenance --json`；`--status --json` 只读核对 | 各阶段只启动一次；含严格保护的会话裁剪 |
 | 冷数据完整批次下沉 | `ops cold-inventory` → AI 用途审阅 → `ops cold-plan` → `ops cold-pack` → `ops cold-cleanup`，均带本轮 `--run-dir`、`--json` | 仅限明确空间优化授权；先核验 TAR 与恢复样本，再清空本轮专属 Trash |
 | 恢复 analytics stable 层 | `storage restore-stable --dest-root <staging> --json` | 只写独立目标 |
@@ -68,14 +69,11 @@ Tokscale 只读取 Vault 准备的一份受管 projection 和 managed extras，�
 完整 Codex archive 是独立的 snapshot/catalog 域，不是 live root，也不能符号链接到
 `~/.codex`。`archive-cycle` 只 snapshot、publish、deep verify，不做本机裁剪。
 
-完整归档按“字节长度＋SHA-256”跨已提交快照复用原成员，换路径或重复运行固定来源不新增内容包；
-本轮相同新文件只保存一份，各逻辑路径和分支照常恢复。回执 `dedup` 分开记录新增内容/压缩包与
-复用逻辑字节，复用量不是磁盘释放量。真实变化、压缩表示和旧版本仍保留原字节，不能声称 NAS
-全库已经语义去重。旧重复包由显式存量迁移重新映射全部历史恢复引用后才能退役；不得直接删包。
-迁移保留 snapshot ID、所有版本和原字节，旧恢复计划仍可使用。maintenance fence 存在时只读
-核对原 runner、progress 和真实 exit_code；不移除 fence 绕过保护，不补跑未知终态任务。
-只有已知的切换前旧包噪声拒绝，才可按 OPERATIONS 的 `compact-recovery-plan` → `compact-recover`
-独立恢复阶段核验并复用原候选；各阶段 detached 一次，原失败退出码始终保留。
+完整归档与 stable 恢复层均由 `restic` 承接底层 CDC 分块去重、zstd 压缩、加密和仓库锁。
+重复运行固定来源或路径迁移不新增数据块；回执 `dedup` 同时报告逻辑文件复用与 `restic` 实际块增长。
+遇到旧版 `agent-session-vault-archive-v1` 根目录时，只使用 `archive legacy-status --json` 只读检查，
+绝不原地改写；另建 `restic-v2` 根目录并完成深检后再决定旧目录去留。maintenance fence 存在时只读
+核对原 runner、日志与真实 `exit_code`，不移除 fence 绕过保护。
 
 恢复只允许 staging。不得手工把恢复文件复制进 `~/.codex`，不得合并
 `session_index.jsonl`。

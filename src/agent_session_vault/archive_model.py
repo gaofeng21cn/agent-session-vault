@@ -8,7 +8,8 @@ from pathlib import PurePosixPath
 from typing import Any
 
 
-ARCHIVE_SCHEMA_VERSION = "archive.snapshot.v1"
+ARCHIVE_SCHEMA_VERSION = "archive.snapshot.v2"
+LEGACY_ARCHIVE_SCHEMA_VERSION = "archive.snapshot.v1"
 RECEIPT_SCHEMA_VERSION = "archive.receipt.v1"
 
 
@@ -67,11 +68,12 @@ class ArchiveFileRecord:
     end_at: str | None
     time_source: str
     parse_status: str
-    bundle_id: str | None = None
     member: str | None = None
 
     def __post_init__(self) -> None:
         validate_relative_path(self.path)
+        if self.member is not None:
+            validate_relative_path(self.member)
         if self.bytes < 0:
             raise ValueError("archive file bytes must be non-negative")
 
@@ -85,28 +87,7 @@ class ArchiveFileRecord:
             "end_at": self.end_at,
             "time_source": self.time_source,
             "parse_status": self.parse_status,
-            "bundle_id": self.bundle_id,
             "member": self.member,
-        }
-
-
-@dataclass(frozen=True)
-class ArchiveBundle:
-    bundle_id: str
-    object_path: str
-    sha256: str
-    bytes: int
-    source_bytes: int
-    file_count: int
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "bundle_id": self.bundle_id,
-            "object_path": self.object_path,
-            "sha256": self.sha256,
-            "bytes": self.bytes,
-            "source_bytes": self.source_bytes,
-            "file_count": self.file_count,
         }
 
 
@@ -121,6 +102,7 @@ class ArchiveSnapshot:
     status: str
     parent_snapshot_id: str | None
     manifest_sha256: str | None = None
+    restic_snapshot_id: str | None = None
     warnings: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
@@ -135,6 +117,7 @@ class ArchiveSnapshot:
             "status": self.status,
             "parent_snapshot_id": self.parent_snapshot_id,
             "manifest_sha256": self.manifest_sha256,
+            "restic_snapshot_id": self.restic_snapshot_id,
             "warnings": list(self.warnings),
         }
 
@@ -144,7 +127,7 @@ class ArchiveManifest:
     snapshot_id: str
     source: ArchiveSource
     files: tuple[ArchiveFileRecord, ...]
-    bundles: tuple[ArchiveBundle, ...]
+    restic_snapshot_id: str | None = None
     deleted_paths: tuple[str, ...] = ()
     generated_at: str = field(default_factory=utc_now)
 
@@ -154,8 +137,8 @@ class ArchiveManifest:
             "snapshot_id": self.snapshot_id,
             "source": self.source.to_payload(),
             "generated_at": self.generated_at,
+            "restic_snapshot_id": self.restic_snapshot_id,
             "files": [item.to_payload() for item in self.files],
-            "bundles": [item.to_payload() for item in self.bundles],
             "deleted_paths": [validate_relative_path(item) for item in self.deleted_paths],
         }
 

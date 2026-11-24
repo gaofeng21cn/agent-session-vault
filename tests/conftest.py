@@ -1,7 +1,19 @@
 import pytest
 
+from agent_session_vault import archive_backend
 from agent_session_vault import archive_maintenance as maintenance
+from agent_session_vault import stable
 from agent_session_vault.config import load_config
+from fake_restic import FakeResticRepository
+
+
+@pytest.fixture(autouse=True)
+def _use_fake_restic_for_unit_tests(request, monkeypatch):
+    """Use FakeResticRepository for fast unit tests; real restic runs in restic_integration tests."""
+    if request.node.get_closest_marker("restic_integration") is not None:
+        return
+    monkeypatch.setattr(archive_backend, "ResticRepository", FakeResticRepository)
+    monkeypatch.setattr(stable, "ResticRepository", FakeResticRepository)
 
 
 @pytest.fixture

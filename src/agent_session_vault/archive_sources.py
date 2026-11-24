@@ -322,6 +322,7 @@ def _scan_source(
                     end_at=end_at,
                     time_source="session_event" if start_at else "none",
                     parse_status=parse_status,
+                    member=_relative_file(root, path),
                 ),
             )
         )

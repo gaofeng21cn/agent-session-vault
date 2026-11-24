@@ -37,7 +37,7 @@ def test_repair_stale_sessions_quarantines_artifacts_and_indexes(tmp_path: Path)
     ide_conversations.mkdir(parents=True)
     conversation = ide_conversations / f"{SESSION_ID}.pb"
     conversation.write_bytes(b"old conversation")
-    old_time = (datetime.now(UTC) - timedelta(days=2)).timestamp()
+    old_time = (datetime(2026, 11, 17, tzinfo=UTC) - timedelta(days=2)).timestamp()
     os.utime(conversation, (old_time, old_time))
 
     metadata = gemini / "antigravity-cli" / "cache" / "conversation_metadata.json"
@@ -123,7 +123,7 @@ def test_repair_stale_sessions_defers_old_directory_with_recent_file(tmp_path: P
     brain.mkdir(parents=True)
     child = brain / "session.json"
     child.write_text("{}\n", encoding="utf-8")
-    old_time = (datetime.now(UTC) - timedelta(days=2)).timestamp()
+    old_time = (datetime(2026, 11, 17, tzinfo=UTC) - timedelta(days=2)).timestamp()
     os.utime(brain, (old_time, old_time))
 
     result = repair_stale_sessions(

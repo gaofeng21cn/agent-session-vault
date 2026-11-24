@@ -94,7 +94,8 @@ agent-session-vault ops archive-cycle --due-only --deep --json
 - 只有控制节点执行一次聚合提交，Fleet 节点不会分别提交。
 - 上游节点删除旧文件时，已导入的投影仍保留累计用量历史。
 - stable 层用于恢复统计连续性，不参与日常运行读取。
-- 完整归档使用不可变 snapshot object、catalog、深度校验、staging 恢复和受控裁剪。
+- 完整归档与 stable 统计恢复副本统一采用 `restic` 提供去重加密快照、catalog、
+  深度校验（`restic check --read-data`）、staging 恢复与受控裁剪。
 - 云同步目录或 NAS 只是存储位置，不是客户端实时目录。
 
 ## 文档

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from .archive_backend import FilesystemArchiveBackend, PublishedSnapshot
+from .archive_backend import PublishedSnapshot, ResticArchiveBackend
 from .archive_model import ArchiveManifest, CatalogEntry
 from .config import VaultConfig
 
@@ -31,7 +31,7 @@ def entries_for_manifest(manifest: ArchiveManifest) -> tuple[CatalogEntry, ...]:
     )
 
 
-def write_catalog_segment(backend: FilesystemArchiveBackend, published: PublishedSnapshot) -> list[Path]:
+def write_catalog_segment(backend: ResticArchiveBackend, published: PublishedSnapshot) -> list[Path]:
     backend.ensure_writable()
     paths: list[Path] = []
     for manifest in published.manifests:
@@ -57,7 +57,7 @@ def write_catalog_segment(backend: FilesystemArchiveBackend, published: Publishe
     return paths
 
 
-def _iter_segment_payloads(backend: FilesystemArchiveBackend) -> Iterable[dict[str, object]]:
+def _iter_segment_payloads(backend: ResticArchiveBackend) -> Iterable[dict[str, object]]:
     root = backend.root / "catalog" / "segments"
     if not root.exists():
         return
@@ -70,7 +70,7 @@ def _iter_segment_payloads(backend: FilesystemArchiveBackend) -> Iterable[dict[s
             yield payload
 
 
-def rebuild_catalog(backend: FilesystemArchiveBackend, machine_id: str | None = None) -> int:
+def rebuild_catalog(backend: ResticArchiveBackend, machine_id: str | None = None) -> int:
     count = 0
     for snapshot_dir in backend.iter_snapshot_dirs(machine_id):
         published = backend.load_snapshot(snapshot_dir)
@@ -116,7 +116,11 @@ def query_catalog(
     session_id: str | None = None,
     source_id: str | None = None,
 ) -> list[CatalogEntry]:
-    backend = FilesystemArchiveBackend(config.archive.root)
+    backend = ResticArchiveBackend(
+        config.archive.root,
+        password_file=config.archive.password_file,
+        cache_dir=config.archive.staging_root / ".restic-cache",
+    )
     backend.ensure_ready()
     entries_by_key: dict[tuple[str, str, str, str], CatalogEntry] = {}
     for payload in _iter_segment_payloads(backend):
