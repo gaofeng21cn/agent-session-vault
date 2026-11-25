@@ -3,7 +3,7 @@
   "package_id": "agent-session-vault",
   "display_name": "OPL Session Vault",
   "publisher": "gaofeng21cn",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "source": "first_party_repo_local",
   "source_repo": "https://github.com/gaofeng21cn/agent-session-vault.git",
   "package_role": "capability_package",
@@ -142,7 +142,7 @@
       "scripts/run_detached.py",
       "config/codex-cold-decisions.example.json"
     ],
-    "digest": "sha256:68859ec47385354f70c1f9587b50e968d5f5efbb96a4898797efb0a5b20846f2"
+    "digest": "sha256:3bec68fbf6ee3ee98606ea90b5e00d8680a1bc6b7fa7dbd5c10a90e1be9f2ed0"
   },
   "presentation": {
     "display_name_i18n": {
