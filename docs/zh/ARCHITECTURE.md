@@ -64,7 +64,10 @@ Fleet 投影任务 -------> 导入投影 + 受管本机 extras
   仅保留模型元数据与用量事件，排除凭据、对话正文和工具输出；统计缓存保留客户端删除的
   历史事件。本机与 Fleet 采集使用同一实现，extra root 的 agent 目录层级满足 Tokscale
   原生 SQLite 发现规则。
-- 事件与 fork 去重、Codex rollout 与会话镜像的对齐由原生 Tokscale 负责。
+- 事件与 fork 去重、Codex rollout 与会话镜像的对齐由原生 Tokscale 负责。Codex 投影保留
+  `token_count` 和 `token_usage_record` 的计数、用于归属判断的 response/thread ID，
+  以及 Tokscale 读取的模型和服务档位字段。缺少 `token_count` 时，Tokscale 仍可读取
+  已记录的单次响应计数。
 - ZCode 实时 SQLite 数据库通过 SQLite backup 读取；Vault 只把 model、时间、session
   identity 和 token 计数导出为 JSONL，并与旧 `.zcode/projects` JSONL 历史合并。
 - Tokscale 用量预览和提交使用 `projection_home` 作为 `HOME`，并移除 `CODEX_HOME`。

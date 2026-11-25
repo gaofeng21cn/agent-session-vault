@@ -82,7 +82,10 @@ not a selectable view: the product exposes one managed Tokscale projection.
   the same implementation. Extra roots preserve the exact agent-directory
   depth required by Tokscale's native SQLite discovery.
 - Native Tokscale owns event/fork deduplication and reconciliation of Codex
-  rollouts with transcript mirrors.
+  rollouts with transcript mirrors. The Codex projection preserves token
+  counters from `token_count` and `token_usage_record`, response and thread
+  IDs for attribution, and the model and service tier fields Tokscale reads.
+  This lets Tokscale count a recorded response when its `token_count` is missing.
 - ZCode's live SQLite database is read through SQLite backup. Vault exports
   only model, timestamp, session identity, and token counters as JSONL, then
   combines it with any legacy `.zcode/projects` JSONL history.

@@ -132,6 +132,15 @@ confirmed run. `already_running`, `failed`, `unconfirmed`, and
 warning does not invalidate an already confirmed submit; inspect
 `stable_mirror.status` separately.
 
+When Tokscale reports Codex rollouts with activity but missing counters, the
+receipt includes `local_usage_estimate`. Vault estimates their tokens from
+comparable metered rollouts in the same projection and includes the combined
+total for local reporting. It checks the reported scan size and reuses per-file
+summaries while the files remain the same. If there is a scope mismatch or
+insufficient evidence, the estimate is marked unavailable. Tokscale receives
+the recorded counters and calculates costs with the configured pricing
+overrides. Local estimates appear only in the Vault receipt.
+
 When `--mirror-stable` is requested and the local projection succeeds, the
 runner attempts the stable mirror on every terminal path, including Fleet
 discovery or submit failure. The mirror covers projections available before the

@@ -63,6 +63,25 @@ def _codex_fixture() -> list[dict]:
             "model": "gpt-5.4",
             "usage": {"input_tokens": 10, "output_tokens": 2},
         },
+        {
+            "type": "token_usage_record",
+            "payload": {
+                "thread_id": "session-1", "turn_id": "turn-1", "response_id": "resp-1",
+                "usage": {"input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2, "private": "drop-usage"},
+                "service_tier": "priority",
+            },
+        },
+        {
+            "type": "world_state",
+            "payload": {"state": {"model": "gpt-5.4", "private": "drop-state"}},
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "thread_settings_applied",
+                "thread_settings": {"service_tier": "priority", "private": "drop-settings"},
+            },
+        },
     ]
 
 
@@ -81,6 +100,13 @@ def test_codex_projection_preserves_order_and_tokscale_fields(tmp_path: Path) ->
     assert projected[2]["payload"]["message"] == "user"
     assert projected[3]["payload"]["turn_id"] == "turn-1"
     assert projected[5]["usage"] == fixture[5]["usage"]
+    assert projected[6]["payload"] == {
+        "thread_id": "session-1", "turn_id": "turn-1", "response_id": "resp-1",
+        "usage": {"input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2},
+        "service_tier": "priority",
+    }
+    assert projected[7]["payload"]["state"] == {"model": "gpt-5.4"}
+    assert projected[8]["payload"]["thread_settings"] == {"service_tier": "priority"}
     assert result["token_events"] == 1
     assert "drop-" not in destination.read_text(encoding="utf-8")
 

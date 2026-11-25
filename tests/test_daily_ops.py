@@ -103,7 +103,9 @@ def _install_fleet_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, crea
     monkeypatch.setattr("agent_session_vault.daily_ops.sync_fleet", lambda *args, **kwargs: summary)
 
 
-def _install_command_fake(monkeypatch: pytest.MonkeyPatch, calls: list[list[str]]) -> None:
+def _install_command_fake(
+    monkeypatch: pytest.MonkeyPatch, calls: list[list[str]], *, submit_warning: str = "",
+) -> None:
     def fake_run(
         command: list[str],
         *,
@@ -122,7 +124,7 @@ def _install_command_fake(monkeypatch: pytest.MonkeyPatch, calls: list[list[str]
         elif "--dry-run" in command:
             output = STATS_OUTPUT + "\nDry run - not submitting data.\n"
         else:
-            output = STATS_OUTPUT + "\nSuccessfully submitted!\nView your profile: https://tokscale.ai/u/test\n"
+            output = submit_warning + STATS_OUTPUT + "\nSuccessfully submitted!\nView your profile: https://tokscale.ai/u/test\n"
         log_path.write_text(output, encoding="utf-8")
         on_pid(4321)
         on_pid(None)
@@ -186,6 +188,38 @@ def test_daily_tokscale_new_version_checks_help_and_preview(tmp_path: Path, monk
     assert result.payload["tokscale"]["preview_ran"] is True
     assert any("--help" in command for command in calls)
     assert any("--dry-run" in command for command in calls)
+
+
+def test_daily_tokscale_reports_local_estimate_alongside_one_submit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    sessions = config.paths.home / ".codex" / "sessions"
+    activity = '{"type":"event_msg","payload":{"type":"agent_message"}}\n'
+    measured = (
+        '{"type":"event_msg","payload":{"type":"token_count",'
+        '"info":{"last_token_usage":{"input_tokens":600,"output_tokens":400}}}}\n'
+    )
+    for i in range(25):
+        (sessions / f"recorded-{i}.jsonl").write_text(activity + measured, encoding="utf-8")
+    (sessions / "unmetered.jsonl").write_text(activity, encoding="utf-8")
+    run_root = tmp_path / "ops"
+    calls: list[list[str]] = []
+    _write_cached_contract(run_root)
+    _install_fleet_fake(monkeypatch, tmp_path)
+    _install_command_fake(
+        monkeypatch, calls,
+        submit_warning="Warning: 1 of 27 inspected rollout files contain Codex activity but no supported usage records.\n",
+    )
+
+    result = run_daily_tokscale(config, run_root=run_root)
+    receipt = json.loads(Path(result.payload["receipt_path"]).read_text(encoding="utf-8"))
+
+    assert result.exit_code == 0
+    assert receipt["tokscale"]["statistics"]["total_tokens"] == 225_000_000_001
+    assert receipt["local_usage_estimate"]["estimated_missing_tokens"] == 1_000
+    assert receipt["local_usage_estimate"]["combined_token_estimate"] == 225_000_001_001
+    assert len([command for command in calls if "submit" in command]) == 1
 
 
 def test_daily_tokscale_repairs_stale_antigravity_once_before_single_submit(

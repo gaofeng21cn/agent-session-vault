@@ -50,7 +50,11 @@ HOME_CLIENT_SOURCE_SPECS = (
     ("openclaw", ".openclaw"),
     ("zcode", ".zcode"),
 )
-CODEX_PROJECTION_VERSION = 3
+CODEX_PROJECTION_VERSION = 4
+CODEX_USAGE_RECORD_FIELDS = (
+    "input_tokens", "output_tokens", "cached_input_tokens", "cache_read_input_tokens",
+    "reasoning_output_tokens", "total_tokens", "service_tier",
+)
 CODEX_SYSTEM_INJECTED_PREFIXES = (
     "<environment_context>",
     "<system-reminder>",
@@ -165,6 +169,17 @@ def _project_codex_record(obj: dict) -> dict:
         else:
             payload_fields = ("type", "model", "model_name", "model_info", "info", "turn_id")
         projected_payload = _selected_fields(payload, payload_fields)
+        if obj_type == "token_usage_record":
+            projected_payload.update(_selected_fields(payload, ("response_id", "thread_id", "service_tier")))
+            if isinstance(payload.get("usage"), dict):
+                projected_payload["usage"] = _selected_fields(payload["usage"], CODEX_USAGE_RECORD_FIELDS)
+        if obj_type == "world_state" and isinstance(payload.get("state"), dict):
+            model = payload["state"].get("model")
+            if isinstance(model, str):
+                projected_payload["state"] = {"model": model}
+        if obj_type == "event_msg" and payload.get("type") == "thread_settings_applied":
+            if isinstance(payload.get("thread_settings"), dict):
+                projected_payload["thread_settings"] = _selected_fields(payload["thread_settings"], ("service_tier",))
         if obj_type == "event_msg" and payload.get("type") == "user_message":
             projected_payload["message"] = _project_codex_user_message(payload.get("message"))
         projected["payload"] = projected_payload
@@ -841,7 +856,11 @@ UTC = timezone.utc
 
 PROJECTION_ROOTS_MANIFEST_NAME = "roots-manifest.json"
 PROJECTION_INVENTORY_NAME = "inventory.json"
-CODEX_PROJECTION_VERSION = 3
+CODEX_PROJECTION_VERSION = 4
+CODEX_USAGE_RECORD_FIELDS = (
+    "input_tokens", "output_tokens", "cached_input_tokens", "cache_read_input_tokens",
+    "reasoning_output_tokens", "total_tokens", "service_tier",
+)
 PROJECTION_STATE_SCHEMA_VERSION = 1
 CODEX_SYSTEM_INJECTED_PREFIXES = (
     "<environment_context>",
@@ -1105,6 +1124,17 @@ def _project_codex_record(obj):
         else:
             payload_fields = ("type", "model", "model_name", "model_info", "info", "turn_id")
         projected_payload = _selected_fields(payload, payload_fields)
+        if obj_type == "token_usage_record":
+            projected_payload.update(_selected_fields(payload, ("response_id", "thread_id", "service_tier")))
+            if isinstance(payload.get("usage"), dict):
+                projected_payload["usage"] = _selected_fields(payload["usage"], CODEX_USAGE_RECORD_FIELDS)
+        if obj_type == "world_state" and isinstance(payload.get("state"), dict):
+            model = payload["state"].get("model")
+            if isinstance(model, str):
+                projected_payload["state"] = {"model": model}
+        if obj_type == "event_msg" and payload.get("type") == "thread_settings_applied":
+            if isinstance(payload.get("thread_settings"), dict):
+                projected_payload["thread_settings"] = _selected_fields(payload["thread_settings"], ("service_tier",))
         if obj_type == "event_msg" and payload.get("type") == "user_message":
             projected_payload["message"] = _project_codex_user_message(payload.get("message"))
         projected["payload"] = projected_payload

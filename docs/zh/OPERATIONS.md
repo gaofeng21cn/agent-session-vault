@@ -115,6 +115,11 @@ ZCode SQLite 会先生成一致快照，再转为只含用量的 JSONL；不会�
 `failed`、`unconfirmed` 和 `incomplete_receipt` 都不等于提交成功。stable mirror 告警不会
 推翻已经确认的提交，需要单独检查 `stable_mirror.status`。
 
+Tokscale 报告有 Codex 活动但缺少计数时，每日回执的 `local_usage_estimate` 会给出
+估算补量和本地合计。Vault 使用同一投影中有计数的相似会话作参照，核对文件扫描范围，
+复用未变化文件的摘要。范围不符或样本不足时，回执标记估算不可用。Tokscale 读取已记录
+的计数，并按配置的价格计算成本。推算用量只进入 Vault 回执。
+
 指定 `--mirror-stable` 且本机投影成功后，runner 在每条终态路径上都会尝试镜像，包括 Fleet
 发现或提交失败；镜像覆盖失败前已成功生成的投影。镜像成功不证明数据已提交到 Tokscale，
 镜像失败也不会覆盖主运行结果。

@@ -13,6 +13,7 @@ import time
 from typing import Callable
 
 from .antigravity import repair_stale_sessions
+from .codex_usage_estimate import local_usage_estimate
 from .config import VaultConfig
 from .fleet import sync_fleet
 from .projection import (
@@ -583,6 +584,18 @@ def run_daily_tokscale(
             "submit_log": str(run_dir / "submit.log"),
             "preview_log": str(run_dir / "preview.log") if preview_ran else None,
         }
+        if numeric_stats is not None and "codex" in clients:
+            update_status("local_usage_estimate")
+            statistics_output = submit.output if submit_stats is not None else preview.output
+            try:
+                payload["local_usage_estimate"] = local_usage_estimate(
+                    build_tokscale_view(config),
+                    _strip_ansi(statistics_output),
+                    int(numeric_stats["total_tokens"]),
+                    root / "codex-usage-estimate-cache.json",
+                )
+            except Exception as exc:  # noqa: BLE001 - local reporting cannot overturn a real submit
+                payload["local_usage_estimate"] = {"status": "unavailable", "reason": type(exc).__name__}
         if receipt_complete:
             payload["status"] = "confirmed"
             exit_code = 0
