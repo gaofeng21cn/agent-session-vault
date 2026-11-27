@@ -2,7 +2,7 @@
   "schema_version": "opl.package.v2",
   "identity": {
     "id": "agent-session-vault",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "intent": "extension",
     "name": {
       "zh-CN": "OPL Session Vault",
