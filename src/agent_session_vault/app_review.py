@@ -16,18 +16,10 @@ from .stable import migration_plan_payload
 
 REF = "agent.session.vault.v1#review"
 STATUS_REF = "agent.session.vault.v1#status"
+# Framework v2's native contribution handler uses the v1 request and response envelopes.
 REQUEST_SCHEMA = "opl-package-app-contribution-request.v1"
 RESPONSE_SCHEMA = "opl-package-app-contribution-response.v1"
-INPUT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "config_path": {"type": "string", "title": "Vault configuration"},
-        "plan_path": {"type": "string", "title": "Exact restore or prune plan"},
-        "receipt_path": {"type": "string", "title": "Exact archive receipt"},
-        "expected_revision": {"type": "string", "title": "Expected plan digest"},
-    },
-    "additionalProperties": False,
-}
+REVIEW_INPUT_FIELDS = frozenset({"config_path", "plan_path", "receipt_path", "expected_revision"})
 
 
 def runtime_status() -> dict[str, object]:
@@ -195,7 +187,7 @@ def read_contribution(request: object) -> dict[str, object]:
         return {"schema_version": RESPONSE_SCHEMA, "ok": True, "ref": STATUS_REF,
                 "operation": "read", "result": runtime_status()}
     input_value = request.get("input", {})
-    if not isinstance(input_value, dict) or set(input_value) - set(INPUT_SCHEMA["properties"]):
+    if not isinstance(input_value, dict) or input_value.keys() - REVIEW_INPUT_FIELDS:
         raise ValueError("unsupported contribution input")
     revision = input_value.get("expected_revision")
     if revision is not None and (not isinstance(revision, str) or not revision):

@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
 
-from agent_session_vault.app_review import REF, REQUEST_SCHEMA, read_contribution, review_archive
+from agent_session_vault.app_review import REF, REQUEST_SCHEMA, RESPONSE_SCHEMA, STATUS_REF, read_contribution, review_archive
 from agent_session_vault.archive_ops import build_snapshot, init_backend, publish_snapshot, receipt
 from agent_session_vault.archive_prune import apply_prune_plan, build_prune_plan, write_prune_plan
 from agent_session_vault.archive_restore import build_restore_plan, write_restore_plan
@@ -112,40 +113,73 @@ def test_restore_review_preserves_staging_destination_and_cli_json(tmp_path, cap
     assert not (tmp_path / "restored").exists()
 
 
-def test_packaged_adapter_runs_owner_and_rejects_execution(tmp_path):
+@pytest.mark.parametrize("ref", [STATUS_REF, REF])
+def test_manifest_contribution_handler_runs_read_only_owner(tmp_path, monkeypatch, ref):
     config_path, _, _ = _config(tmp_path)
     root = Path(__file__).resolve().parents[1]
-    request = {"schema_version": REQUEST_SCHEMA, "operation": "read", "ref": REF, "input": {"config_path": str(config_path)}}
-    completed = subprocess.run([sys.executable, str(root / "app_contribution.py")], cwd=tmp_path,
-                               input=json.dumps(request), capture_output=True, text=True, check=True)
-    assert json.loads(completed.stdout)["result"]["data"]["read_only"]
+    manifest = json.loads((root / "opl-package.json").read_text())
+    handler = manifest["provides"]["contribution_handler"]
+    request = {
+        "schema_version": REQUEST_SCHEMA,
+        "package_id": manifest["identity"]["id"],
+        "operation": "read",
+        "ref": ref,
+        "input": {"config_path": str(config_path)} if ref == REF else {},
+    }
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent), prepend=os.pathsep)
+    completed = subprocess.run(
+        handler["argv"], cwd=root, input=json.dumps(request), capture_output=True, text=True, check=True,
+    )
+    response = json.loads(completed.stdout)
+    assert response["schema_version"] == RESPONSE_SCHEMA
+    assert response["ok"]
+    assert response["operation"] == "read"
+    assert response["ref"] == ref
+    assert response["result"]["data"]["read_only"]
     with pytest.raises(ValueError, match="unsupported"):
         read_contribution({**request, "operation": "execute"})
 
 
-def test_package_content_and_read_only_contract_are_complete():
+def test_v2_manifest_declares_vault_resources_and_read_only_views():
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "opl-package.json").read_text())
-    adapter = json.loads((root / "app-contribution-adapter.json").read_text())
-    assert manifest["publication_channel_admission"] == "admitted"
-    assert manifest["codex_surface"]["configured_codex_plugin_carrier"]["publication_ref"] == (
-        "ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault:latest-stable"
-    )
-    assert manifest["presentation"]["display_name_i18n"]["en-US"] == manifest["display_name"]
-    assert manifest["presentation"]["description_i18n"]["zh-CN"]
-    assert "description_i18n" not in manifest
-    assert manifest["app_contributions"]["commands"] == []
-    assert adapter["actions"] == {}
-    digest = hashlib.sha256()
-    for relative in manifest["content_lock"]["paths"]:
-        body = (root / relative).read_bytes()
-        encoded = relative.encode()
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-        digest.update(len(body).to_bytes(8, "big"))
-        digest.update(body)
-    assert manifest["content_lock"]["digest"] == "sha256:" + digest.hexdigest()
-    assert "src/agent_session_vault/app_review.py" in manifest["content_lock"]["paths"]
+    assert manifest["schema_version"] == "opl.package.v2"
+    identity = manifest["identity"]
+    assert identity["id"] == "agent-session-vault"
+    assert identity["intent"] == "extension"
+    assert (root / identity["icon"]).is_file()
+    assert manifest["dependencies"]["opl_base"] == "^2.0.0"
+    assert manifest["distribution"] == {
+        "oci": "ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault",
+        "visibility": "public",
+    }
+    assert manifest["host_hints"]["codex"]["sync_enabled"] is False
+
+    provides = manifest["provides"]
+    assert provides["module_ids"] == ["agent.session.vault.v1"]
+    assert provides["contribution_handler"] == {
+        "kind": "cli",
+        "argv": ["python3", "./app_contribution.py"],
+        "transport": "stdin_json_stdout_json",
+    }
+    assert provides["skills"] == [{
+        "id": "agent-session-vault",
+        "path": "./skills/agent-session-vault",
+        "exposure": "default",
+    }]
+    assert (root / provides["skills"][0]["path"] / "SKILL.md").is_file()
+
+    declarative = manifest["ui"]["declarative"]
+    assert not declarative.get("settings_forms")
+    views = declarative["views"]
+    assert [(view["id"], view["view_type"], view["data_ref"], view["sort_order"]) for view in views] == [
+        ("vault.runtime.status", "service_status", STATUS_REF, 690),
+        ("vault.archive.review", "list_detail", REF, 700),
+    ]
+    for view in views:
+        assert view["slot"] == "settings.section"
+        assert view["settings_destination"] == "services"
+        assert not view.get("actions")
 
 
 def test_installed_package_cli_does_not_require_a_separate_python_tool(tmp_path):
