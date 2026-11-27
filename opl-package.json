@@ -1,166 +1,86 @@
 {
-  "surface_kind": "opl_capability_package_manifest.v2",
-  "package_id": "agent-session-vault",
-  "display_name": "OPL Session Vault",
-  "publisher": "gaofeng21cn",
-  "version": "0.1.6",
-  "source": "first_party_repo_local",
-  "source_repo": "https://github.com/gaofeng21cn/agent-session-vault.git",
-  "package_role": "capability_package",
-  "publication_channel_admission": "admitted",
-  "capability_abi": {
-    "id": "agent.session.vault.v1",
-    "version": "1.0.0",
-    "compatibility_policy": "same_major"
+  "schema_version": "opl.package.v2",
+  "identity": {
+    "id": "agent-session-vault",
+    "version": "0.1.6",
+    "intent": "extension",
+    "name": {
+      "zh-CN": "OPL Session Vault",
+      "en-US": "OPL Session Vault"
+    },
+    "summary": {
+      "zh-CN": "同步 Agent 会话统计，管理用量分析与可恢复的 Codex 归档。",
+      "en-US": "Session synchronization, usage analytics, and recoverable Codex archives."
+    },
+    "routing_summary": {
+      "zh-CN": "通过 Vault 查看会话统计、同步获准的 Fleet 投影并审阅归档计划。",
+      "en-US": "Inspect session analytics, synchronize approved Fleet projections, and review archive plans through the Vault owner."
+    },
+    "publisher": "gaofeng21cn",
+    "license": "Apache-2.0",
+    "icon": "assets/branding/agent-session-vault-logo.png",
+    "repository": "https://github.com/gaofeng21cn/agent-session-vault"
   },
-  "exports": {
-    "core_skill_ids": [
-      "agent-session-vault"
+  "dependencies": {
+    "opl_base": "^2.0.0"
+  },
+  "provides": {
+    "skills": [
+      {
+        "id": "agent-session-vault",
+        "path": "./skills/agent-session-vault",
+        "exposure": "default"
+      }
     ],
-    "core_module_ids": [
+    "module_ids": [
       "agent.session.vault.v1"
     ],
-    "optional_skill_policy_ref": "skills/agent-session-vault/SKILL.md",
-    "optional_skills_installed_by_default": false
-  },
-  "codex_surface": {
-    "plugin_id": "agent-session-vault",
-    "plugin_source_path": ".",
-    "codex_default_exposure": false,
-    "optional_install_policy": "core_skills_only",
-    "interaction_mode": "headless_internal",
-    "app_contribution_abi": {
-      "schema_version": "opl-package-app-contribution-cli.v1",
-      "transport": "stdin_json_stdout_json",
+    "contribution_handler": {
+      "kind": "cli",
       "argv": [
         "python3",
         "./app_contribution.py"
       ],
-      "request_schema": "opl-package-app-contribution-request.v1",
-      "response_schema": "opl-package-app-contribution-response.v1"
-    },
-    "app_contribution_adapter": {
-      "manifest": "app-contribution-adapter.json"
-    },
-    "configured_codex_plugin_carrier": {
-      "kind": "codex_plugin_manager",
-      "plugin_selector": "agent-session-vault@agent-session-vault",
-      "executor_route": "codex_cli",
-      "marketplace_source": "gaofeng21cn/agent-session-vault",
-      "publication_ref": "ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault:latest-stable"
+      "transport": "stdin_json_stdout_json"
     }
   },
-  "app_contributions": {
-    "schema_version": "opl-app-contributions.v1",
-    "views": [
-      {
-        "view_id": "vault.runtime.status",
-        "view_type": "service_status",
-        "title_i18n": {
-          "en-US": "Runtime prerequisites",
-          "zh-CN": "运行依赖"
+  "ui": {
+    "declarative": {
+      "views": [
+        {
+          "id": "vault.runtime.status",
+          "view_type": "service_status",
+          "slot": "settings.section",
+          "settings_destination": "services",
+          "title": {
+            "zh-CN": "运行依赖",
+            "en-US": "Runtime prerequisites"
+          },
+          "data_ref": "agent.session.vault.v1#status",
+          "sort_order": 690
         },
-        "data_ref": "agent.session.vault.v1#status",
-        "command_ids": []
-      },
-      {
-        "view_id": "vault.archive.review",
-        "view_type": "list_detail",
-        "title_i18n": {
-          "en-US": "Archive plan and outcome",
-          "zh-CN": "归档计划与结果"
-        },
-        "data_ref": "agent.session.vault.v1#review",
-        "command_ids": []
-      }
-    ],
-    "commands": [],
-    "ui": [
-      {
-        "contribution_id": "vault.runtime.status",
-        "slot": "settings.section",
-        "contribution_kind": "view",
-        "trust_tier": "declarative",
-        "scope": "root",
-        "sort_order": 690,
-        "view_id": "vault.runtime.status"
-      },
-      {
-        "contribution_id": "vault.archive.review",
-        "slot": "settings.section",
-        "contribution_kind": "view",
-        "trust_tier": "declarative",
-        "scope": "root",
-        "sort_order": 700,
-        "view_id": "vault.archive.review"
-      }
-    ]
+        {
+          "id": "vault.archive.review",
+          "view_type": "list_detail",
+          "slot": "settings.section",
+          "settings_destination": "services",
+          "title": {
+            "zh-CN": "归档计划与结果",
+            "en-US": "Archive plan and outcome"
+          },
+          "data_ref": "agent.session.vault.v1#review",
+          "sort_order": 700
+        }
+      ]
+    }
   },
-  "content_lock": {
-    "algorithm": "sha256",
-    "canonicalization": "ordered_path_length_file_length_bytes",
-    "paths": [
-      ".agents/plugins/marketplace.json",
-      ".codex-plugin/plugin.json",
-      "README.md",
-      "README.zh-CN.md",
-      "app-contribution-adapter.json",
-      "app_contribution.py",
-      "config/agent-session-vault.example.toml",
-      "plugin.json",
-      "pyproject.toml",
-      "skills/agent-session-vault/SKILL.md",
-      "src/agent_session_vault/__init__.py",
-      "src/agent_session_vault/__main__.py",
-      "src/agent_session_vault/app_review.py",
-      "src/agent_session_vault/archive.py",
-      "src/agent_session_vault/archive_backend.py",
-      "src/agent_session_vault/archive_catalog.py",
-      "src/agent_session_vault/archive_compact.py",
-      "src/agent_session_vault/archive_model.py",
-      "src/agent_session_vault/archive_ops.py",
-      "src/agent_session_vault/archive_prune.py",
-      "src/agent_session_vault/archive_restore.py",
-      "src/agent_session_vault/archive_sources.py",
-      "src/agent_session_vault/cli.py",
-      "src/agent_session_vault/config.py",
-      "src/agent_session_vault/codex_usage_estimate.py",
-      "src/agent_session_vault/antigravity.py",
-      "src/agent_session_vault/daily_ops.py",
-      "src/agent_session_vault/fleet.py",
-      "src/agent_session_vault/local_codex.py",
-      "src/agent_session_vault/openclaw.py",
-      "src/agent_session_vault/projection.py",
-      "src/agent_session_vault/restic.py",
-      "src/agent_session_vault/stable.py",
-      "src/agent_session_vault/storage.py",
-      "src/agent_session_vault/tokscale.py",
-      "src/agent_session_vault/views.py",
-      "vault.py",
-      "assets/branding/agent-session-vault-logo.png",
-      "src/agent_session_vault/archive_maintenance.py",
-      "src/agent_session_vault/cold_archive.py",
-      "scripts/run_detached.py",
-      "config/codex-cold-decisions.example.json"
-    ],
-    "digest": "sha256:645ae52aa1a9cc129ef5871434fa34d09ea98a61798ffd9dcf76d540ea094e3a"
+  "distribution": {
+    "oci": "ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault",
+    "visibility": "public"
   },
-  "presentation": {
-    "display_name_i18n": {
-      "zh-CN": "OPL Session Vault",
-      "en-US": "OPL Session Vault"
-    },
-    "description_i18n": {
-      "en-US": "Session synchronization, usage analytics, and recoverable Codex archives.",
-      "zh-CN": "同步 Agent 会话统计，管理用量分析与可恢复的 Codex 归档。"
-    },
-    "session_routing_summary_i18n": {
-      "en-US": "Inspect session analytics, synchronize approved Fleet projections, and review archive plans through the Vault owner.",
-      "zh-CN": "通过 Vault 查看会话统计、同步获准的 Fleet 投影并审阅归档计划。"
-    },
-    "home_shortcuts": [],
-    "software_type": "application",
-    "icon_ref": "assets/branding/agent-session-vault-logo.png"
-  },
-  "management_scope": "local_product"
+  "host_hints": {
+    "codex": {
+      "sync_enabled": false
+    }
+  }
 }

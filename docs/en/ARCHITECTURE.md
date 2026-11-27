@@ -17,11 +17,10 @@ interfaces without copying their control state.
 
 ## Application management
 
-`opl-package.json` owns the stable Package identity, display metadata, version,
-and native carrier declaration. The Codex marketplace resolves the root plugin;
-`.codex-plugin/plugin.json` and the generic `plugin.json` describe the same
-plugin. Framework pins a reviewed owner commit for source-edition installation
-and projects carrier readback into the shared application catalog. The
+`opl-package.json` (`opl.package.v2`) owns the stable Package identity, display metadata, version,
+skills, contribution handler (`app_contribution.py`), and declarative UI views.
+Framework pins a reviewed owner commit or release package source and projects readback into
+the shared application catalog. The
 `development_only` publication status remains separate from software-management
 compatibility and does not claim a stable artifact release.
 

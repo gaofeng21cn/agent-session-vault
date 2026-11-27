@@ -35,9 +35,9 @@ with Package ID `agent-session-vault` and version from `opl-package.json`.
 Use OPL Software Center or its CLI for the released Package:
 
 ```bash
-opl packages install agent-session-vault --json
-opl packages status --package-id agent-session-vault --json
-opl packages update agent-session-vault --json
+opl pack install ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault --json
+opl pack inspect agent-session-vault --json
+opl pack update agent-session-vault --source ghcr.io/gaofeng21cn/one-person-lab-packages/agent-session-vault --json
 ```
 
 The publication source is

@@ -15,10 +15,9 @@
 
 ## 应用管理
 
-`opl-package.json` 持有稳定 Package 身份、显示元数据、版本和原生载体声明。Codex
-marketplace 解析仓库根目录插件；`.codex-plugin/plugin.json` 与通用 `plugin.json`
-描述同一插件。Framework 为源码版安装固定已审阅的 owner commit，并把原生载体回读
-投影到统一应用目录。`development_only` 发布状态与软件管理兼容性分开，不表示已有
+`opl-package.json`（`opl.package.v2`）持有稳定 Package 身份、显示元数据、版本、
+Skill、`app_contribution.py` 贡献处理器与声明式视图。Framework 按已审阅的
+owner commit 或发布源管理安装与回读，并投影到统一应用目录。`development_only` 发布状态与软件管理兼容性分开，不表示已有
 稳定制品发行。
 
 插件通过 `vault.py` 直接调用同包 CLI owner，不依赖用户 PATH 上的另一版本。
